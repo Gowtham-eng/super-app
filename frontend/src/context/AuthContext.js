@@ -7,7 +7,8 @@ const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(localStorage.getItem('sso_token'));
+  const [organization, setOrganization] = useState(null);
+  const [token, setToken] = useState(localStorage.getItem('iam_token'));
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -18,9 +19,10 @@ export const AuthProvider = ({ children }) => {
             headers: { Authorization: `Bearer ${token}` }
           });
           setUser(response.data);
+          setOrganization(response.data.organization);
         } catch (error) {
           console.error('Auth check failed:', error);
-          localStorage.removeItem('sso_token');
+          localStorage.removeItem('iam_token');
           setToken(null);
         }
       }
@@ -32,30 +34,36 @@ export const AuthProvider = ({ children }) => {
   const login = async (email, password) => {
     const response = await axios.post(`${API}/auth/login`, { email, password });
     const { token: newToken, user: userData } = response.data;
-    localStorage.setItem('sso_token', newToken);
+    localStorage.setItem('iam_token', newToken);
     setToken(newToken);
     setUser(userData);
     return userData;
   };
 
-  const register = async (email, password, name) => {
+  const register = async (email, password, name, orgId) => {
     const response = await axios.post(`${API}/auth/register`, { 
       email, 
       password, 
       name,
-      role: 'admin'
+      org_id: orgId
     });
     const { token: newToken, user: userData } = response.data;
-    localStorage.setItem('sso_token', newToken);
+    localStorage.setItem('iam_token', newToken);
     setToken(newToken);
     setUser(userData);
     return userData;
   };
 
+  const createOrganization = async (name, domain, description) => {
+    const response = await axios.post(`${API}/organizations`, { name, domain, description });
+    return response.data;
+  };
+
   const logout = () => {
-    localStorage.removeItem('sso_token');
+    localStorage.removeItem('iam_token');
     setToken(null);
     setUser(null);
+    setOrganization(null);
   };
 
   const getAuthHeader = () => ({
@@ -65,10 +73,12 @@ export const AuthProvider = ({ children }) => {
   return (
     <AuthContext.Provider value={{ 
       user, 
+      organization,
       token, 
       loading, 
       login, 
-      register, 
+      register,
+      createOrganization,
       logout, 
       getAuthHeader,
       API 

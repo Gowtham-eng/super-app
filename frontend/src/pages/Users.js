@@ -5,99 +5,66 @@ import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from '../components/ui/dialog';
-import {
-  Users as UsersIcon,
-  Plus,
-  Trash,
-  PencilSimple,
-  MagnifyingGlass,
-  UserPlus,
-  Robot,
-  Lightning
-} from '@phosphor-icons/react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
+import { Users, Plus, PencilSimple, Trash, MagnifyingGlass, UserPlus } from '@phosphor-icons/react';
 
-const Users = () => {
+const UsersPage = () => {
   const { API, getAuthHeader, user: currentUser } = useAuth();
   const [users, setUsers] = useState([]);
+  const [groups, setGroups] = useState([]);
+  const [roles, setRoles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
+  const [showModal, setShowModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  const [formData, setFormData] = useState({
-    email: '',
-    name: '',
-    role: 'user',
-    provisioning_type: 'manual'
-  });
+  const [form, setForm] = useState({ email: '', password: '', name: '' });
+  const [editForm, setEditForm] = useState({ name: '', status: '', group_ids: [], role_ids: [] });
 
-  useEffect(() => {
-    fetchUsers();
-  }, []);
+  useEffect(() => { fetchData(); }, []);
 
-  const fetchUsers = async () => {
+  const fetchData = async () => {
     try {
-      const response = await axios.get(`${API}/users`, getAuthHeader());
-      setUsers(response.data);
+      const [usersRes, groupsRes, rolesRes] = await Promise.all([
+        axios.get(`${API}/users`, getAuthHeader()),
+        axios.get(`${API}/groups`, getAuthHeader()),
+        axios.get(`${API}/roles`, getAuthHeader())
+      ]);
+      setUsers(usersRes.data);
+      setGroups(groupsRes.data);
+      setRoles(rolesRes.data);
     } catch (error) {
-      toast.error('Failed to load users');
+      toast.error('Failed to load data');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleAddUser = async (e) => {
+  const handleCreate = async (e) => {
     e.preventDefault();
     setSaving(true);
-
     try {
-      const response = await axios.post(`${API}/users/provision`, formData, getAuthHeader());
-      setUsers([...users, response.data]);
-      setShowAddModal(false);
-      resetForm();
-      
-      if (response.data.temp_password) {
-        toast.success(`User created! Temporary password: ${response.data.temp_password}`, {
-          duration: 10000
-        });
-      } else {
-        toast.success('User provisioned successfully');
-      }
+      await axios.post(`${API}/users`, { ...form, org_id: currentUser.org_id }, getAuthHeader());
+      toast.success('User created');
+      setShowModal(false);
+      setForm({ email: '', password: '', name: '' });
+      fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to add user');
+      toast.error(error.response?.data?.detail || 'Failed to create user');
     } finally {
       setSaving(false);
     }
   };
 
-  const handleEditUser = async (e) => {
+  const handleUpdate = async (e) => {
     e.preventDefault();
     setSaving(true);
-
     try {
-      const response = await axios.put(
-        `${API}/users/${selectedUser.id}`,
-        {
-          name: formData.name,
-          role: formData.role,
-          status: formData.status
-        },
-        getAuthHeader()
-      );
-      
-      setUsers(users.map(u => u.id === selectedUser.id ? response.data : u));
-      setShowEditModal(false);
-      resetForm();
-      toast.success('User updated successfully');
+      await axios.put(`${API}/users/${selectedUser.id}`, editForm, getAuthHeader());
+      toast.success('User updated');
+      setSelectedUser(null);
+      fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to update user');
     } finally {
@@ -105,99 +72,57 @@ const Users = () => {
     }
   };
 
-  const handleDeleteUser = async (userId) => {
-    if (!window.confirm('Are you sure you want to delete this user?')) return;
-
+  const deleteUser = async (user) => {
+    if (!window.confirm(`Delete ${user.name}?`)) return;
     try {
-      await axios.delete(`${API}/users/${userId}`, getAuthHeader());
-      setUsers(users.filter(u => u.id !== userId));
-      toast.success('User deleted successfully');
+      await axios.delete(`${API}/users/${user.id}`, getAuthHeader());
+      toast.success('User deleted');
+      fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to delete user');
     }
   };
 
-  const openEditModal = (user) => {
+  const editUser = (user) => {
     setSelectedUser(user);
-    setFormData({
-      email: user.email,
+    setEditForm({
       name: user.name,
-      role: user.role,
       status: user.status,
-      provisioning_type: user.provisioning_type
+      group_ids: user.group_ids || [],
+      role_ids: user.role_ids || []
     });
-    setShowEditModal(true);
   };
 
-  const resetForm = () => {
-    setFormData({
-      email: '',
-      name: '',
-      role: 'user',
-      provisioning_type: 'manual'
-    });
-    setSelectedUser(null);
-  };
-
-  const filteredUsers = users.filter(user =>
-    user.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    user.email?.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredUsers = users.filter(u =>
+    u.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    u.email?.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const getProvisioningIcon = (type) => {
-    switch (type) {
-      case 'scim':
-        return <Robot size={14} className="text-[#0051FF]" />;
-      case 'jit':
-        return <Lightning size={14} className="text-[#FFB800]" />;
-      default:
-        return <UserPlus size={14} className="text-zinc-400" />;
-    }
-  };
-
   const getStatusBadge = (status) => {
-    switch (status) {
-      case 'active':
-        return <span className="badge-success">Active</span>;
-      case 'pending':
-        return <span className="badge-warning">Pending</span>;
-      case 'inactive':
-        return <span className="badge-error">Inactive</span>;
-      default:
-        return <span className="badge-info">{status}</span>;
-    }
+    const styles = {
+      active: 'bg-[#00CC66]/10 text-[#00CC66]',
+      pending: 'bg-[#FFB800]/10 text-[#FFB800]',
+      inactive: 'bg-zinc-100 text-zinc-500'
+    };
+    return <span className={`text-xs font-bold uppercase px-2 py-0.5 ${styles[status] || styles.inactive}`}>{status}</span>;
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="spinner" />
-      </div>
-    );
-  }
+  if (loading) return <div className="flex items-center justify-center h-64"><div className="spinner" /></div>;
 
   return (
     <div className="animate-fadeIn">
-      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
         <div className="flex items-center gap-4">
           <div className="w-12 h-12 bg-[#0051FF] flex items-center justify-center">
-            <UsersIcon weight="bold" className="text-white w-6 h-6" />
+            <Users weight="bold" className="text-white w-6 h-6" />
           </div>
           <div>
-            <h1 className="font-heading font-black text-3xl tracking-tight text-zinc-900">
-              User Management
-            </h1>
-            <p className="text-zinc-500">{users.length} users provisioned</p>
+            <h1 className="font-heading font-black text-3xl tracking-tight text-zinc-900">Users</h1>
+            <p className="text-zinc-500">{users.length} users</p>
           </div>
         </div>
-        <Button
-          onClick={() => setShowAddModal(true)}
-          data-testid="add-user-button"
-          className="btn-primary"
-        >
-          <Plus size={18} className="mr-2" />
-          Add User
+        <Button onClick={() => setShowModal(true)} className="btn-primary" data-testid="add-user">
+          <UserPlus size={18} className="mr-2" /> Add User
         </Button>
       </div>
 
@@ -206,11 +131,9 @@ const Users = () => {
         <div className="relative">
           <MagnifyingGlass size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
           <Input
-            type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Search users by name or email..."
-            data-testid="search-users"
+            placeholder="Search users..."
             className="input-brutalist w-full pl-10"
           />
         </div>
@@ -218,233 +141,106 @@ const Users = () => {
 
       {/* Users Table */}
       <div className="card-brutalist overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>User</th>
-                <th>Role</th>
-                <th>Provisioning</th>
-                <th>Status</th>
-                <th>Created</th>
-                <th className="text-right">Actions</th>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Role</th>
+              <th>Groups</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th className="text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredUsers.map((user) => (
+              <tr key={user.id} data-testid={`user-${user.id}`}>
+                <td>
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 bg-[#0051FF] flex items-center justify-center text-white font-bold text-sm">
+                      {user.name?.charAt(0)?.toUpperCase() || 'U'}
+                    </div>
+                    <div>
+                      <div className="font-semibold">{user.name}</div>
+                      <div className="text-xs text-zinc-500">{user.email}</div>
+                    </div>
+                  </div>
+                </td>
+                <td><span className="text-xs bg-zinc-100 px-2 py-1">{user.role}</span></td>
+                <td>{user.group_ids?.length || 0} groups</td>
+                <td>{getStatusBadge(user.status)}</td>
+                <td className="text-sm text-zinc-500">{user.created_at ? new Date(user.created_at).toLocaleDateString() : '-'}</td>
+                <td>
+                  <div className="flex justify-end gap-1">
+                    <button onClick={() => editUser(user)} className="p-2 hover:bg-zinc-100"><PencilSimple size={16} /></button>
+                    {user.id !== currentUser?.id && (
+                      <button onClick={() => deleteUser(user)} className="p-2 hover:bg-[#FF3333]/10"><Trash size={16} className="text-[#FF3333]" /></button>
+                    )}
+                  </div>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {filteredUsers.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="text-center py-8 text-zinc-500">
-                    {searchTerm ? 'No users found matching your search' : 'No users yet. Add your first user.'}
-                  </td>
-                </tr>
-              ) : (
-                filteredUsers.map((user) => (
-                  <tr key={user.id} data-testid={`user-row-${user.id}`}>
-                    <td>
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-zinc-200 flex items-center justify-center text-sm font-bold text-zinc-600">
-                          {user.name?.charAt(0)?.toUpperCase() || 'U'}
-                        </div>
-                        <div>
-                          <div className="font-semibold text-zinc-900">{user.name}</div>
-                          <div className="text-sm text-zinc-500">{user.email}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td>
-                      <span className={`px-2 py-1 text-xs font-bold uppercase ${
-                        user.role === 'admin' ? 'bg-[#0051FF]/10 text-[#0051FF]' : 'bg-zinc-100 text-zinc-600'
-                      }`}>
-                        {user.role}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="flex items-center gap-2">
-                        {getProvisioningIcon(user.provisioning_type)}
-                        <span className="text-sm capitalize">{user.provisioning_type}</span>
-                      </div>
-                    </td>
-                    <td>{getStatusBadge(user.status)}</td>
-                    <td className="text-sm text-zinc-500">
-                      {user.created_at ? new Date(user.created_at).toLocaleDateString() : '-'}
-                    </td>
-                    <td>
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          onClick={() => openEditModal(user)}
-                          data-testid={`edit-user-${user.id}`}
-                          className="p-2 text-zinc-500 hover:text-[#0051FF] hover:bg-zinc-100 transition-colors"
-                        >
-                          <PencilSimple size={18} />
-                        </button>
-                        {user.id !== currentUser?.id && (
-                          <button
-                            onClick={() => handleDeleteUser(user.id)}
-                            data-testid={`delete-user-${user.id}`}
-                            className="p-2 text-zinc-500 hover:text-[#FF3333] hover:bg-[#FF3333]/10 transition-colors"
-                          >
-                            <Trash size={18} />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </table>
       </div>
 
-      {/* Add User Modal */}
-      <Dialog open={showAddModal} onOpenChange={setShowAddModal}>
+      {/* Create User Modal */}
+      <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="font-heading font-bold text-xl">Provision New User</DialogTitle>
-          </DialogHeader>
-          <form onSubmit={handleAddUser} className="space-y-4">
-            <div>
-              <Label className="label-uppercase">Email Address *</Label>
-              <Input
-                type="email"
-                value={formData.email}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                placeholder="user@company.com"
-                required
-                data-testid="add-user-email"
-                className="input-brutalist w-full mt-1"
-              />
-            </div>
+          <DialogHeader><DialogTitle>Add User</DialogTitle></DialogHeader>
+          <form onSubmit={handleCreate} className="space-y-4">
             <div>
               <Label className="label-uppercase">Full Name *</Label>
-              <Input
-                type="text"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="John Doe"
-                required
-                data-testid="add-user-name"
-                className="input-brutalist w-full mt-1"
-              />
+              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required className="input-brutalist w-full mt-1" />
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label className="label-uppercase">Role</Label>
-                <select
-                  value={formData.role}
-                  onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-                  data-testid="add-user-role"
-                  className="input-brutalist w-full mt-1 py-2"
-                >
-                  <option value="user">User</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </div>
-              <div>
-                <Label className="label-uppercase">Provisioning Type</Label>
-                <select
-                  value={formData.provisioning_type}
-                  onChange={(e) => setFormData({ ...formData, provisioning_type: e.target.value })}
-                  data-testid="add-user-provisioning"
-                  className="input-brutalist w-full mt-1 py-2"
-                >
-                  <option value="manual">Manual</option>
-                  <option value="scim">SCIM</option>
-                  <option value="jit">JIT</option>
-                </select>
-              </div>
+            <div>
+              <Label className="label-uppercase">Email *</Label>
+              <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required className="input-brutalist w-full mt-1" />
+            </div>
+            <div>
+              <Label className="label-uppercase">Password *</Label>
+              <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required className="input-brutalist w-full mt-1" />
             </div>
             <DialogFooter>
-              <Button
-                type="button"
-                onClick={() => { setShowAddModal(false); resetForm(); }}
-                className="btn-secondary"
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={saving}
-                data-testid="submit-add-user"
-                className="btn-primary"
-              >
-                {saving ? 'Adding...' : 'Add User'}
-              </Button>
+              <Button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</Button>
+              <Button type="submit" disabled={saving} className="btn-primary">{saving ? 'Creating...' : 'Create'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
       {/* Edit User Modal */}
-      <Dialog open={showEditModal} onOpenChange={setShowEditModal}>
+      <Dialog open={!!selectedUser} onOpenChange={() => setSelectedUser(null)}>
         <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="font-heading font-bold text-xl">Edit User</DialogTitle>
-          </DialogHeader>
-          <form onSubmit={handleEditUser} className="space-y-4">
-            <div>
-              <Label className="label-uppercase">Email Address</Label>
-              <Input
-                type="email"
-                value={formData.email}
-                disabled
-                className="input-brutalist w-full mt-1 bg-zinc-100"
-              />
-            </div>
+          <DialogHeader><DialogTitle>Edit User - {selectedUser?.name}</DialogTitle></DialogHeader>
+          <form onSubmit={handleUpdate} className="space-y-4">
             <div>
               <Label className="label-uppercase">Full Name *</Label>
-              <Input
-                type="text"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                required
-                data-testid="edit-user-name"
-                className="input-brutalist w-full mt-1"
-              />
+              <Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} required className="input-brutalist w-full mt-1" />
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label className="label-uppercase">Role</Label>
-                <select
-                  value={formData.role}
-                  onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-                  data-testid="edit-user-role"
-                  className="input-brutalist w-full mt-1 py-2"
-                >
-                  <option value="user">User</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </div>
-              <div>
-                <Label className="label-uppercase">Status</Label>
-                <select
-                  value={formData.status}
-                  onChange={(e) => setFormData({ ...formData, status: e.target.value })}
-                  data-testid="edit-user-status"
-                  className="input-brutalist w-full mt-1 py-2"
-                >
-                  <option value="active">Active</option>
-                  <option value="pending">Pending</option>
-                  <option value="inactive">Inactive</option>
-                </select>
-              </div>
+            <div>
+              <Label className="label-uppercase">Status</Label>
+              <select value={editForm.status} onChange={(e) => setEditForm({ ...editForm, status: e.target.value })} className="input-brutalist w-full mt-1 py-2">
+                <option value="active">Active</option>
+                <option value="pending">Pending</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </div>
+            <div>
+              <Label className="label-uppercase">Groups</Label>
+              <select multiple value={editForm.group_ids} onChange={(e) => setEditForm({ ...editForm, group_ids: Array.from(e.target.selectedOptions, o => o.value) })} className="input-brutalist w-full mt-1 h-24">
+                {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <Label className="label-uppercase">Direct Roles</Label>
+              <select multiple value={editForm.role_ids} onChange={(e) => setEditForm({ ...editForm, role_ids: Array.from(e.target.selectedOptions, o => o.value) })} className="input-brutalist w-full mt-1 h-24">
+                {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
             </div>
             <DialogFooter>
-              <Button
-                type="button"
-                onClick={() => { setShowEditModal(false); resetForm(); }}
-                className="btn-secondary"
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={saving}
-                data-testid="submit-edit-user"
-                className="btn-primary"
-              >
-                {saving ? 'Saving...' : 'Save Changes'}
-              </Button>
+              <Button type="button" onClick={() => setSelectedUser(null)} className="btn-secondary">Cancel</Button>
+              <Button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -453,4 +249,4 @@ const Users = () => {
   );
 };
 
-export default Users;
+export default UsersPage;

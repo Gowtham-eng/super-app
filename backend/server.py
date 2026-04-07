@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -12,9 +12,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 import jwt
 import bcrypt
-import base64
-import xml.etree.ElementTree as ET
-from xml.dom import minidom
+import ipaddress
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -25,96 +23,174 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # JWT Configuration
-JWT_SECRET = os.environ.get('JWT_SECRET', 'kissflow-sso-secret-key-2024')
+JWT_SECRET = os.environ.get('JWT_SECRET', 'kissflow-iam-secret-key-2024')
 JWT_ALGORITHM = 'HS256'
 JWT_EXPIRATION_HOURS = 24
 
-# Create the main app
-app = FastAPI(title="Kissflow SSO Super App")
-
-# Create a router with the /api prefix
+app = FastAPI(title="Kissflow IAM - Identity & Access Management")
 api_router = APIRouter(prefix="/api")
-
 security = HTTPBearer()
 
 # ===================== MODELS =====================
 
+# Organization Models
+class OrganizationCreate(BaseModel):
+    name: str
+    domain: str
+    description: Optional[str] = None
+
+class Organization(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    name: str
+    domain: str
+    description: Optional[str] = None
+    created_at: str
+    status: str = "active"
+
+# Permission & Role Models
+class Permission(BaseModel):
+    id: str
+    name: str
+    description: str
+    resource: str  # apps, users, groups, settings, audit
+    actions: List[str]  # create, read, update, delete, manage
+
+class RoleCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    permissions: List[str]  # permission IDs
+    org_id: str
+
+class Role(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    name: str
+    description: Optional[str] = None
+    permissions: List[str]
+    org_id: str
+    is_system: bool = False
+    created_at: str
+
+# Group Models
+class GroupCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    org_id: str
+    parent_id: Optional[str] = None
+    role_ids: List[str] = []
+
+class Group(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    name: str
+    description: Optional[str] = None
+    org_id: str
+    parent_id: Optional[str] = None
+    role_ids: List[str] = []
+    member_count: int = 0
+    created_at: str
+
+# User Models
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
     name: str
-    role: str = "user"
+    org_id: str
 
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
-class UserResponse(BaseModel):
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    status: Optional[str] = None
+    group_ids: Optional[List[str]] = None
+    role_ids: Optional[List[str]] = None
+
+# Application Models (SAML & OIDC)
+class SAMLAppCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    org_id: str
+    entity_id: str
+    acs_url: str
+    slo_url: Optional[str] = None
+    name_id_format: str = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+    sign_assertions: bool = True
+    sign_response: bool = True
+    attribute_mappings: Dict[str, str] = {}
+    logo_url: Optional[str] = None
+    allowed_group_ids: List[str] = []
+    allowed_role_ids: List[str] = []
+
+class OIDCAppCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    org_id: str
+    redirect_uris: List[str]
+    logout_uris: List[str] = []
+    scopes: List[str] = ["openid", "profile", "email"]
+    grant_types: List[str] = ["authorization_code"]
+    logo_url: Optional[str] = None
+    allowed_group_ids: List[str] = []
+    allowed_role_ids: List[str] = []
+
+# Access Policy Models
+class AccessPolicyCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    org_id: str
+    app_ids: List[str] = []  # Empty means all apps
+    conditions: Dict[str, Any] = {}  # ip_whitelist, ip_blacklist, time_restrictions, mfa_required
+
+class AccessPolicy(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str
-    email: str
     name: str
-    role: str
+    description: Optional[str] = None
+    org_id: str
+    app_ids: List[str] = []
+    conditions: Dict[str, Any] = {}
+    enabled: bool = True
     created_at: str
-    status: str = "active"
 
-class UserProvision(BaseModel):
-    email: EmailStr
-    name: str
-    role: str = "user"
-    provisioning_type: str = "manual"  # manual, scim, jit
+# Access Request Models
+class AccessRequestCreate(BaseModel):
+    app_id: str
+    reason: str
 
-class SAMLConfig(BaseModel):
+class AccessRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    entity_id: str
-    acs_url: str
-    slo_url: Optional[str] = None
-    name_id_format: str = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
-    sign_assertions: bool = True
-    sign_response: bool = True
-    certificate: Optional[str] = None
-    private_key: Optional[str] = None
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    id: str
+    user_id: str
+    user_email: str
+    user_name: str
+    app_id: str
+    app_name: str
+    app_type: str  # saml or oidc
+    reason: str
+    status: str = "pending"  # pending, approved, rejected
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    org_id: str
+    created_at: str
 
-class SAMLConfigCreate(BaseModel):
-    entity_id: str
-    acs_url: str
-    slo_url: Optional[str] = None
-    name_id_format: str = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
-    sign_assertions: bool = True
-    sign_response: bool = True
-
-class OIDCConfig(BaseModel):
+# Audit Log Models
+class AuditLog(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_id: str
-    client_secret: str
-    redirect_uris: List[str]
-    authorization_endpoint: str
-    token_endpoint: str
-    userinfo_endpoint: str
-    jwks_uri: str
-    scopes: List[str] = ["openid", "profile", "email"]
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-class OIDCConfigCreate(BaseModel):
-    client_id: str
-    redirect_uris: List[str]
-    scopes: List[str] = ["openid", "profile", "email"]
-
-class SCIMUser(BaseModel):
-    schemas: List[str] = ["urn:ietf:params:scim:schemas:core:2.0:User"]
-    userName: str
-    name: Dict[str, str]
-    emails: List[Dict[str, Any]]
-    active: bool = True
-
-class ConnectionTest(BaseModel):
-    protocol: str  # saml or oidc
-    config_id: str
+    id: str
+    org_id: str
+    user_id: Optional[str] = None
+    user_email: Optional[str] = None
+    action: str  # login, logout, app_access, user_created, role_changed, etc.
+    resource_type: str  # user, app, group, role, policy
+    resource_id: Optional[str] = None
+    details: Dict[str, Any] = {}
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    timestamp: str
+    status: str = "success"  # success, failure
 
 # ===================== HELPERS =====================
 
@@ -124,10 +200,11 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
-def create_token(user_id: str, email: str, role: str) -> str:
+def create_token(user_id: str, email: str, org_id: str, role: str) -> str:
     payload = {
         'user_id': user_id,
         'email': email,
+        'org_id': org_id,
         'role': role,
         'exp': datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS),
         'iat': datetime.now(timezone.utc)
@@ -145,33 +222,41 @@ def decode_token(token: str) -> dict:
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     payload = decode_token(token)
-    user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0})
+    user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0, "password": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
+async def log_audit(org_id: str, action: str, resource_type: str, user_id: str = None, 
+                   user_email: str = None, resource_id: str = None, details: dict = None,
+                   ip_address: str = None, status: str = "success"):
+    audit_doc = {
+        "id": str(uuid.uuid4()),
+        "org_id": org_id,
+        "user_id": user_id,
+        "user_email": user_email,
+        "action": action,
+        "resource_type": resource_type,
+        "resource_id": resource_id,
+        "details": details or {},
+        "ip_address": ip_address,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": status
+    }
+    await db.audit_logs.insert_one(audit_doc)
+
 def generate_self_signed_cert():
-    """Generate a self-signed certificate for SAML signing"""
     from cryptography import x509
     from cryptography.x509.oid import NameOID
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
     
-    # Generate private key
-    key = rsa.generate_private_key(
-        public_exponent=65537,
-        key_size=2048,
-    )
-    
-    # Generate certificate
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
-        x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "California"),
-        x509.NameAttribute(NameOID.LOCALITY_NAME, "San Francisco"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Kissflow SSO"),
-        x509.NameAttribute(NameOID.COMMON_NAME, "sso.kissflow.local"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Kissflow IAM"),
+        x509.NameAttribute(NameOID.COMMON_NAME, "iam.kissflow.local"),
     ])
-    
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
@@ -182,523 +267,983 @@ def generate_self_signed_cert():
         .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
         .sign(key, hashes.SHA256())
     )
-    
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
     key_pem = key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.TraditionalOpenSSL,
         serialization.NoEncryption()
     ).decode()
-    
     return cert_pem, key_pem
 
-def generate_saml_metadata(config: dict, base_url: str) -> str:
-    """Generate SAML IdP Metadata XML"""
-    cert = config.get('certificate', '')
-    # Clean certificate for XML
+def generate_saml_metadata(app: dict, base_url: str) -> str:
+    cert = app.get('certificate', '')
     cert_clean = cert.replace('-----BEGIN CERTIFICATE-----', '').replace('-----END CERTIFICATE-----', '').replace('\n', '').strip()
     
-    metadata = f'''<?xml version="1.0" encoding="UTF-8"?>
+    return f'''<?xml version="1.0" encoding="UTF-8"?>
 <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" 
                      xmlns:ds="http://www.w3.org/2000/09/xmldsig#"
-                     entityID="{config['entity_id']}">
+                     entityID="{app['entity_id']}">
     <md:IDPSSODescriptor WantAuthnRequestsSigned="true" 
                          protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
         <md:KeyDescriptor use="signing">
-            <ds:KeyInfo>
-                <ds:X509Data>
-                    <ds:X509Certificate>{cert_clean}</ds:X509Certificate>
-                </ds:X509Data>
-            </ds:KeyInfo>
+            <ds:KeyInfo><ds:X509Data><ds:X509Certificate>{cert_clean}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
         </md:KeyDescriptor>
-        <md:KeyDescriptor use="encryption">
-            <ds:KeyInfo>
-                <ds:X509Data>
-                    <ds:X509Certificate>{cert_clean}</ds:X509Certificate>
-                </ds:X509Data>
-            </ds:KeyInfo>
-        </md:KeyDescriptor>
-        <md:NameIDFormat>{config['name_id_format']}</md:NameIDFormat>
-        <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" 
-                                Location="{base_url}/api/saml/sso"/>
-        <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" 
-                                Location="{base_url}/api/saml/sso"/>
-        <md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" 
-                                Location="{base_url}/api/saml/slo"/>
+        <md:NameIDFormat>{app['name_id_format']}</md:NameIDFormat>
+        <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="{base_url}/api/saml/{app['id']}/sso"/>
+        <md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="{base_url}/api/saml/{app['id']}/slo"/>
     </md:IDPSSODescriptor>
     <md:Organization>
-        <md:OrganizationName xml:lang="en">Kissflow SSO</md:OrganizationName>
-        <md:OrganizationDisplayName xml:lang="en">Kissflow SSO Identity Provider</md:OrganizationDisplayName>
+        <md:OrganizationName xml:lang="en">{app['name']}</md:OrganizationName>
+        <md:OrganizationDisplayName xml:lang="en">{app['name']}</md:OrganizationDisplayName>
         <md:OrganizationURL xml:lang="en">{base_url}</md:OrganizationURL>
     </md:Organization>
-    <md:ContactPerson contactType="technical">
-        <md:GivenName>SSO Admin</md:GivenName>
-        <md:EmailAddress>sso-admin@kissflow.local</md:EmailAddress>
-    </md:ContactPerson>
 </md:EntityDescriptor>'''
-    
-    return metadata
 
-def generate_oidc_discovery(config: dict, base_url: str) -> dict:
-    """Generate OpenID Connect Discovery Document"""
-    return {
-        "issuer": base_url,
-        "authorization_endpoint": f"{base_url}/api/oidc/authorize",
-        "token_endpoint": f"{base_url}/api/oidc/token",
-        "userinfo_endpoint": f"{base_url}/api/oidc/userinfo",
-        "jwks_uri": f"{base_url}/api/oidc/jwks",
-        "registration_endpoint": f"{base_url}/api/oidc/register",
-        "scopes_supported": config.get('scopes', ["openid", "profile", "email"]),
-        "response_types_supported": ["code", "token", "id_token", "code token", "code id_token", "token id_token", "code token id_token"],
-        "response_modes_supported": ["query", "fragment", "form_post"],
-        "grant_types_supported": ["authorization_code", "implicit", "refresh_token"],
-        "subject_types_supported": ["public"],
-        "id_token_signing_alg_values_supported": ["RS256"],
-        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
-        "claims_supported": ["sub", "iss", "aud", "exp", "iat", "name", "email", "email_verified"]
-    }
+async def check_user_app_access(user: dict, app: dict) -> bool:
+    """Check if user has access to an application based on groups and roles"""
+    user_groups = set(user.get('group_ids', []))
+    user_roles = set(user.get('role_ids', []))
+    
+    allowed_groups = set(app.get('allowed_group_ids', []))
+    allowed_roles = set(app.get('allowed_role_ids', []))
+    
+    # If no restrictions, allow all
+    if not allowed_groups and not allowed_roles:
+        return True
+    
+    # Check group membership
+    if allowed_groups and user_groups.intersection(allowed_groups):
+        return True
+    
+    # Check role assignment
+    if allowed_roles and user_roles.intersection(allowed_roles):
+        return True
+    
+    # Check if user is in a group that has an allowed role
+    for group_id in user_groups:
+        group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+        if group:
+            group_roles = set(group.get('role_ids', []))
+            if group_roles.intersection(allowed_roles):
+                return True
+    
+    return False
+
+async def check_access_policies(user: dict, app: dict, request: Request) -> tuple:
+    """Check access policies and return (allowed, reason)"""
+    org_id = user.get('org_id')
+    app_id = app.get('id')
+    client_ip = request.client.host if request.client else None
+    
+    policies = await db.access_policies.find({
+        "org_id": org_id,
+        "enabled": True,
+        "$or": [
+            {"app_ids": []},
+            {"app_ids": app_id}
+        ]
+    }, {"_id": 0}).to_list(100)
+    
+    for policy in policies:
+        conditions = policy.get('conditions', {})
+        
+        # IP Whitelist check
+        if 'ip_whitelist' in conditions and conditions['ip_whitelist']:
+            if client_ip:
+                allowed = False
+                for ip_range in conditions['ip_whitelist']:
+                    try:
+                        if '/' in ip_range:
+                            if ipaddress.ip_address(client_ip) in ipaddress.ip_network(ip_range, strict=False):
+                                allowed = True
+                                break
+                        elif client_ip == ip_range:
+                            allowed = True
+                            break
+                    except:
+                        pass
+                if not allowed:
+                    return False, f"IP {client_ip} not in whitelist"
+        
+        # IP Blacklist check
+        if 'ip_blacklist' in conditions and conditions['ip_blacklist']:
+            if client_ip:
+                for ip_range in conditions['ip_blacklist']:
+                    try:
+                        if '/' in ip_range:
+                            if ipaddress.ip_address(client_ip) in ipaddress.ip_network(ip_range, strict=False):
+                                return False, f"IP {client_ip} is blacklisted"
+                        elif client_ip == ip_range:
+                            return False, f"IP {client_ip} is blacklisted"
+                    except:
+                        pass
+        
+        # Time restrictions check
+        if 'time_restrictions' in conditions:
+            tr = conditions['time_restrictions']
+            now = datetime.now(timezone.utc)
+            
+            if 'allowed_days' in tr:
+                if now.strftime('%A').lower() not in [d.lower() for d in tr['allowed_days']]:
+                    return False, "Access not allowed on this day"
+            
+            if 'start_hour' in tr and 'end_hour' in tr:
+                current_hour = now.hour
+                if not (tr['start_hour'] <= current_hour < tr['end_hour']):
+                    return False, f"Access only allowed between {tr['start_hour']}:00 and {tr['end_hour']}:00 UTC"
+    
+    return True, None
+
+# ===================== DEFAULT DATA SEEDING =====================
+
+async def seed_default_permissions():
+    """Seed default system permissions"""
+    default_permissions = [
+        {"id": "perm_apps_manage", "name": "Manage Applications", "description": "Create, edit, delete applications", "resource": "apps", "actions": ["create", "read", "update", "delete"]},
+        {"id": "perm_apps_read", "name": "View Applications", "description": "View application list and details", "resource": "apps", "actions": ["read"]},
+        {"id": "perm_users_manage", "name": "Manage Users", "description": "Create, edit, delete users", "resource": "users", "actions": ["create", "read", "update", "delete"]},
+        {"id": "perm_users_read", "name": "View Users", "description": "View user list and details", "resource": "users", "actions": ["read"]},
+        {"id": "perm_groups_manage", "name": "Manage Groups", "description": "Create, edit, delete groups", "resource": "groups", "actions": ["create", "read", "update", "delete"]},
+        {"id": "perm_roles_manage", "name": "Manage Roles", "description": "Create, edit, delete roles", "resource": "roles", "actions": ["create", "read", "update", "delete"]},
+        {"id": "perm_policies_manage", "name": "Manage Policies", "description": "Create, edit, delete access policies", "resource": "policies", "actions": ["create", "read", "update", "delete"]},
+        {"id": "perm_audit_read", "name": "View Audit Logs", "description": "View audit logs and reports", "resource": "audit", "actions": ["read"]},
+        {"id": "perm_requests_manage", "name": "Manage Access Requests", "description": "Approve or reject access requests", "resource": "requests", "actions": ["read", "update"]},
+        {"id": "perm_org_manage", "name": "Manage Organization", "description": "Edit organization settings", "resource": "organization", "actions": ["read", "update"]},
+    ]
+    
+    for perm in default_permissions:
+        existing = await db.permissions.find_one({"id": perm['id']})
+        if not existing:
+            await db.permissions.insert_one(perm)
 
 # ===================== AUTH ROUTES =====================
 
 @api_router.post("/auth/register")
-async def register(user: UserCreate):
+async def register(user: UserCreate, request: Request):
     existing = await db.users.find_one({"email": user.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
+    # Verify organization exists
+    org = await db.organizations.find_one({"id": user.org_id}, {"_id": 0})
+    if not org:
+        raise HTTPException(status_code=400, detail="Organization not found")
+    
     user_id = str(uuid.uuid4())
+    user_count = await db.users.count_documents({"org_id": user.org_id})
+    role = "org_admin" if user_count == 0 else "user"
+    
     user_doc = {
         "id": user_id,
         "email": user.email,
         "password": hash_password(user.password),
         "name": user.name,
-        "role": user.role,
+        "org_id": user.org_id,
+        "role": role,
+        "group_ids": [],
+        "role_ids": [],
         "status": "active",
-        "provisioning_type": "manual",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat()
     }
     
     await db.users.insert_one(user_doc)
-    token = create_token(user_id, user.email, user.role)
+    await log_audit(user.org_id, "user_registered", "user", user_id, user.email, user_id, 
+                   {"name": user.name}, request.client.host if request.client else None)
     
-    return {
-        "token": token,
-        "user": {
-            "id": user_id,
-            "email": user.email,
-            "name": user.name,
-            "role": user.role
-        }
-    }
+    token = create_token(user_id, user.email, user.org_id, role)
+    return {"token": token, "user": {"id": user_id, "email": user.email, "name": user.name, "role": role, "org_id": user.org_id}}
 
 @api_router.post("/auth/login")
-async def login(credentials: UserLogin):
+async def login(credentials: UserLogin, request: Request):
     user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
-    if not user:
+    if not user or not verify_password(credentials.password, user['password']):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    if not verify_password(credentials.password, user['password']):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if user.get('status') != 'active':
+        raise HTTPException(status_code=403, detail="Account is not active")
     
-    token = create_token(user['id'], user['email'], user['role'])
+    await log_audit(user['org_id'], "user_login", "user", user['id'], user['email'], user['id'],
+                   {}, request.client.host if request.client else None)
     
-    return {
-        "token": token,
-        "user": {
-            "id": user['id'],
-            "email": user['email'],
-            "name": user['name'],
-            "role": user['role']
-        }
-    }
+    token = create_token(user['id'], user['email'], user['org_id'], user['role'])
+    return {"token": token, "user": {"id": user['id'], "email": user['email'], "name": user['name'], 
+                                      "role": user['role'], "org_id": user['org_id']}}
 
 @api_router.get("/auth/me")
 async def get_me(user: dict = Depends(get_current_user)):
-    return {
-        "id": user['id'],
-        "email": user['email'],
-        "name": user['name'],
-        "role": user['role']
-    }
+    org = await db.organizations.find_one({"id": user['org_id']}, {"_id": 0})
+    return {**user, "organization": org}
 
-# ===================== SAML ROUTES =====================
+# ===================== ORGANIZATION ROUTES =====================
 
-@api_router.get("/saml/config")
-async def get_saml_config(user: dict = Depends(get_current_user)):
-    config = await db.saml_config.find_one({}, {"_id": 0})
-    return config or {}
-
-@api_router.post("/saml/config")
-async def create_saml_config(config: SAMLConfigCreate, request: Request, user: dict = Depends(get_current_user)):
-    # Generate certificate if not exists
-    cert, key = generate_self_signed_cert()
+@api_router.post("/organizations")
+async def create_organization(org: OrganizationCreate):
+    existing = await db.organizations.find_one({"domain": org.domain})
+    if existing:
+        raise HTTPException(status_code=400, detail="Domain already registered")
     
-    base_url = str(request.base_url).rstrip('/')
-    
-    config_doc = {
-        "id": str(uuid.uuid4()),
-        "entity_id": config.entity_id,
-        "acs_url": config.acs_url,
-        "slo_url": config.slo_url,
-        "name_id_format": config.name_id_format,
-        "sign_assertions": config.sign_assertions,
-        "sign_response": config.sign_response,
-        "certificate": cert,
-        "private_key": key,
+    org_id = str(uuid.uuid4())
+    org_doc = {
+        "id": org_id,
+        "name": org.name,
+        "domain": org.domain,
+        "description": org.description,
+        "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat()
     }
+    await db.organizations.insert_one(org_doc)
     
-    # Upsert - replace existing config
-    await db.saml_config.delete_many({})
-    await db.saml_config.insert_one(config_doc)
+    # Create default roles for the organization
+    default_roles = [
+        {"id": str(uuid.uuid4()), "name": "Administrator", "description": "Full access to all features", 
+         "permissions": ["perm_apps_manage", "perm_users_manage", "perm_groups_manage", "perm_roles_manage", 
+                        "perm_policies_manage", "perm_audit_read", "perm_requests_manage", "perm_org_manage"],
+         "org_id": org_id, "is_system": True, "created_at": datetime.now(timezone.utc).isoformat()},
+        {"id": str(uuid.uuid4()), "name": "User Manager", "description": "Manage users and groups",
+         "permissions": ["perm_users_manage", "perm_groups_manage", "perm_apps_read"],
+         "org_id": org_id, "is_system": True, "created_at": datetime.now(timezone.utc).isoformat()},
+        {"id": str(uuid.uuid4()), "name": "Viewer", "description": "Read-only access",
+         "permissions": ["perm_apps_read", "perm_users_read"],
+         "org_id": org_id, "is_system": True, "created_at": datetime.now(timezone.utc).isoformat()},
+    ]
+    for role in default_roles:
+        await db.roles.insert_one(role)
     
-    # Return without private key
-    return {k: v for k, v in config_doc.items() if k != 'private_key' and k != '_id'}
+    await seed_default_permissions()
+    return {**org_doc, "_id": None}
 
-@api_router.put("/saml/config")
-async def update_saml_config(config: SAMLConfigCreate, user: dict = Depends(get_current_user)):
-    existing = await db.saml_config.find_one({}, {"_id": 0})
-    if not existing:
-        raise HTTPException(status_code=404, detail="SAML config not found")
-    
-    update_data = config.model_dump()
-    update_data['updated_at'] = datetime.now(timezone.utc).isoformat()
-    
-    await db.saml_config.update_one({}, {"$set": update_data})
-    
-    updated = await db.saml_config.find_one({}, {"_id": 0, "private_key": 0})
-    return updated
+@api_router.get("/organizations")
+async def list_organizations():
+    orgs = await db.organizations.find({}, {"_id": 0}).to_list(100)
+    return orgs
 
-@api_router.get("/saml/metadata")
-async def get_saml_metadata(request: Request):
-    config = await db.saml_config.find_one({}, {"_id": 0})
-    if not config:
-        raise HTTPException(status_code=404, detail="SAML not configured")
-    
-    base_url = str(request.base_url).rstrip('/')
-    metadata = generate_saml_metadata(config, base_url)
-    
-    return Response(content=metadata, media_type="application/xml")
+@api_router.get("/organizations/{org_id}")
+async def get_organization(org_id: str, user: dict = Depends(get_current_user)):
+    if user['org_id'] != org_id and user['role'] != 'super_admin':
+        raise HTTPException(status_code=403, detail="Access denied")
+    org = await db.organizations.find_one({"id": org_id}, {"_id": 0})
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return org
 
-@api_router.get("/saml/metadata/download")
-async def download_saml_metadata(request: Request):
-    config = await db.saml_config.find_one({}, {"_id": 0})
-    if not config:
-        raise HTTPException(status_code=404, detail="SAML not configured")
+# ===================== ROLE ROUTES =====================
+
+@api_router.get("/roles")
+async def list_roles(user: dict = Depends(get_current_user)):
+    roles = await db.roles.find({"org_id": user['org_id']}, {"_id": 0}).to_list(100)
+    return roles
+
+@api_router.post("/roles")
+async def create_role(role: RoleCreate, request: Request, user: dict = Depends(get_current_user)):
+    if role.org_id != user['org_id']:
+        raise HTTPException(status_code=403, detail="Access denied")
     
-    base_url = str(request.base_url).rstrip('/')
-    metadata = generate_saml_metadata(config, base_url)
+    role_id = str(uuid.uuid4())
+    role_doc = {
+        "id": role_id,
+        "name": role.name,
+        "description": role.description,
+        "permissions": role.permissions,
+        "org_id": role.org_id,
+        "is_system": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.roles.insert_one(role_doc)
+    await log_audit(user['org_id'], "role_created", "role", user['id'], user['email'], role_id,
+                   {"name": role.name}, request.client.host if request.client else None)
+    return {**role_doc, "_id": None}
+
+@api_router.put("/roles/{role_id}")
+async def update_role(role_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+    role = await db.roles.find_one({"id": role_id, "org_id": user['org_id']}, {"_id": 0})
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if role.get('is_system'):
+        raise HTTPException(status_code=400, detail="Cannot modify system roles")
     
-    return Response(
-        content=metadata, 
-        media_type="application/xml",
-        headers={"Content-Disposition": "attachment; filename=saml-metadata.xml"}
+    update.pop('id', None)
+    update.pop('org_id', None)
+    update.pop('is_system', None)
+    await db.roles.update_one({"id": role_id}, {"$set": update})
+    await log_audit(user['org_id'], "role_updated", "role", user['id'], user['email'], role_id,
+                   update, request.client.host if request.client else None)
+    return await db.roles.find_one({"id": role_id}, {"_id": 0})
+
+@api_router.delete("/roles/{role_id}")
+async def delete_role(role_id: str, request: Request, user: dict = Depends(get_current_user)):
+    role = await db.roles.find_one({"id": role_id, "org_id": user['org_id']}, {"_id": 0})
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if role.get('is_system'):
+        raise HTTPException(status_code=400, detail="Cannot delete system roles")
+    
+    await db.roles.delete_one({"id": role_id})
+    await log_audit(user['org_id'], "role_deleted", "role", user['id'], user['email'], role_id,
+                   {"name": role['name']}, request.client.host if request.client else None)
+    return {"message": "Role deleted"}
+
+@api_router.get("/permissions")
+async def list_permissions(user: dict = Depends(get_current_user)):
+    permissions = await db.permissions.find({}, {"_id": 0}).to_list(100)
+    return permissions
+
+# ===================== GROUP ROUTES =====================
+
+@api_router.get("/groups")
+async def list_groups(user: dict = Depends(get_current_user)):
+    groups = await db.groups.find({"org_id": user['org_id']}, {"_id": 0}).to_list(100)
+    # Add member count
+    for group in groups:
+        group['member_count'] = await db.users.count_documents({"group_ids": group['id']})
+    return groups
+
+@api_router.post("/groups")
+async def create_group(group: GroupCreate, request: Request, user: dict = Depends(get_current_user)):
+    if group.org_id != user['org_id']:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    group_id = str(uuid.uuid4())
+    group_doc = {
+        "id": group_id,
+        "name": group.name,
+        "description": group.description,
+        "org_id": group.org_id,
+        "parent_id": group.parent_id,
+        "role_ids": group.role_ids,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.groups.insert_one(group_doc)
+    await log_audit(user['org_id'], "group_created", "group", user['id'], user['email'], group_id,
+                   {"name": group.name}, request.client.host if request.client else None)
+    return {**group_doc, "_id": None, "member_count": 0}
+
+@api_router.put("/groups/{group_id}")
+async def update_group(group_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+    group = await db.groups.find_one({"id": group_id, "org_id": user['org_id']}, {"_id": 0})
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    update.pop('id', None)
+    update.pop('org_id', None)
+    await db.groups.update_one({"id": group_id}, {"$set": update})
+    await log_audit(user['org_id'], "group_updated", "group", user['id'], user['email'], group_id,
+                   update, request.client.host if request.client else None)
+    return await db.groups.find_one({"id": group_id}, {"_id": 0})
+
+@api_router.delete("/groups/{group_id}")
+async def delete_group(group_id: str, request: Request, user: dict = Depends(get_current_user)):
+    group = await db.groups.find_one({"id": group_id, "org_id": user['org_id']}, {"_id": 0})
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    # Remove group from users
+    await db.users.update_many({"group_ids": group_id}, {"$pull": {"group_ids": group_id}})
+    await db.groups.delete_one({"id": group_id})
+    await log_audit(user['org_id'], "group_deleted", "group", user['id'], user['email'], group_id,
+                   {"name": group['name']}, request.client.host if request.client else None)
+    return {"message": "Group deleted"}
+
+@api_router.post("/groups/{group_id}/members")
+async def add_group_members(group_id: str, user_ids: List[str], request: Request, user: dict = Depends(get_current_user)):
+    group = await db.groups.find_one({"id": group_id, "org_id": user['org_id']}, {"_id": 0})
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    await db.users.update_many(
+        {"id": {"$in": user_ids}, "org_id": user['org_id']},
+        {"$addToSet": {"group_ids": group_id}}
     )
+    await log_audit(user['org_id'], "group_members_added", "group", user['id'], user['email'], group_id,
+                   {"user_ids": user_ids}, request.client.host if request.client else None)
+    return {"message": f"Added {len(user_ids)} members to group"}
 
-@api_router.get("/saml/certificate")
-async def get_saml_certificate(user: dict = Depends(get_current_user)):
-    config = await db.saml_config.find_one({}, {"_id": 0})
-    if not config or not config.get('certificate'):
-        raise HTTPException(status_code=404, detail="Certificate not found")
+@api_router.delete("/groups/{group_id}/members")
+async def remove_group_members(group_id: str, user_ids: List[str], request: Request, user: dict = Depends(get_current_user)):
+    group = await db.groups.find_one({"id": group_id, "org_id": user['org_id']}, {"_id": 0})
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
     
-    return {"certificate": config['certificate']}
+    await db.users.update_many(
+        {"id": {"$in": user_ids}},
+        {"$pull": {"group_ids": group_id}}
+    )
+    return {"message": f"Removed {len(user_ids)} members from group"}
 
-# ===================== OIDC ROUTES =====================
-
-@api_router.get("/oidc/config")
-async def get_oidc_config(user: dict = Depends(get_current_user)):
-    config = await db.oidc_config.find_one({}, {"_id": 0, "client_secret": 0})
-    return config or {}
-
-@api_router.post("/oidc/config")
-async def create_oidc_config(config: OIDCConfigCreate, request: Request, user: dict = Depends(get_current_user)):
-    base_url = str(request.base_url).rstrip('/')
-    
-    # Generate client secret
-    client_secret = str(uuid.uuid4()).replace('-', '') + str(uuid.uuid4()).replace('-', '')
-    
-    config_doc = {
-        "id": str(uuid.uuid4()),
-        "client_id": config.client_id,
-        "client_secret": client_secret,
-        "redirect_uris": config.redirect_uris,
-        "authorization_endpoint": f"{base_url}/api/oidc/authorize",
-        "token_endpoint": f"{base_url}/api/oidc/token",
-        "userinfo_endpoint": f"{base_url}/api/oidc/userinfo",
-        "jwks_uri": f"{base_url}/api/oidc/jwks",
-        "scopes": config.scopes,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat()
-    }
-    
-    # Upsert - replace existing config
-    await db.oidc_config.delete_many({})
-    await db.oidc_config.insert_one(config_doc)
-    
-    # Return with client secret (only on creation)
-    return {k: v for k, v in config_doc.items() if k != '_id'}
-
-@api_router.put("/oidc/config")
-async def update_oidc_config(config: OIDCConfigCreate, user: dict = Depends(get_current_user)):
-    existing = await db.oidc_config.find_one({}, {"_id": 0})
-    if not existing:
-        raise HTTPException(status_code=404, detail="OIDC config not found")
-    
-    update_data = {
-        "client_id": config.client_id,
-        "redirect_uris": config.redirect_uris,
-        "scopes": config.scopes,
-        "updated_at": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await db.oidc_config.update_one({}, {"$set": update_data})
-    
-    updated = await db.oidc_config.find_one({}, {"_id": 0, "client_secret": 0})
-    return updated
-
-@api_router.get("/oidc/.well-known/openid-configuration")
-async def get_oidc_discovery(request: Request):
-    config = await db.oidc_config.find_one({}, {"_id": 0})
-    if not config:
-        # Return default discovery document
-        base_url = str(request.base_url).rstrip('/')
-        config = {"scopes": ["openid", "profile", "email"]}
-    else:
-        base_url = str(request.base_url).rstrip('/')
-    
-    return generate_oidc_discovery(config, base_url)
-
-@api_router.get("/oidc/jwks")
-async def get_jwks():
-    # Return empty JWKS for now - can be extended with actual keys
-    return {"keys": []}
-
-# ===================== USER PROVISIONING ROUTES =====================
+# ===================== USER ROUTES =====================
 
 @api_router.get("/users")
-async def get_users(user: dict = Depends(get_current_user)):
-    users = await db.users.find({}, {"_id": 0, "password": 0}).to_list(1000)
+async def list_users(user: dict = Depends(get_current_user)):
+    users = await db.users.find({"org_id": user['org_id']}, {"_id": 0, "password": 0}).to_list(1000)
     return users
 
-@api_router.post("/users/provision")
-async def provision_user(provision: UserProvision, user: dict = Depends(get_current_user)):
-    existing = await db.users.find_one({"email": provision.email})
+@api_router.post("/users")
+async def create_user(new_user: UserCreate, request: Request, user: dict = Depends(get_current_user)):
+    if new_user.org_id != user['org_id']:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    existing = await db.users.find_one({"email": new_user.email})
     if existing:
-        raise HTTPException(status_code=400, detail="User already exists")
+        raise HTTPException(status_code=400, detail="Email already exists")
     
     user_id = str(uuid.uuid4())
-    # Generate random password for provisioned users
-    temp_password = str(uuid.uuid4())[:12]
-    
     user_doc = {
         "id": user_id,
-        "email": provision.email,
-        "password": hash_password(temp_password),
-        "name": provision.name,
-        "role": provision.role,
-        "status": "pending",
-        "provisioning_type": provision.provisioning_type,
+        "email": new_user.email,
+        "password": hash_password(new_user.password),
+        "name": new_user.name,
+        "org_id": new_user.org_id,
+        "role": "user",
+        "group_ids": [],
+        "role_ids": [],
+        "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat()
     }
-    
     await db.users.insert_one(user_doc)
+    await log_audit(user['org_id'], "user_created", "user", user['id'], user['email'], user_id,
+                   {"name": new_user.name, "email": new_user.email}, request.client.host if request.client else None)
     
-    return {
-        "id": user_id,
-        "email": provision.email,
-        "name": provision.name,
-        "role": provision.role,
-        "status": "pending",
-        "provisioning_type": provision.provisioning_type,
-        "temp_password": temp_password
-    }
+    return {k: v for k, v in user_doc.items() if k != 'password' and k != '_id'}
 
 @api_router.put("/users/{user_id}")
-async def update_user(user_id: str, update_data: dict, user: dict = Depends(get_current_user)):
-    existing = await db.users.find_one({"id": user_id})
-    if not existing:
+async def update_user(user_id: str, update: UserUpdate, request: Request, user: dict = Depends(get_current_user)):
+    target_user = await db.users.find_one({"id": user_id, "org_id": user['org_id']}, {"_id": 0})
+    if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Remove protected fields
-    update_data.pop('id', None)
-    update_data.pop('password', None)
-    update_data.pop('_id', None)
-    update_data['updated_at'] = datetime.now(timezone.utc).isoformat()
+    update_data = {k: v for k, v in update.model_dump().items() if v is not None}
+    if update_data:
+        await db.users.update_one({"id": user_id}, {"$set": update_data})
+        await log_audit(user['org_id'], "user_updated", "user", user['id'], user['email'], user_id,
+                       update_data, request.client.host if request.client else None)
     
-    await db.users.update_one({"id": user_id}, {"$set": update_data})
-    
-    updated = await db.users.find_one({"id": user_id}, {"_id": 0, "password": 0})
-    return updated
+    return await db.users.find_one({"id": user_id}, {"_id": 0, "password": 0})
 
 @api_router.delete("/users/{user_id}")
-async def delete_user(user_id: str, user: dict = Depends(get_current_user)):
-    existing = await db.users.find_one({"id": user_id})
-    if not existing:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Prevent self-deletion
-    if user['id'] == user_id:
+async def delete_user(user_id: str, request: Request, user: dict = Depends(get_current_user)):
+    if user_id == user['id']:
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
     
+    target_user = await db.users.find_one({"id": user_id, "org_id": user['org_id']}, {"_id": 0})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
     await db.users.delete_one({"id": user_id})
-    return {"message": "User deleted successfully"}
+    await log_audit(user['org_id'], "user_deleted", "user", user['id'], user['email'], user_id,
+                   {"email": target_user['email']}, request.client.host if request.client else None)
+    return {"message": "User deleted"}
 
-# ===================== SCIM ROUTES =====================
+# ===================== SAML APP ROUTES =====================
 
-@api_router.get("/scim/v2/Users")
-async def scim_list_users(user: dict = Depends(get_current_user)):
-    users = await db.users.find({}, {"_id": 0, "password": 0}).to_list(1000)
-    
-    scim_users = []
-    for u in users:
-        scim_users.append({
-            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
-            "id": u['id'],
-            "userName": u['email'],
-            "name": {
-                "formatted": u['name'],
-                "givenName": u['name'].split()[0] if u['name'] else "",
-                "familyName": u['name'].split()[-1] if u['name'] and len(u['name'].split()) > 1 else ""
-            },
-            "emails": [{"value": u['email'], "primary": True}],
-            "active": u.get('status', 'active') == 'active',
-            "meta": {
-                "resourceType": "User",
-                "created": u.get('created_at', ''),
-                "lastModified": u.get('updated_at', '')
-            }
-        })
-    
-    return {
-        "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-        "totalResults": len(scim_users),
-        "Resources": scim_users
-    }
+@api_router.get("/apps/saml")
+async def list_saml_apps(user: dict = Depends(get_current_user)):
+    apps = await db.saml_apps.find({"org_id": user['org_id']}, {"_id": 0, "private_key": 0}).to_list(100)
+    return apps
 
-@api_router.post("/scim/v2/Users")
-async def scim_create_user(scim_user: SCIMUser, user: dict = Depends(get_current_user)):
-    existing = await db.users.find_one({"email": scim_user.userName})
-    if existing:
-        raise HTTPException(status_code=409, detail="User already exists")
+@api_router.post("/apps/saml")
+async def create_saml_app(app: SAMLAppCreate, request: Request, user: dict = Depends(get_current_user)):
+    if app.org_id != user['org_id']:
+        raise HTTPException(status_code=403, detail="Access denied")
     
-    user_id = str(uuid.uuid4())
-    temp_password = str(uuid.uuid4())[:12]
+    cert, key = generate_self_signed_cert()
+    app_id = str(uuid.uuid4())
     
-    name = scim_user.name.get('formatted', '') or f"{scim_user.name.get('givenName', '')} {scim_user.name.get('familyName', '')}".strip()
-    
-    user_doc = {
-        "id": user_id,
-        "email": scim_user.userName,
-        "password": hash_password(temp_password),
-        "name": name,
-        "role": "user",
-        "status": "active" if scim_user.active else "inactive",
-        "provisioning_type": "scim",
+    app_doc = {
+        "id": app_id,
+        "name": app.name,
+        "description": app.description,
+        "org_id": app.org_id,
+        "entity_id": app.entity_id,
+        "acs_url": app.acs_url,
+        "slo_url": app.slo_url,
+        "name_id_format": app.name_id_format,
+        "sign_assertions": app.sign_assertions,
+        "sign_response": app.sign_response,
+        "attribute_mappings": app.attribute_mappings,
+        "certificate": cert,
+        "private_key": key,
+        "logo_url": app.logo_url,
+        "allowed_group_ids": app.allowed_group_ids,
+        "allowed_role_ids": app.allowed_role_ids,
+        "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat()
     }
     
-    await db.users.insert_one(user_doc)
+    await db.saml_apps.insert_one(app_doc)
+    await log_audit(user['org_id'], "saml_app_created", "app", user['id'], user['email'], app_id,
+                   {"name": app.name}, request.client.host if request.client else None)
     
-    return {
-        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
-        "id": user_id,
-        "userName": scim_user.userName,
-        "name": scim_user.name,
-        "emails": scim_user.emails,
-        "active": scim_user.active,
-        "meta": {
-            "resourceType": "User",
-            "created": user_doc['created_at'],
-            "lastModified": user_doc['updated_at']
-        }
-    }
+    return {k: v for k, v in app_doc.items() if k != 'private_key' and k != '_id'}
 
-# ===================== CONNECTION TEST =====================
+@api_router.get("/apps/saml/{app_id}")
+async def get_saml_app(app_id: str, user: dict = Depends(get_current_user)):
+    app = await db.saml_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0, "private_key": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    return app
 
-@api_router.post("/connection/test")
-async def test_connection(test: ConnectionTest, request: Request, user: dict = Depends(get_current_user)):
+@api_router.put("/apps/saml/{app_id}")
+async def update_saml_app(app_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+    app = await db.saml_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    
+    update.pop('id', None)
+    update.pop('org_id', None)
+    update.pop('certificate', None)
+    update.pop('private_key', None)
+    
+    await db.saml_apps.update_one({"id": app_id}, {"$set": update})
+    await log_audit(user['org_id'], "saml_app_updated", "app", user['id'], user['email'], app_id,
+                   update, request.client.host if request.client else None)
+    return await db.saml_apps.find_one({"id": app_id}, {"_id": 0, "private_key": 0})
+
+@api_router.delete("/apps/saml/{app_id}")
+async def delete_saml_app(app_id: str, request: Request, user: dict = Depends(get_current_user)):
+    app = await db.saml_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    
+    await db.saml_apps.delete_one({"id": app_id})
+    await log_audit(user['org_id'], "saml_app_deleted", "app", user['id'], user['email'], app_id,
+                   {"name": app['name']}, request.client.host if request.client else None)
+    return {"message": "App deleted"}
+
+@api_router.get("/apps/saml/{app_id}/metadata")
+async def get_saml_metadata(app_id: str, request: Request):
+    app = await db.saml_apps.find_one({"id": app_id}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    
+    base_url = str(request.base_url).rstrip('/')
+    metadata = generate_saml_metadata(app, base_url)
+    return Response(content=metadata, media_type="application/xml")
+
+# ===================== OIDC APP ROUTES =====================
+
+@api_router.get("/apps/oidc")
+async def list_oidc_apps(user: dict = Depends(get_current_user)):
+    apps = await db.oidc_apps.find({"org_id": user['org_id']}, {"_id": 0, "client_secret": 0}).to_list(100)
+    return apps
+
+@api_router.post("/apps/oidc")
+async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Depends(get_current_user)):
+    if app.org_id != user['org_id']:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    app_id = str(uuid.uuid4())
+    client_id = f"oidc_{str(uuid.uuid4()).replace('-', '')[:16]}"
+    client_secret = str(uuid.uuid4()).replace('-', '') + str(uuid.uuid4()).replace('-', '')
     base_url = str(request.base_url).rstrip('/')
     
-    if test.protocol == "saml":
-        config = await db.saml_config.find_one({}, {"_id": 0})
-        if not config:
-            return {"success": False, "message": "SAML not configured", "details": {}}
-        
-        # Verify certificate exists
-        if not config.get('certificate'):
-            return {"success": False, "message": "Certificate not generated", "details": {}}
-        
-        return {
-            "success": True,
-            "message": "SAML configuration is valid",
-            "details": {
-                "entity_id": config['entity_id'],
-                "acs_url": config['acs_url'],
-                "metadata_url": f"{base_url}/api/saml/metadata",
-                "sso_url": f"{base_url}/api/saml/sso",
-                "certificate_valid": True
-            }
-        }
+    app_doc = {
+        "id": app_id,
+        "name": app.name,
+        "description": app.description,
+        "org_id": app.org_id,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uris": app.redirect_uris,
+        "logout_uris": app.logout_uris,
+        "scopes": app.scopes,
+        "grant_types": app.grant_types,
+        "authorization_endpoint": f"{base_url}/api/oidc/{app_id}/authorize",
+        "token_endpoint": f"{base_url}/api/oidc/{app_id}/token",
+        "userinfo_endpoint": f"{base_url}/api/oidc/{app_id}/userinfo",
+        "logo_url": app.logo_url,
+        "allowed_group_ids": app.allowed_group_ids,
+        "allowed_role_ids": app.allowed_role_ids,
+        "status": "active",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
     
-    elif test.protocol == "oidc":
-        config = await db.oidc_config.find_one({}, {"_id": 0})
-        if not config:
-            return {"success": False, "message": "OIDC not configured", "details": {}}
-        
-        return {
-            "success": True,
-            "message": "OIDC configuration is valid",
-            "details": {
-                "client_id": config['client_id'],
-                "authorization_endpoint": config['authorization_endpoint'],
-                "token_endpoint": config['token_endpoint'],
-                "discovery_url": f"{base_url}/api/oidc/.well-known/openid-configuration"
-            }
-        }
+    await db.oidc_apps.insert_one(app_doc)
+    await log_audit(user['org_id'], "oidc_app_created", "app", user['id'], user['email'], app_id,
+                   {"name": app.name}, request.client.host if request.client else None)
     
-    return {"success": False, "message": "Invalid protocol", "details": {}}
+    return {k: v for k, v in app_doc.items() if k != '_id'}
+
+@api_router.get("/apps/oidc/{app_id}")
+async def get_oidc_app(app_id: str, include_secret: bool = False, user: dict = Depends(get_current_user)):
+    projection = {"_id": 0} if include_secret else {"_id": 0, "client_secret": 0}
+    app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, projection)
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    return app
+
+@api_router.put("/apps/oidc/{app_id}")
+async def update_oidc_app(app_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+    app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    
+    update.pop('id', None)
+    update.pop('org_id', None)
+    update.pop('client_id', None)
+    update.pop('client_secret', None)
+    
+    await db.oidc_apps.update_one({"id": app_id}, {"$set": update})
+    await log_audit(user['org_id'], "oidc_app_updated", "app", user['id'], user['email'], app_id,
+                   update, request.client.host if request.client else None)
+    return await db.oidc_apps.find_one({"id": app_id}, {"_id": 0, "client_secret": 0})
+
+@api_router.delete("/apps/oidc/{app_id}")
+async def delete_oidc_app(app_id: str, request: Request, user: dict = Depends(get_current_user)):
+    app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    
+    await db.oidc_apps.delete_one({"id": app_id})
+    await log_audit(user['org_id'], "oidc_app_deleted", "app", user['id'], user['email'], app_id,
+                   {"name": app['name']}, request.client.host if request.client else None)
+    return {"message": "App deleted"}
+
+@api_router.get("/apps/oidc/{app_id}/.well-known/openid-configuration")
+async def get_oidc_discovery(app_id: str, request: Request):
+    app = await db.oidc_apps.find_one({"id": app_id}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    
+    base_url = str(request.base_url).rstrip('/')
+    return {
+        "issuer": base_url,
+        "authorization_endpoint": f"{base_url}/api/oidc/{app_id}/authorize",
+        "token_endpoint": f"{base_url}/api/oidc/{app_id}/token",
+        "userinfo_endpoint": f"{base_url}/api/oidc/{app_id}/userinfo",
+        "jwks_uri": f"{base_url}/api/oidc/{app_id}/jwks",
+        "scopes_supported": app.get('scopes', ["openid", "profile", "email"]),
+        "response_types_supported": ["code", "token", "id_token"],
+        "grant_types_supported": app.get('grant_types', ["authorization_code"]),
+    }
+
+# ===================== ACCESS POLICY ROUTES =====================
+
+@api_router.get("/policies")
+async def list_policies(user: dict = Depends(get_current_user)):
+    policies = await db.access_policies.find({"org_id": user['org_id']}, {"_id": 0}).to_list(100)
+    return policies
+
+@api_router.post("/policies")
+async def create_policy(policy: AccessPolicyCreate, request: Request, user: dict = Depends(get_current_user)):
+    if policy.org_id != user['org_id']:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    policy_id = str(uuid.uuid4())
+    policy_doc = {
+        "id": policy_id,
+        "name": policy.name,
+        "description": policy.description,
+        "org_id": policy.org_id,
+        "app_ids": policy.app_ids,
+        "conditions": policy.conditions,
+        "enabled": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    
+    await db.access_policies.insert_one(policy_doc)
+    await log_audit(user['org_id'], "policy_created", "policy", user['id'], user['email'], policy_id,
+                   {"name": policy.name}, request.client.host if request.client else None)
+    return {**policy_doc, "_id": None}
+
+@api_router.put("/policies/{policy_id}")
+async def update_policy(policy_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+    policy = await db.access_policies.find_one({"id": policy_id, "org_id": user['org_id']}, {"_id": 0})
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    
+    update.pop('id', None)
+    update.pop('org_id', None)
+    await db.access_policies.update_one({"id": policy_id}, {"$set": update})
+    await log_audit(user['org_id'], "policy_updated", "policy", user['id'], user['email'], policy_id,
+                   update, request.client.host if request.client else None)
+    return await db.access_policies.find_one({"id": policy_id}, {"_id": 0})
+
+@api_router.delete("/policies/{policy_id}")
+async def delete_policy(policy_id: str, request: Request, user: dict = Depends(get_current_user)):
+    policy = await db.access_policies.find_one({"id": policy_id, "org_id": user['org_id']}, {"_id": 0})
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    
+    await db.access_policies.delete_one({"id": policy_id})
+    await log_audit(user['org_id'], "policy_deleted", "policy", user['id'], user['email'], policy_id,
+                   {"name": policy['name']}, request.client.host if request.client else None)
+    return {"message": "Policy deleted"}
+
+# ===================== ACCESS REQUEST ROUTES =====================
+
+@api_router.get("/access-requests")
+async def list_access_requests(status: str = None, user: dict = Depends(get_current_user)):
+    query = {"org_id": user['org_id']}
+    if status:
+        query['status'] = status
+    requests = await db.access_requests.find(query, {"_id": 0}).to_list(100)
+    return requests
+
+@api_router.post("/access-requests")
+async def create_access_request(req: AccessRequestCreate, request: Request, user: dict = Depends(get_current_user)):
+    # Find the app
+    app = await db.saml_apps.find_one({"id": req.app_id, "org_id": user['org_id']}, {"_id": 0})
+    app_type = "saml"
+    if not app:
+        app = await db.oidc_apps.find_one({"id": req.app_id, "org_id": user['org_id']}, {"_id": 0})
+        app_type = "oidc"
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    
+    # Check if already has access
+    has_access = await check_user_app_access(user, app)
+    if has_access:
+        raise HTTPException(status_code=400, detail="You already have access to this app")
+    
+    # Check for pending request
+    existing = await db.access_requests.find_one({
+        "user_id": user['id'],
+        "app_id": req.app_id,
+        "status": "pending"
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="You already have a pending request for this app")
+    
+    request_id = str(uuid.uuid4())
+    request_doc = {
+        "id": request_id,
+        "user_id": user['id'],
+        "user_email": user['email'],
+        "user_name": user['name'],
+        "app_id": req.app_id,
+        "app_name": app['name'],
+        "app_type": app_type,
+        "reason": req.reason,
+        "status": "pending",
+        "org_id": user['org_id'],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    
+    await db.access_requests.insert_one(request_doc)
+    await log_audit(user['org_id'], "access_request_created", "request", user['id'], user['email'], request_id,
+                   {"app_name": app['name']}, request.client.host if request.client else None)
+    return {**request_doc, "_id": None}
+
+@api_router.put("/access-requests/{request_id}")
+async def review_access_request(request_id: str, action: str, request: Request, user: dict = Depends(get_current_user)):
+    if action not in ['approve', 'reject']:
+        raise HTTPException(status_code=400, detail="Action must be 'approve' or 'reject'")
+    
+    access_req = await db.access_requests.find_one({"id": request_id, "org_id": user['org_id']}, {"_id": 0})
+    if not access_req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    
+    if access_req['status'] != 'pending':
+        raise HTTPException(status_code=400, detail="Request already processed")
+    
+    new_status = "approved" if action == "approve" else "rejected"
+    
+    await db.access_requests.update_one(
+        {"id": request_id},
+        {"$set": {
+            "status": new_status,
+            "reviewed_by": user['id'],
+            "reviewed_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    # If approved, add user to an appropriate group or grant direct access
+    if action == "approve":
+        # For simplicity, we'll add the app to user's accessible apps
+        # In a real system, you'd add them to a group
+        target_user = await db.users.find_one({"id": access_req['user_id']}, {"_id": 0})
+        if target_user:
+            app = await db.saml_apps.find_one({"id": access_req['app_id']}, {"_id": 0})
+            if not app:
+                app = await db.oidc_apps.find_one({"id": access_req['app_id']}, {"_id": 0})
+            
+            if app and app.get('allowed_group_ids'):
+                # Add user to first allowed group
+                await db.users.update_one(
+                    {"id": access_req['user_id']},
+                    {"$addToSet": {"group_ids": app['allowed_group_ids'][0]}}
+                )
+    
+    await log_audit(user['org_id'], f"access_request_{new_status}", "request", user['id'], user['email'], request_id,
+                   {"requester": access_req['user_email'], "app": access_req['app_name']}, 
+                   request.client.host if request.client else None)
+    
+    return await db.access_requests.find_one({"id": request_id}, {"_id": 0})
+
+# ===================== AUDIT LOG ROUTES =====================
+
+@api_router.get("/audit-logs")
+async def list_audit_logs(
+    action: str = None,
+    resource_type: str = None,
+    user_id: str = None,
+    start_date: str = None,
+    end_date: str = None,
+    limit: int = Query(default=100, le=500),
+    user: dict = Depends(get_current_user)
+):
+    query = {"org_id": user['org_id']}
+    
+    if action:
+        query['action'] = action
+    if resource_type:
+        query['resource_type'] = resource_type
+    if user_id:
+        query['user_id'] = user_id
+    if start_date:
+        query['timestamp'] = {"$gte": start_date}
+    if end_date:
+        if 'timestamp' in query:
+            query['timestamp']['$lte'] = end_date
+        else:
+            query['timestamp'] = {"$lte": end_date}
+    
+    logs = await db.audit_logs.find(query, {"_id": 0}).sort("timestamp", -1).to_list(limit)
+    return logs
+
+@api_router.get("/audit-logs/summary")
+async def get_audit_summary(user: dict = Depends(get_current_user)):
+    org_id = user['org_id']
+    
+    # Get counts by action type
+    pipeline = [
+        {"$match": {"org_id": org_id}},
+        {"$group": {"_id": "$action", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}
+    ]
+    action_counts = await db.audit_logs.aggregate(pipeline).to_list(100)
+    
+    # Get recent activity
+    recent = await db.audit_logs.find({"org_id": org_id}, {"_id": 0}).sort("timestamp", -1).to_list(10)
+    
+    # Get unique users
+    unique_users = await db.audit_logs.distinct("user_id", {"org_id": org_id})
+    
+    return {
+        "action_counts": {item['_id']: item['count'] for item in action_counts},
+        "recent_activity": recent,
+        "unique_users": len(unique_users),
+        "total_logs": await db.audit_logs.count_documents({"org_id": org_id})
+    }
+
+# ===================== APP LAUNCHER / CATALOG ROUTES =====================
+
+@api_router.get("/launcher/apps")
+async def get_user_apps(request: Request, user: dict = Depends(get_current_user)):
+    """Get all apps the user has access to"""
+    org_id = user['org_id']
+    
+    # Get all SAML apps
+    saml_apps = await db.saml_apps.find({"org_id": org_id, "status": "active"}, {"_id": 0, "private_key": 0, "certificate": 0}).to_list(100)
+    # Get all OIDC apps  
+    oidc_apps = await db.oidc_apps.find({"org_id": org_id, "status": "active"}, {"_id": 0, "client_secret": 0}).to_list(100)
+    
+    accessible_apps = []
+    
+    for app in saml_apps:
+        has_access = await check_user_app_access(user, app)
+        if has_access:
+            allowed, reason = await check_access_policies(user, app, request)
+            accessible_apps.append({
+                "id": app['id'],
+                "name": app['name'],
+                "description": app.get('description'),
+                "logo_url": app.get('logo_url'),
+                "type": "saml",
+                "launch_url": f"/api/saml/{app['id']}/sso",
+                "policy_blocked": not allowed,
+                "policy_reason": reason
+            })
+    
+    for app in oidc_apps:
+        has_access = await check_user_app_access(user, app)
+        if has_access:
+            allowed, reason = await check_access_policies(user, app, request)
+            accessible_apps.append({
+                "id": app['id'],
+                "name": app['name'],
+                "description": app.get('description'),
+                "logo_url": app.get('logo_url'),
+                "type": "oidc",
+                "launch_url": f"/api/oidc/{app['id']}/authorize",
+                "policy_blocked": not allowed,
+                "policy_reason": reason
+            })
+    
+    return accessible_apps
+
+@api_router.get("/catalog/apps")
+async def get_app_catalog(user: dict = Depends(get_current_user)):
+    """Get all apps in the catalog (for requesting access)"""
+    org_id = user['org_id']
+    
+    saml_apps = await db.saml_apps.find({"org_id": org_id, "status": "active"}, 
+                                         {"_id": 0, "id": 1, "name": 1, "description": 1, "logo_url": 1, 
+                                          "allowed_group_ids": 1, "allowed_role_ids": 1}).to_list(100)
+    oidc_apps = await db.oidc_apps.find({"org_id": org_id, "status": "active"},
+                                         {"_id": 0, "id": 1, "name": 1, "description": 1, "logo_url": 1,
+                                          "allowed_group_ids": 1, "allowed_role_ids": 1}).to_list(100)
+    
+    catalog = []
+    
+    for app in saml_apps:
+        has_access = await check_user_app_access(user, app)
+        catalog.append({
+            "id": app['id'],
+            "name": app['name'],
+            "description": app.get('description'),
+            "logo_url": app.get('logo_url'),
+            "type": "saml",
+            "has_access": has_access,
+            "requires_approval": bool(app.get('allowed_group_ids') or app.get('allowed_role_ids'))
+        })
+    
+    for app in oidc_apps:
+        has_access = await check_user_app_access(user, app)
+        catalog.append({
+            "id": app['id'],
+            "name": app['name'],
+            "description": app.get('description'),
+            "logo_url": app.get('logo_url'),
+            "type": "oidc",
+            "has_access": has_access,
+            "requires_approval": bool(app.get('allowed_group_ids') or app.get('allowed_role_ids'))
+        })
+    
+    return catalog
 
 # ===================== DASHBOARD STATS =====================
 
 @api_router.get("/dashboard/stats")
 async def get_dashboard_stats(user: dict = Depends(get_current_user)):
-    user_count = await db.users.count_documents({})
-    active_users = await db.users.count_documents({"status": "active"})
-    saml_config = await db.saml_config.find_one({}, {"_id": 0})
-    oidc_config = await db.oidc_config.find_one({}, {"_id": 0})
-    
-    # Count by provisioning type
-    manual_count = await db.users.count_documents({"provisioning_type": "manual"})
-    scim_count = await db.users.count_documents({"provisioning_type": "scim"})
-    jit_count = await db.users.count_documents({"provisioning_type": "jit"})
+    org_id = user['org_id']
     
     return {
-        "total_users": user_count,
-        "active_users": active_users,
-        "saml_configured": saml_config is not None,
-        "oidc_configured": oidc_config is not None,
-        "provisioning_stats": {
-            "manual": manual_count,
-            "scim": scim_count,
-            "jit": jit_count
-        }
+        "total_users": await db.users.count_documents({"org_id": org_id}),
+        "active_users": await db.users.count_documents({"org_id": org_id, "status": "active"}),
+        "total_groups": await db.groups.count_documents({"org_id": org_id}),
+        "total_roles": await db.roles.count_documents({"org_id": org_id}),
+        "saml_apps": await db.saml_apps.count_documents({"org_id": org_id}),
+        "oidc_apps": await db.oidc_apps.count_documents({"org_id": org_id}),
+        "access_policies": await db.access_policies.count_documents({"org_id": org_id}),
+        "pending_requests": await db.access_requests.count_documents({"org_id": org_id, "status": "pending"}),
+        "recent_logins": await db.audit_logs.count_documents({
+            "org_id": org_id, 
+            "action": "user_login",
+            "timestamp": {"$gte": (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()}
+        })
     }
 
 # ===================== BASE ROUTES =====================
 
 @api_router.get("/")
 async def root():
-    return {"message": "Kissflow SSO Super App API"}
+    return {"message": "Kissflow IAM - Identity & Access Management API"}
 
 @api_router.get("/health")
 async def health():
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
-# Include the router in the main app
+# Include router
 app.include_router(api_router)
 
 app.add_middleware(
@@ -709,11 +1254,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
