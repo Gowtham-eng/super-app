@@ -1,7 +1,15 @@
-# Kissflow SSO Super App - PRD
+# Kissflow IAM - Identity & Access Management - PRD
 
 ## Problem Statement
-Create a mobile and web app (Super App) for SSO integration with Kissflow application, supporting SAML 2.0, OpenID Connect, and user provisioning (SCIM, JIT, Manual).
+Create a full IAM (Identity & Access Management) system for Kissflow SSO integration with:
+- Multiple SAML 2.0 and OpenID Connect applications
+- Role-based access with groups hierarchy
+- Custom roles with granular permissions
+- Access policies (IP restrictions, time-based)
+- Access requests & approvals workflow
+- Audit logs & compliance reporting
+- App launcher portal (like Okta/OneLogin)
+- Multi-tenant support with separate organizations
 
 ## Architecture
 
@@ -10,73 +18,109 @@ Create a mobile and web app (Super App) for SSO integration with Kissflow applic
 - **Frontend**: React with Shadcn UI components
 - **Authentication**: JWT-based with bcrypt password hashing
 - **SSO Protocols**: SAML 2.0, OpenID Connect 1.0
-- **User Provisioning**: SCIM 2.0, JIT, Manual
+- **User Provisioning**: SCIM 2.0, Manual
 
-### Key Components
-1. **Identity Provider (IdP)**: Acts as the SSO identity provider for Kissflow
-2. **Metadata Generator**: Generates SAML/OIDC metadata for Kissflow configuration
-3. **User Management**: Handles user provisioning and lifecycle management
-4. **Connection Testing**: Validates SSO configuration
+### Database Collections
+- organizations
+- users
+- groups
+- roles
+- permissions
+- saml_apps
+- oidc_apps
+- access_policies
+- access_requests
+- audit_logs
 
 ## User Personas
-1. **IT Administrator**: Configures SSO settings, manages users, downloads metadata
-2. **End User**: Logs in via SSO to access Kissflow
+1. **Super Admin**: Manages multiple organizations
+2. **Org Admin**: Manages their organization's IAM settings
+3. **User Manager**: Manages users and groups
+4. **End User**: Accesses applications via SSO
 
 ## Core Requirements (Static)
-- [x] SAML 2.0 configuration with metadata generation
-- [x] OpenID Connect configuration with discovery document
-- [x] User provisioning (Manual, SCIM, JIT)
-- [x] JWT authentication
-- [x] Dashboard with SSO status overview
-- [x] Connection testing functionality
-- [x] Certificate generation for SAML signing
+- [x] Multi-tenant organization support
+- [x] Multiple SAML applications per organization
+- [x] Multiple OIDC applications per organization
+- [x] Groups with hierarchical structure
+- [x] Custom roles with granular permissions
+- [x] Access policies (IP whitelist/blacklist, time restrictions)
+- [x] Access request & approval workflow
+- [x] Comprehensive audit logging
+- [x] App launcher portal
+- [x] App catalog with access requests
 
 ## What's Been Implemented
 
-### April 7, 2026 - MVP Release
-- **Login/Registration**: Swiss brutalist design with secure authentication
-- **Dashboard**: Shows total users, SAML/OIDC status, provisioning stats
-- **SAML Configuration**: 
-  - Entity ID, ACS URL, SLO URL configuration
-  - Name ID format selection
-  - Assertion/Response signing toggles
-  - Auto-generated X.509 certificates
-  - Metadata XML generation & download
-- **OIDC Configuration**:
-  - Client ID & secret generation
-  - Redirect URIs management
-  - Scope selection (openid, profile, email)
-  - Discovery document (.well-known/openid-configuration)
-- **User Management**:
-  - Manual user provisioning
-  - SCIM 2.0 endpoints
-  - User edit/delete functionality
-  - Status management (active, pending, inactive)
-- **Settings Page**: All SSO endpoint URLs for Kissflow integration
+### April 7, 2026 - Full IAM System
+**Organization Management:**
+- Create organizations with domain
+- First user becomes org_admin
+- Organization-scoped data isolation
+
+**Application Management:**
+- Multiple SAML 2.0 apps with metadata generation
+- Multiple OIDC apps with discovery documents
+- Per-app access restrictions (groups/roles)
+- Auto-generated certificates for SAML signing
+
+**Identity Management:**
+- Groups with parent hierarchy
+- Custom roles with permissions
+- 10 system permissions (apps, users, groups, roles, policies, audit, etc.)
+- System roles: Administrator, User Manager, Viewer
+
+**Access Control:**
+- IP whitelist/blacklist policies
+- Time-based restrictions (UTC hours)
+- App-specific or global policies
+- Policy enable/disable toggle
+
+**Workflow:**
+- Access request submission
+- Admin approval/rejection
+- Auto-assign to groups on approval
+
+**Audit & Compliance:**
+- All actions logged with timestamp
+- User, action, resource tracking
+- IP address logging
+- CSV export functionality
+
+**App Launcher:**
+- User's accessible apps
+- Policy-blocked indicators
+- Quick launch functionality
+
+## Test Results
+- Backend: 97.6% (41/42 tests passed)
+- Frontend: 100% (13/13 tests passed)
 
 ## Prioritized Backlog
 
 ### P0 (Critical) - Done
-- [x] SAML metadata generation
-- [x] OIDC discovery document
-- [x] User authentication
-- [x] Basic user management
+- [x] Multi-tenant organizations
+- [x] Multiple SAML/OIDC apps
+- [x] Groups and roles
+- [x] Access policies
+- [x] Audit logging
 
 ### P1 (High Priority) - Future
-- [ ] SAML SSO endpoint (actual authentication flow)
-- [ ] OIDC authorization/token endpoints (actual flow)
-- [ ] JIT provisioning implementation
-- [ ] Multi-tenant support
-- [ ] Audit logging
+- [ ] Actual SAML SSO flow implementation
+- [ ] Actual OIDC authorization code flow
+- [ ] JIT provisioning on SSO
+- [ ] Password reset flow
+- [ ] MFA support
 
 ### P2 (Medium Priority) - Future
-- [ ] Custom attribute mapping
-- [ ] Group/role sync with Kissflow
-- [ ] Session management
-- [ ] Rate limiting
+- [ ] Attribute mapping UI
+- [ ] Group sync with external providers
+- [ ] Session management dashboard
+- [ ] Compliance report generation
+- [ ] Webhook notifications
 
 ## Next Tasks
-1. Implement actual SAML SSO flow (SP-initiated and IdP-initiated)
-2. Implement OIDC authorization code flow
-3. Add audit logging for security compliance
-4. Implement JIT provisioning on first login
+1. Implement actual SAML SSO authentication flow
+2. Implement OIDC authorization code flow with token issuance
+3. Add MFA support for admin users
+4. Add password reset functionality
