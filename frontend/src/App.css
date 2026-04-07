@@ -1,34 +1,155 @@
-.App-logo {
-    height: 40vmin;
-    pointer-events: none;
+/* Kissflow SSO Super App - Custom Styles */
+
+/* Sidebar */
+.sidebar {
+  @apply fixed left-0 top-0 h-full w-64 bg-white border-r border-zinc-200 z-40;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-    .App-logo {
-        animation: App-logo-spin infinite 20s linear;
-    }
+.sidebar-collapsed {
+  @apply w-16;
 }
 
-.App-header {
-    background-color: #0f0f10;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
+/* Main content area */
+.main-content {
+  @apply ml-64 min-h-screen bg-[#FAFAFA];
 }
 
-.App-link {
-    color: #61dafb;
+.main-content-collapsed {
+  @apply ml-16;
 }
 
-@keyframes App-logo-spin {
-    from {
-        transform: rotate(0deg);
-    }
-    to {
-        transform: rotate(360deg);
-    }
+/* Header */
+.header-bar {
+  @apply sticky top-0 bg-white border-b border-zinc-200 px-6 py-4 z-30;
+}
+
+/* Navigation items */
+.nav-item {
+  @apply flex items-center gap-3 px-4 py-3 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 transition-colors cursor-pointer;
+}
+
+.nav-item-active {
+  @apply bg-zinc-100 text-[#0051FF] border-l-2 border-[#0051FF];
+}
+
+/* Form sections */
+.form-section {
+  @apply bg-white border border-zinc-200 p-6 mb-6;
+}
+
+.form-section-title {
+  @apply text-lg font-bold text-zinc-900 mb-4;
+  font-family: 'Cabinet Grotesk', system-ui, sans-serif;
+}
+
+/* Metadata viewer */
+.metadata-viewer {
+  @apply bg-zinc-900 text-zinc-100 font-mono text-sm overflow-auto max-h-96;
+}
+
+.metadata-viewer pre {
+  @apply p-4 m-0;
+}
+
+/* Copy button */
+.copy-btn {
+  @apply absolute top-2 right-2 bg-zinc-700 hover:bg-zinc-600 text-white px-3 py-1 text-xs transition-colors;
+}
+
+/* Table styles */
+.data-table {
+  @apply w-full text-sm text-left;
+}
+
+.data-table thead {
+  @apply text-xs uppercase tracking-[0.1em] text-zinc-500 border-b-2 border-zinc-200;
+}
+
+.data-table th {
+  @apply py-3 px-4 font-bold;
+}
+
+.data-table tbody tr {
+  @apply border-b border-zinc-100 hover:bg-zinc-50 transition-colors;
+}
+
+.data-table td {
+  @apply py-3 px-4;
+}
+
+/* Stats cards */
+.stat-card {
+  @apply bg-white border border-zinc-200 p-6;
+}
+
+.stat-value {
+  @apply text-4xl font-black text-zinc-900;
+  font-family: 'Cabinet Grotesk', system-ui, sans-serif;
+}
+
+.stat-label {
+  @apply text-sm text-zinc-500 mt-1;
+}
+
+/* Protocol toggle */
+.protocol-toggle {
+  @apply flex border border-zinc-200 bg-zinc-100;
+}
+
+.protocol-option {
+  @apply flex-1 py-3 px-6 text-center font-bold cursor-pointer transition-colors;
+}
+
+.protocol-option-active {
+  @apply bg-white text-[#0051FF] border-b-2 border-[#0051FF];
+}
+
+.protocol-option-inactive {
+  @apply text-zinc-500 hover:text-zinc-700;
+}
+
+/* Connection status */
+.connection-status {
+  @apply flex items-center gap-2;
+}
+
+.status-dot {
+  @apply w-2 h-2 rounded-full;
+}
+
+.status-dot-success {
+  @apply bg-[#00CC66];
+}
+
+.status-dot-error {
+  @apply bg-[#FF3333];
+}
+
+.status-dot-pending {
+  @apply bg-[#FFB800];
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+  .sidebar {
+    @apply w-full h-auto relative;
+  }
+  
+  .main-content {
+    @apply ml-0;
+  }
+}
+
+/* Loading spinner */
+.spinner {
+  @apply w-5 h-5 border-2 border-zinc-300 border-t-[#0051FF] rounded-full animate-spin;
+}
+
+/* Toast customization */
+.toast-success {
+  @apply bg-[#00CC66] text-white border-none;
+}
+
+.toast-error {
+  @apply bg-[#FF3333] text-white border-none;
 }
