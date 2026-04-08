@@ -4,10 +4,11 @@
 Build a mobile and web super app integrated with SSO for Kissflow application, configured with SAML/OpenID/User Provisioning. Expanded to a full IAM system with multiple SAML apps, OpenID Connect apps, multi-tenant organizations, and role-based access.
 
 ## Architecture
-- **Frontend**: React (with Shadcn UI, Phosphor Icons)
+- **Frontend**: React (Shadcn UI, Lucide React icons, Outfit/Manrope fonts)
 - **Backend**: FastAPI + MongoDB
 - **Auth**: JWT-based with bcrypt password hashing
 - **SAML**: signxml library for XML signing, lxml for XML construction
+- **Design**: Emerald/slate palette, light theme only, Refex branding
 - **Key Env**: PUBLIC_URL in backend/.env for SAML endpoint URL construction
 
 ## What's Been Implemented
