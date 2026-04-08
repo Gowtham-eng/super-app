@@ -39,8 +39,10 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - OIDC app CRUD with client_id/client_secret generation
 - App Launcher (Zoho One-style: welcome header, search, icon grid)
 - App Catalog (browse and request access)
-- **User Assignment**: Assign/remove users to SAML apps - only assigned users see apps in Launcher
-- **Access Control**: org_admin always has access; regular users need explicit assignment via user_ids, groups, or roles
+- **User Assignment**: Assign/remove users to SAML apps. App access via approved_user_ids only (explicit assignment).
+- **Access Control**: org_admin always has access; regular users need explicit assignment.
+- **Logo Upload**: File upload endpoint (`/api/upload/logo`) for app logos instead of URL-only.
+- **User Forms**: App assignment checkboxes in both create and edit user modals.
 
 ### Frontend Pages (DONE)
 - Login/Register with organization selection
