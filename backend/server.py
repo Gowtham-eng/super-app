@@ -1118,7 +1118,12 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     NSMAP = {
         'samlp': 'urn:oasis:names:tc:SAML:2.0:protocol',
         'saml': 'urn:oasis:names:tc:SAML:2.0:assertion',
+        'xs': 'http://www.w3.org/2001/XMLSchema',
+        'xsi': 'http://www.w3.org/2001/XMLSchema-instance',
     }
+    
+    XS_NS = 'http://www.w3.org/2001/XMLSchema'
+    XSI_NS = 'http://www.w3.org/2001/XMLSchema-instance'
     
     # Build SAML Response XML using lxml
     response_elem = etree.Element('{urn:oasis:names:tc:SAML:2.0:protocol}Response', nsmap=NSMAP)
@@ -1141,6 +1146,8 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     assertion_elem.set('ID', assertion_id)
     assertion_elem.set('Version', '2.0')
     assertion_elem.set('IssueInstant', now_str)
+    assertion_elem.set('{http://www.w3.org/2001/XMLSchema-instance}schemaLocation', 
+                       'urn:oasis:names:tc:SAML:2.0:assertion http://docs.oasis-open.org/security/saml/v2.0/saml-schema-assertion-2.0.xsd')
     
     # Assertion > Issuer
     assertion_issuer = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}Issuer')
@@ -1180,12 +1187,14 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     email_attr.set('Name', 'email')
     email_attr.set('NameFormat', 'urn:oasis:names:tc:SAML:2.0:attrname-format:basic')
     email_val = etree.SubElement(email_attr, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue')
+    email_val.set(f'{{{XSI_NS}}}type', 'xs:string')
     email_val.text = user.get('email', '')
     
     name_attr = etree.SubElement(attr_stmt, '{urn:oasis:names:tc:SAML:2.0:assertion}Attribute')
     name_attr.set('Name', 'name')
     name_attr.set('NameFormat', 'urn:oasis:names:tc:SAML:2.0:attrname-format:basic')
     name_val = etree.SubElement(name_attr, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue')
+    name_val.set(f'{{{XSI_NS}}}type', 'xs:string')
     name_val.text = user.get('name', '')
     
     # Sign the SAML Response
@@ -1222,9 +1231,17 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
                     response_elem.remove(child)
             response_elem.append(signed_assertion)
             
+            # Move Signature to correct position per SAML schema: right after Issuer (index 1)
+            # signxml appends Signature at the end; SAML requires Issuer, Signature, Subject, ...
+            ds_ns = 'http://www.w3.org/2000/09/xmldsig#'
+            sig_elem = signed_assertion.find(f'{{{ds_ns}}}Signature')
+            if sig_elem is not None:
+                signed_assertion.remove(sig_elem)
+                # Insert after Issuer (position 1)
+                signed_assertion.insert(1, sig_elem)
+            
             # Clean base64 text content in signature elements (remove PEM newlines)
             # Kissflow's strict parser rejects newlines inside X509Certificate, SignatureValue, DigestValue
-            ds_ns = 'http://www.w3.org/2000/09/xmldsig#'
             for tag in ['X509Certificate', 'SignatureValue', 'DigestValue']:
                 for elem in response_elem.iter(f'{{{ds_ns}}}{tag}'):
                     if elem.text:
