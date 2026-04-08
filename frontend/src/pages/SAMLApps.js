@@ -7,24 +7,28 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Switch } from '../components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
-import { ShieldCheck, Plus, PencilSimple, Trash, Copy, Download, Eye, Gear, Play, CheckCircle, XCircle, ArrowSquareOut } from '@phosphor-icons/react';
+import { ShieldCheck, Plus, PencilSimple, Trash, Copy, Download, Eye, Gear, Play, CheckCircle, XCircle, ArrowSquareOut, UserPlus, UserMinus, Users } from '@phosphor-icons/react';
 
 const SAMLApps = () => {
   const { API, getAuthHeader, user } = useAuth();
   const [apps, setApps] = useState([]);
   const [groups, setGroups] = useState([]);
   const [roles, setRoles] = useState([]);
+  const [orgUsers, setOrgUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [showMetadataModal, setShowMetadataModal] = useState(false);
   const [showKissflowModal, setShowKissflowModal] = useState(false);
   const [showTestModal, setShowTestModal] = useState(false);
+  const [showUsersModal, setShowUsersModal] = useState(false);
   const [selectedApp, setSelectedApp] = useState(null);
   const [metadata, setMetadata] = useState('');
   const [kissflowConfig, setKissflowConfig] = useState(null);
   const [testResult, setTestResult] = useState(null);
   const [testLoading, setTestLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [appUsers, setAppUsers] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
 
   const [form, setForm] = useState({
     name: '', description: '', entity_id: '', acs_url: '', slo_url: '',
@@ -39,14 +43,16 @@ const SAMLApps = () => {
 
   const fetchData = async () => {
     try {
-      const [appsRes, groupsRes, rolesRes] = await Promise.all([
+      const [appsRes, groupsRes, rolesRes, usersRes] = await Promise.all([
         axios.get(`${API}/apps/saml`, getAuthHeader()),
         axios.get(`${API}/groups`, getAuthHeader()),
-        axios.get(`${API}/roles`, getAuthHeader())
+        axios.get(`${API}/roles`, getAuthHeader()),
+        axios.get(`${API}/users`, getAuthHeader())
       ]);
       setApps(appsRes.data);
       setGroups(groupsRes.data);
       setRoles(rolesRes.data);
+      setOrgUsers(usersRes.data);
     } catch (error) {
       toast.error('Failed to load data');
     } finally {
@@ -160,6 +166,43 @@ const SAMLApps = () => {
     toast.success('SAML Response sent to ' + selectedApp?.name);
   };
 
+  const openUsersModal = async (app) => {
+    setSelectedApp(app);
+    setShowUsersModal(true);
+    setUsersLoading(true);
+    try {
+      const response = await axios.get(`${API}/apps/saml/${app.id}/users`, getAuthHeader());
+      setAppUsers(response.data);
+    } catch (error) {
+      toast.error('Failed to load assigned users');
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
+  const assignUser = async (userId) => {
+    if (!selectedApp) return;
+    try {
+      await axios.post(`${API}/apps/saml/${selectedApp.id}/users`, { user_ids: [userId] }, getAuthHeader());
+      const response = await axios.get(`${API}/apps/saml/${selectedApp.id}/users`, getAuthHeader());
+      setAppUsers(response.data);
+      toast.success('User assigned');
+    } catch (error) {
+      toast.error('Failed to assign user');
+    }
+  };
+
+  const removeUser = async (userId) => {
+    if (!selectedApp) return;
+    try {
+      await axios.delete(`${API}/apps/saml/${selectedApp.id}/users/${userId}`, getAuthHeader());
+      setAppUsers(prev => prev.filter(u => u.id !== userId));
+      toast.success('User removed');
+    } catch (error) {
+      toast.error('Failed to remove user');
+    }
+  };
+
   const editApp = (app) => {
     setSelectedApp(app);
     setForm({
@@ -227,6 +270,9 @@ const SAMLApps = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button onClick={() => openUsersModal(app)} className="p-2 hover:bg-[#9333EA]/10" title="Manage Users" data-testid={`manage-users-${app.id}`}>
+                    <Users size={18} className="text-[#9333EA]" />
+                  </button>
                   <button onClick={() => testSSO(app)} className="p-2 hover:bg-[#00CC66]/10" title="Test SSO" data-testid={`test-sso-${app.id}`}>
                     <Play size={18} className="text-[#00CC66]" weight="fill" />
                   </button>
@@ -246,6 +292,9 @@ const SAMLApps = () => {
               </div>
               <div className="mt-4 pt-4 border-t border-zinc-100 flex flex-wrap gap-4 text-sm">
                 <div><span className="text-zinc-500">ACS URL:</span> <span className="font-mono">{app.acs_url}</span></div>
+                <div className="flex items-center gap-1 text-[#9333EA]">
+                  <Users size={14} /> {app.approved_user_ids?.length || 0} user(s) assigned
+                </div>
                 {(app.allowed_group_ids?.length > 0 || app.allowed_role_ids?.length > 0) && (
                   <div className="text-[#FFB800]">Restricted Access</div>
                 )}
@@ -570,6 +619,78 @@ const SAMLApps = () => {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* User Management Modal */}
+      <Dialog open={showUsersModal} onOpenChange={setShowUsersModal}>
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Users size={20} className="text-[#9333EA]" />
+              Manage Users - {selectedApp?.name}
+            </DialogTitle>
+          </DialogHeader>
+
+          {/* Add User */}
+          <div className="space-y-4">
+            <div>
+              <Label className="label-uppercase text-xs">Add User</Label>
+              <select
+                onChange={(e) => { if (e.target.value) { assignUser(e.target.value); e.target.value = ''; } }}
+                className="input-brutalist w-full mt-1"
+                data-testid="assign-user-select"
+              >
+                <option value="">Select a user to assign...</option>
+                {orgUsers
+                  .filter(u => !appUsers.some(au => au.id === u.id))
+                  .map(u => (
+                    <option key={u.id} value={u.id}>{u.name || u.email} ({u.email})</option>
+                  ))
+                }
+              </select>
+            </div>
+
+            {/* Assigned Users List */}
+            <div>
+              <Label className="label-uppercase text-xs">
+                Assigned Users ({appUsers.length})
+              </Label>
+              {usersLoading ? (
+                <div className="flex items-center justify-center py-8"><div className="spinner" /></div>
+              ) : appUsers.length === 0 ? (
+                <div className="text-center py-8 bg-zinc-50 border border-zinc-200 mt-2">
+                  <Users size={32} className="text-zinc-300 mx-auto mb-2" />
+                  <p className="text-sm text-zinc-500">No users assigned yet.</p>
+                  <p className="text-xs text-zinc-400 mt-1">Only assigned users can see this app in the Launcher.</p>
+                </div>
+              ) : (
+                <div className="space-y-2 mt-2">
+                  {appUsers.map(u => (
+                    <div key={u.id} className="flex items-center justify-between p-3 bg-zinc-50 border border-zinc-200" data-testid={`assigned-user-${u.id}`}>
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-[#9333EA]/10 flex items-center justify-center text-[#9333EA] text-xs font-bold">
+                          {(u.name || u.email || '?').charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold">{u.name || u.email}</p>
+                          <p className="text-xs text-zinc-500">{u.email}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => removeUser(u.id)}
+                        className="p-1.5 hover:bg-red-50 rounded"
+                        title="Remove user"
+                        data-testid={`remove-user-${u.id}`}
+                      >
+                        <UserMinus size={16} className="text-red-500" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

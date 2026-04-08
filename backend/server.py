@@ -314,7 +314,8 @@ def generate_saml_metadata(app: dict, base_url: str) -> str:
 </md:EntityDescriptor>'''
 
 async def check_user_app_access(user: dict, app: dict) -> bool:
-    """Check if user has access to an application based on groups, roles, or direct approval"""
+    """Check if user has access to an application based on direct approval, groups, or roles.
+    Access must be explicitly granted - no implicit access for unrestricted apps."""
     user_id = user.get('id')
     user_groups = set(user.get('group_ids', []))
     user_roles = set(user.get('role_ids', []))
@@ -323,12 +324,12 @@ async def check_user_app_access(user: dict, app: dict) -> bool:
     allowed_roles = set(app.get('allowed_role_ids', []))
     approved_users = set(app.get('approved_user_ids', []))
     
-    # Check if user was directly approved for this app
-    if user_id in approved_users:
+    # Org admins always have access
+    if user.get('role') == 'org_admin':
         return True
     
-    # If no restrictions, allow all
-    if not allowed_groups and not allowed_roles:
+    # Check if user was directly approved for this app
+    if user_id in approved_users:
         return True
     
     # Check group membership
@@ -827,6 +828,44 @@ async def delete_saml_app(app_id: str, request: Request, user: dict = Depends(ge
     await log_audit(user['org_id'], "saml_app_deleted", "app", user['id'], user['email'], app_id,
                    {"name": app['name']}, request.client.host if request.client else None)
     return {"message": "App deleted"}
+
+
+@api_router.get("/apps/saml/{app_id}/users")
+async def get_saml_app_users(app_id: str, user: dict = Depends(get_current_user)):
+    """Get users assigned to a SAML app"""
+    app = await db.saml_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    
+    approved_ids = app.get('approved_user_ids', [])
+    users = []
+    for uid in approved_ids:
+        u = await db.users.find_one({"id": uid}, {"_id": 0, "password": 0})
+        if u:
+            users.append({"id": u['id'], "email": u.get('email'), "name": u.get('name'), "role": u.get('role')})
+    return users
+
+@api_router.post("/apps/saml/{app_id}/users")
+async def assign_users_to_saml_app(app_id: str, body: dict, request: Request, user: dict = Depends(get_current_user)):
+    """Assign users to a SAML app"""
+    app = await db.saml_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    
+    user_ids = body.get('user_ids', [])
+    await db.saml_apps.update_one({"id": app_id}, {"$addToSet": {"approved_user_ids": {"$each": user_ids}}})
+    return {"message": f"Added {len(user_ids)} user(s)", "user_ids": user_ids}
+
+@api_router.delete("/apps/saml/{app_id}/users/{user_id}")
+async def remove_user_from_saml_app(app_id: str, user_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Remove a user from a SAML app"""
+    app = await db.saml_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    
+    await db.saml_apps.update_one({"id": app_id}, {"$pull": {"approved_user_ids": user_id}})
+    return {"message": "User removed"}
+
 
 @api_router.get("/apps/saml/{app_id}/metadata")
 async def get_saml_metadata(app_id: str, request: Request):
