@@ -58,6 +58,12 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - [x] SAML SSO redirect fix (public URL instead of cluster URL)
 - [x] SAML response signing with signxml
 - [x] End-to-end SAML flow for Kissflow
+- [x] Role-based UI (admin vs user)
+- [x] User assignment to apps (explicit access control)
+- [x] Logo file upload
+- [x] App tiles with Home URL (post-SSO redirect to specific Kissflow modules)
+- [x] 30-day persistent JWT sessions
+- [x] PWA support (manifest + service worker)
 
 ## P1 - Upcoming
 - [ ] SCIM v2 User Provisioning endpoints (/api/scim/v2/*)
