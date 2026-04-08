@@ -45,12 +45,22 @@ const AppLauncher = () => {
     const token = localStorage.getItem('iam_token');
 
     if (app.type === 'saml' && token) {
-      // SSO flow: authenticate then redirect to home_url if set
-      let completeUrl = `${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
+      // SSO flow: first authenticate via SAML, then redirect to home_url if set
       if (app.home_url) {
-        completeUrl += `&relay_state=${encodeURIComponent(app.home_url)}`;
+        // For apps with home_url: first do SAML SSO (establishes session),
+        // then open the specific module URL directly
+        const ssoWindow = window.open(`${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`, '_blank');
+        // After SSO completes and Kissflow session is established,
+        // navigate to the specific module URL
+        setTimeout(() => {
+          if (ssoWindow && !ssoWindow.closed) {
+            ssoWindow.location.href = app.home_url;
+          }
+        }, 3000);
+      } else {
+        // No home_url: just do regular SAML SSO
+        window.open(`${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`, '_blank');
       }
-      window.open(completeUrl, '_blank');
     } else {
       window.open(`${baseUrl}${app.launch_url}`, '_blank');
     }
