@@ -72,6 +72,10 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - [x] Bug fix: Kissflow RelayState removed (Kissflow cannot handle RelayState) - Apr 8 2026
 - [x] OIDC Provider: Full OAuth2/OIDC IdP flow (authorize, token, userinfo) - Apr 8 2026
 - [x] PWA native app deep-linking (opens Kissflow app on mobile, fallback to store) - Apr 8 2026
+- [x] Removed 'Made with Emergent' badge - Apr 8 2026
+- [x] OIDC form: Logo upload, Home URL field, integration credentials display - Apr 8 2026
+- [x] OIDC apps in App Launcher tiles - Apr 8 2026
+- [x] Mobile PWA: Tiles use location.href for native app universal link support - Apr 8 2026
 
 ## P1 - Upcoming
 - [ ] SCIM v2 User Provisioning endpoints (/api/scim/v2/*)

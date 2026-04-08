@@ -326,7 +326,7 @@ const OIDCApps = () => {
                     onChange={(e) => setNewRedirectUri(e.target.value)}
                     placeholder="https://canteen.example.com/auth/callback"
                     className="input-brutalist flex-1 font-mono text-sm"
-                    onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addRedirectUri())}
+                    onKeyPress={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRedirectUri(); } }}
                   />
                   <Button type="button" onClick={addRedirectUri} className="btn-secondary py-2 px-3"><Plus size={16} /></Button>
                 </div>
