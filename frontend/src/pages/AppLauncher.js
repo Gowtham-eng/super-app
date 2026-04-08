@@ -29,9 +29,10 @@ const AppLauncher = () => {
       toast.error(app.policy_reason || 'Access blocked by policy');
       return;
     }
-    // In real implementation, this would initiate SSO flow
+    // Launch URL already includes /api prefix, use base URL
+    const baseUrl = process.env.REACT_APP_BACKEND_URL;
     toast.success(`Launching ${app.name}...`);
-    window.open(`${API}${app.launch_url}`, '_blank');
+    window.open(`${baseUrl}${app.launch_url}`, '_blank');
   };
 
   if (loading) {
