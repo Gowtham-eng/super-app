@@ -300,12 +300,18 @@ def generate_saml_metadata(app: dict, base_url: str) -> str:
 </md:EntityDescriptor>'''
 
 async def check_user_app_access(user: dict, app: dict) -> bool:
-    """Check if user has access to an application based on groups and roles"""
+    """Check if user has access to an application based on groups, roles, or direct approval"""
+    user_id = user.get('id')
     user_groups = set(user.get('group_ids', []))
     user_roles = set(user.get('role_ids', []))
     
     allowed_groups = set(app.get('allowed_group_ids', []))
     allowed_roles = set(app.get('allowed_role_ids', []))
+    approved_users = set(app.get('approved_user_ids', []))
+    
+    # Check if user was directly approved for this app
+    if user_id in approved_users:
+        return True
     
     # If no restrictions, allow all
     if not allowed_groups and not allowed_roles:
@@ -1048,16 +1054,29 @@ async def review_access_request(request_id: str, action: str, request: Request, 
     
     # If approved, add user to an appropriate group or grant direct access
     if action == "approve":
-        # For simplicity, we'll add the app to user's accessible apps
-        # In a real system, you'd add them to a group
         target_user = await db.users.find_one({"id": access_req['user_id']}, {"_id": 0})
         if target_user:
-            app = await db.saml_apps.find_one({"id": access_req['app_id']}, {"_id": 0})
-            if not app:
-                app = await db.oidc_apps.find_one({"id": access_req['app_id']}, {"_id": 0})
+            app_id = access_req['app_id']
+            app_type = access_req.get('app_type', 'saml')
             
-            if app and app.get('allowed_group_ids'):
-                # Add user to first allowed group
+            # Add user to app's approved_user_ids list for direct access
+            if app_type == 'saml':
+                await db.saml_apps.update_one(
+                    {"id": app_id},
+                    {"$addToSet": {"approved_user_ids": access_req['user_id']}}
+                )
+            else:
+                await db.oidc_apps.update_one(
+                    {"id": app_id},
+                    {"$addToSet": {"approved_user_ids": access_req['user_id']}}
+                )
+            
+            # Also add to group if the app has allowed_group_ids
+            app = await db.saml_apps.find_one({"id": app_id}, {"_id": 0})
+            if not app:
+                app = await db.oidc_apps.find_one({"id": app_id}, {"_id": 0})
+            
+            if app and app.get('allowed_group_ids') and len(app['allowed_group_ids']) > 0:
                 await db.users.update_one(
                     {"id": access_req['user_id']},
                     {"$addToSet": {"group_ids": app['allowed_group_ids'][0]}}
