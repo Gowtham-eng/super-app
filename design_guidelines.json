@@ -1,109 +1,151 @@
 {
   "theme": "light",
-  "archetype": "4 (Swiss & High-Contrast)",
-  "design_philosophy": "Objective, strict, highly functional Swiss brutalism. Function dictates form. The SSO dashboard needs absolute clarity for IT admins to configure SAML/OIDC and test connections. No unnecessary decoration. High contrast ensures readability and focus.",
-  "colors": {
-    "background": "#FAFAFA",
-    "surface": "#FFFFFF",
-    "text_primary": "#0A0A0A",
-    "text_secondary": "#52525B",
-    "accent_primary": "#0051FF",
-    "accent_hover": "#003ECC",
-    "border": "#E4E4E7",
-    "error": "#FF3333",
-    "success": "#00CC66",
-    "warning": "#FFB800"
-  },
+  "archetype": "Organic & Earthy (Professional Corporate)",
   "typography": {
-    "headings": {
-      "family": "Cabinet Grotesk",
-      "weights": ["800", "900"],
-      "h1": "text-4xl tracking-tighter sm:text-5xl lg:text-6xl",
-      "h2": "text-2xl tracking-tight sm:text-3xl",
-      "h3": "text-xl tracking-tight sm:text-2xl",
-      "h4": "text-lg font-black tracking-tight"
+    "fonts": {
+      "headings": "Outfit",
+      "body": "Manrope",
+      "mono": "IBM Plex Mono"
     },
-    "body": {
-      "family": "IBM Plex Sans",
-      "weights": ["400", "500", "600"],
-      "base": "text-base leading-relaxed text-zinc-900",
-      "small": "text-sm text-zinc-600"
-    },
-    "mono": {
-      "family": "JetBrains Mono",
-      "weights": ["400", "500"],
-      "usage": "Use for SAML metadata, XML keys, Client IDs, URLs."
+    "font_imports": [
+      "https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap",
+      "https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600&display=swap",
+      "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap"
+    ],
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl font-semibold tracking-tight text-slate-900",
+      "h2": "text-2xl sm:text-3xl font-medium tracking-tight text-slate-900",
+      "h3": "text-xl sm:text-2xl font-medium tracking-tight text-slate-800",
+      "h4": "text-lg font-medium tracking-tight text-slate-800",
+      "body": "text-base font-normal leading-relaxed text-slate-600",
+      "small": "text-sm font-medium text-slate-500 uppercase tracking-widest"
     }
   },
-  "layout_and_spacing": {
-    "container": "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
-    "spacing_scale": "Use generous spacing. p-6 or p-8 for cards. gap-6 or gap-8 for grids.",
-    "grid_strategy": "Control Room Grid. Base grid-cols-1 md:grid-cols-3 lg:grid-cols-4. Dense, strict alignment. 1px borders to separate widgets instead of heavy drop shadows.",
-    "borders": "Expose the skeleton. border-collapse for connected elements. rounded-none for a sharp brutalist feel."
+  "colors": {
+    "background": {
+      "page": "#F9FAFB",
+      "surface": "#FFFFFF",
+      "surface_alt": "#F3F4F6",
+      "surface_hover": "#F0FDF4"
+    },
+    "brand": {
+      "primary": "#059669",
+      "primary_hover": "#047857",
+      "primary_light": "#D1FAE5",
+      "secondary": "#0F172A",
+      "accent": "#FCD34D"
+    },
+    "text": {
+      "primary": "#0F172A",
+      "secondary": "#475569",
+      "tertiary": "#64748B",
+      "inverse": "#FFFFFF",
+      "brand": "#065F46"
+    },
+    "border": {
+      "default": "#E2E8F0",
+      "focus": "#34D399",
+      "subtle": "#F1F5F9"
+    },
+    "status": {
+      "success": "#10B981",
+      "success_bg": "#ECFDF5",
+      "warning": "#F59E0B",
+      "warning_bg": "#FFFBEB",
+      "error": "#EF4444",
+      "error_bg": "#FEF2F2",
+      "info": "#3B82F6",
+      "info_bg": "#EFF6FF"
+    },
+    "shadcn_variables": {
+      "light": {
+        "--background": "210 40% 98%",
+        "--foreground": "222.2 84% 4.9%",
+        "--card": "0 0% 100%",
+        "--card-foreground": "222.2 84% 4.9%",
+        "--popover": "0 0% 100%",
+        "--popover-foreground": "222.2 84% 4.9%",
+        "--primary": "152 76% 36%",
+        "--primary-foreground": "210 40% 98%",
+        "--secondary": "210 40% 96.1%",
+        "--secondary-foreground": "222.2 47.4% 11.2%",
+        "--muted": "210 40% 96.1%",
+        "--muted-foreground": "215.4 16.3% 46.9%",
+        "--accent": "152 76% 96%",
+        "--accent-foreground": "152 76% 20%",
+        "--destructive": "0 84.2% 60.2%",
+        "--destructive-foreground": "210 40% 98%",
+        "--border": "214.3 31.8% 91.4%",
+        "--input": "214.3 31.8% 91.4%",
+        "--ring": "152 76% 36%",
+        "--radius": "0.5rem"
+      }
+    }
+  },
+  "layout": {
+    "spacing": {
+      "container_padding": "px-6 sm:px-8 lg:px-12",
+      "section_gap": "gap-12 lg:gap-16",
+      "card_padding": "p-6 sm:p-8"
+    },
+    "grid": {
+      "bento_dashboard": "grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6",
+      "app_grid": "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6"
+    },
+    "surfaces": {
+      "card_default": "bg-white border border-slate-200 rounded-xl shadow-sm hover:shadow-md hover:border-emerald-200 transition-all duration-200",
+      "card_interactive": "bg-white border border-slate-200 rounded-xl shadow-sm hover:-translate-y-1 hover:shadow-lg hover:border-emerald-300 transition-all duration-300",
+      "sidebar": "bg-slate-50 border-r border-slate-200",
+      "header": "bg-white/80 backdrop-blur-xl border-b border-slate-200 sticky top-0 z-50"
+    }
   },
   "components": {
-    "cards": {
-      "style": "bg-white border border-zinc-200 rounded-none shadow-sm hover:shadow-md transition-shadow",
-      "padding": "p-6 sm:p-8"
+    "sidebar": {
+      "active_item": "bg-emerald-50 text-emerald-900 font-medium relative before:absolute before:inset-y-0 before:left-0 before:w-1 before:bg-emerald-600 before:rounded-r",
+      "inactive_item": "text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
     },
     "buttons": {
-      "primary": "bg-[#0051FF] text-white rounded-none font-bold hover:bg-[#003ECC] focus:ring-2 focus:ring-[#0051FF] focus:ring-offset-2 transition-all px-6 py-3",
-      "secondary": "bg-zinc-100 text-zinc-900 border border-zinc-200 rounded-none hover:bg-zinc-200 focus:ring-2 focus:ring-zinc-900 focus:ring-offset-2 transition-all px-6 py-3",
-      "ghost": "text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 rounded-none transition-colors px-4 py-2"
+      "primary": "bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm font-medium rounded-lg px-4 py-2 transition-colors",
+      "secondary": "bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 text-slate-700 font-medium rounded-lg px-4 py-2 transition-colors",
+      "ghost": "hover:bg-emerald-50 hover:text-emerald-700 text-slate-600 font-medium rounded-lg px-4 py-2 transition-colors"
     },
     "inputs": {
-      "style": "bg-white border border-zinc-300 rounded-none focus:border-[#0051FF] focus:ring-1 focus:ring-[#0051FF] text-zinc-900 placeholder:text-zinc-400 font-mono text-sm",
-      "label": "text-xs font-bold uppercase tracking-[0.1em] text-zinc-900 mb-2 block"
+      "default": "border-slate-200 bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 rounded-lg",
+      "search": "bg-slate-100 border-transparent focus:bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 rounded-full px-6"
     },
-    "tabs": {
-      "style": "border-b border-zinc-200 w-full flex space-x-8",
-      "active": "border-b-2 border-[#0051FF] text-[#0051FF] font-bold pb-4",
-      "inactive": "text-zinc-500 hover:text-zinc-900 pb-4 transition-colors"
-    },
-    "tables": {
-      "style": "w-full text-sm text-left border-collapse",
-      "header": "text-xs uppercase tracking-[0.1em] text-zinc-500 border-b-2 border-zinc-200 py-3",
-      "row": "border-b border-zinc-100 hover:bg-zinc-50"
+    "badges": {
+      "default": "bg-slate-100 text-slate-700 px-2.5 py-0.5 rounded-full text-xs font-medium",
+      "success": "bg-emerald-100 text-emerald-800 px-2.5 py-0.5 rounded-full text-xs font-medium"
     }
   },
-  "visual_enhancers": {
-    "background_textures": "For the login portal, use CSS repeating-linear-gradient grid lines to create a 'technical blueprint' feel. e.g. bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]",
-    "glassmorphism": "Not used in this archetype. Prefer solid, opaque surfaces to maintain the Swiss aesthetic.",
-    "shadows": "Minimal. Stick to crisp 1px borders and small, sharp shadows if depth is strictly required.",
-    "animations": "Micro-interactions only. 0.2s ease transitions for hover states. Minimal fade-ins for modal dialogs."
-  },
   "media": {
-    "avatars": [
-      {
-        "url": "https://images.unsplash.com/photo-1762522926157-bcc04bf0b10a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHwyfHxidXNpbmVzcyUyMHByb2Zlc3Npb25hbCUyMGhlYWRzaG90JTIwd2hpdGUlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc3NTUzNjkyNnww&ixlib=rb-4.1.0&q=85",
-        "description": "IT Admin profile avatar",
-        "category": "user_avatar"
+    "images": {
+      "brand_logo": {
+        "url": "https://customer-assets.emergentagent.com/job_kissflow-access-hub/artifacts/7t1td79v_refex-logo.png",
+        "description": "Refex Industries official logo. Use in the top left of the sidebar and any login/auth screens.",
+        "category": "logo"
       },
-      {
-        "url": "https://images.unsplash.com/photo-1758600587839-56ba05596c69?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHw0fHxidXNpbmVzcyUyMHByb2Zlc3Npb25hbCUyMGhlYWRzaG90JTIwd2hpdGUlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc3NTUzNjkyNnww&ixlib=rb-4.1.0&q=85",
-        "description": "User list avatar",
-        "category": "user_avatar"
+      "welcome_banner": {
+        "url": "https://images.unsplash.com/photo-1690203178211-589fa80baa95?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA0MTJ8MHwxfHNlYXJjaHwxfHx3aW5kJTIwdHVyYmluZXMlMjBncmVlbiUyMGVuZXJneSUyMGxhbmRzY2FwZXxlbnwwfHx8fDE3NzU2MzEwNTB8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Subtle green energy landscape with wind turbines. Use as a masked background for the 'Welcome' banner in the user App Launcher view, overlaid with a heavy white-to-transparent gradient (e.g., bg-gradient-to-r from-white via-white/80 to-transparent) so text remains readable.",
+        "category": "hero"
       }
-    ]
-  },
-  "accessibility": {
-    "contrast": "Strict APCA and WCAG AA compliance. High contrast on all interactive elements.",
-    "focus_states": "All focusable elements MUST have explicit ring styles. focus:outline-none focus:ring-2 focus:ring-[#0051FF] focus:ring-offset-2",
-    "test_attributes": "All buttons, inputs, tabs, and critical text elements MUST include data-testid attributes using kebab-case role-based names."
-  },
-  "icons": {
-    "library": "phosphor-icons",
-    "weight": "regular",
-    "install_command": "yarn add @phosphor-icons/react"
+    },
+    "icons": {
+      "library": "lucide-react",
+      "instructions": "Use Lucide React icons. Stroke width 1.5 or 2 for clarity. For app icons, use varied colorful backgrounds with white icons, or realistic service logos if available."
+    }
   },
   "instructions_to_main_agent": [
-    "Implement the login portal with the technical blueprint background.",
-    "Build the dashboard using a dense, control-room style grid layout.",
-    "Ensure all metadata output and SAML configurations use a monospaced font.",
-    "Use solid forms and buttons (rounded-none).",
-    "Create Shadcn UI-based configuration forms for SAML and OIDC setups.",
-    "Never use generic placeholder images; use the provided Unsplash URLs.",
-    "Ensure the UI uses high-contrast text and explicit hover/focus states.",
-    "Apply data-testid to every interactive element."
+    "Ensure dark mode is completely disabled. Use only the light theme palette provided.",
+    "Implement the two distinct views (Admin and User) with clear sidebar navigation.",
+    "The sidebar must use the Refex logo provided in media.images.brand_logo.",
+    "The user dashboard (App Launcher) should feature a welcoming header utilizing the welcome_banner image, but critically, it must be overlaid with a heavy white gradient to ensure maximum readability of the 'Good morning' text and search bar.",
+    "Use generous padding (p-6, p-8) and 'Bento' style grid spacing (gap-6) for dashboard cards.",
+    "For the Admin dashboard, include quick stats (Total Users, Active Apps) and a sleek activity feed or access requests table.",
+    "Use Shadcn UI components for Tables, Buttons, Dialogs, Dropdowns, Cards, but heavily customize them to remove the default Vercel look (e.g., rounded-xl instead of default radius, softer borders).",
+    "All interactive elements MUST have data-testid attributes (e.g., data-testid='admin-nav-dashboard', data-testid='app-card-jira').",
+    "Ensure all fonts (Outfit, Manrope) are correctly imported and applied via Tailwind config.",
+    "The layout should be a standard enterprise shell: Fixed sidebar (260px) + Fluid main content area with sticky top header."
   ]
 }
