@@ -1,0 +1,97 @@
+{
+  "summary": "Completed testing of iteration 8 features: JWT 30-day expiry, SAML home_url field, PWA support, logo upload, and UI verification. Found and fixed 1 bug: home_url was not being saved when creating new SAML apps. All 12 backend tests pass (100%). Frontend UI verified working correctly.",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": [],
+    "fixed": [
+      {
+        "endpoint": "POST /api/apps/saml",
+        "issue": "home_url field was not being saved when creating new SAML apps",
+        "fix": "Added home_url to app_doc in create_saml_app function (line 811)",
+        "status": "FIXED"
+      }
+    ]
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+
+  "passed_tests": [
+    "JWT token expiry is 30 days (720 hours) - VERIFIED",
+    "SAML App GET returns home_url field",
+    "SAML App PUT updates home_url correctly",
+    "Launcher apps endpoint returns home_url for SAML apps",
+    "PWA manifest.json accessible with correct config (standalone, start_url=/launcher)",
+    "Service worker sw.js accessible with fetch event handlers",
+    "Logo upload POST /api/upload/logo accepts images and returns URL",
+    "Logo upload rejects non-image files with 400 error",
+    "Admin login works (gowtham.s@refex.co.in)",
+    "User login works (suriya.v@refex.co.in)",
+    "Dashboard stats returns all required fields",
+    "SAML App creation with home_url now works (after fix)",
+    "App Launcher shows tile view with app name and description",
+    "SAML Apps form has Home URL (Post-SSO Redirect) field",
+    "SAML Apps form has logo upload input"
+  ],
+
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_8.py",
+    "/app/test_reports/pytest/pytest_results_v8.xml"
+  ],
+
+  "action_items": [],
+
+  "critical_code_review_comments": [
+    "JWT_EXPIRATION_HOURS=720 correctly set for 30-day sessions",
+    "SAMLAppCreate model has home_url field defined",
+    "Launcher endpoint correctly returns home_url in response",
+    "AppLauncher.js correctly passes home_url as relay_state when launching SAML apps",
+    "PWA manifest has correct standalone display and /launcher start_url",
+    "Service worker implements network-first caching strategy"
+  ],
+
+  "updated_files": [
+    "/app/backend/server.py (added home_url to create_saml_app app_doc)",
+    "/app/backend/tests/test_iteration_8.py"
+  ],
+
+  "success_rate": {
+    "backend": "100% (12/12 tests passed)",
+    "frontend": "100% (all UI elements verified)"
+  },
+
+  "test_credentials": {
+    "admin": "gowtham.s@refex.co.in / Admin123!",
+    "user": "suriya.v@refex.co.in / Admin123!"
+  },
+
+  "seed_data_creation": "None - used existing test data",
+
+  "retest_needed": false,
+
+  "should_main_agent_self_test": false,
+
+  "context_for_next_testing_agent": "All iteration 8 features verified working: 1) JWT 30-day expiry, 2) SAML home_url field (fixed bug where it wasn't saved on create), 3) App Launcher tile view with relay_state, 4) PWA manifest and service worker, 5) Logo upload endpoint. The home_url field is now properly saved when creating SAML apps and returned in launcher/apps endpoint.",
+
+  "verified_features": {
+    "jwt_30_day_expiry": "JWT_EXPIRATION_HOURS=720 verified in token exp claim",
+    "saml_home_url_field": "SAMLAppCreate accepts home_url, stored in DB, returned in API",
+    "launcher_relay_state": "AppLauncher.js passes home_url as relay_state parameter",
+    "pwa_manifest": "/manifest.json accessible with standalone display, /launcher start_url",
+    "service_worker": "/sw.js accessible with install, activate, fetch handlers",
+    "logo_upload": "POST /api/upload/logo accepts images, returns URL, rejects non-images",
+    "admin_dashboard": "8 stat cards and 6 quick action cards displayed"
+  },
+
+  "bug_fixed": {
+    "description": "home_url field was not being saved when creating new SAML apps",
+    "root_cause": "create_saml_app function in server.py was missing home_url in app_doc dictionary",
+    "fix_applied": "Added 'home_url': app.home_url to app_doc in create_saml_app function",
+    "file_modified": "/app/backend/server.py",
+    "line_number": 811
+  }
+}

@@ -232,7 +232,7 @@ const SAMLApps = () => {
     setSelectedApp(app);
     setForm({
       name: app.name, description: app.description || '', entity_id: app.entity_id,
-      acs_url: app.acs_url, slo_url: app.slo_url || '',
+      acs_url: app.acs_url, slo_url: app.slo_url || '', home_url: app.home_url || '',
       name_id_format: app.name_id_format, sign_assertions: app.sign_assertions,
       sign_response: app.sign_response, logo_url: app.logo_url || '',
       allowed_group_ids: app.allowed_group_ids || [], allowed_role_ids: app.allowed_role_ids || []
@@ -243,7 +243,7 @@ const SAMLApps = () => {
   const resetForm = () => {
     setSelectedApp(null);
     setForm({
-      name: '', description: '', entity_id: '', acs_url: '', slo_url: '',
+      name: '', description: '', entity_id: '', acs_url: '', slo_url: '', home_url: '',
       name_id_format: 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
       sign_assertions: true, sign_response: true, logo_url: '',
       allowed_group_ids: [], allowed_role_ids: []
@@ -363,6 +363,11 @@ const SAMLApps = () => {
               <div>
                 <Label className="label-uppercase text-xs">ACS URL (Assertion Consumer Service) *</Label>
                 <Input value={form.acs_url} onChange={(e) => setForm({ ...form, acs_url: e.target.value })} required className="input-brutalist w-full mt-1.5 font-mono text-sm" placeholder="https://app.kissflow.com/signin/.../saml/?acs" />
+              </div>
+              <div>
+                <Label className="label-uppercase text-xs">Home URL (Post-SSO Redirect)</Label>
+                <Input value={form.home_url} onChange={(e) => setForm({ ...form, home_url: e.target.value })} className="input-brutalist w-full mt-1.5 font-mono text-sm" placeholder="https://refexgroup.kissflow.com/view/application/Expense_Management" />
+                <p className="text-xs text-slate-400 mt-1">Users will be redirected here after SSO login</p>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>

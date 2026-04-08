@@ -25,7 +25,7 @@ db = client[os.environ['DB_NAME']]
 # JWT Configuration
 JWT_SECRET = os.environ.get('JWT_SECRET', 'kissflow-iam-secret-key-2024')
 JWT_ALGORITHM = 'HS256'
-JWT_EXPIRATION_HOURS = 24
+JWT_EXPIRATION_HOURS = 720  # 30 days
 
 # Public URL - MUST be set for SAML SSO to work in Kubernetes
 PUBLIC_URL = os.environ.get('PUBLIC_URL', '').rstrip('/')
@@ -125,6 +125,7 @@ class SAMLAppCreate(BaseModel):
     entity_id: str
     acs_url: str
     slo_url: Optional[str] = None
+    home_url: Optional[str] = None
     name_id_format: str = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
     sign_assertions: bool = True
     sign_response: bool = True
@@ -807,6 +808,7 @@ async def create_saml_app(app: SAMLAppCreate, request: Request, user: dict = Dep
         "entity_id": app.entity_id,
         "acs_url": app.acs_url,
         "slo_url": app.slo_url,
+        "home_url": app.home_url,
         "name_id_format": app.name_id_format,
         "sign_assertions": app.sign_assertions,
         "sign_response": app.sign_response,
@@ -1739,6 +1741,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
                 "name": app['name'],
                 "description": app.get('description'),
                 "logo_url": app.get('logo_url'),
+                "home_url": app.get('home_url'),
                 "type": "saml",
                 "launch_url": f"/api/saml/{app['id']}/sso",
                 "policy_blocked": not allowed,
