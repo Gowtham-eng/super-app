@@ -7,7 +7,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Switch } from '../components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
-import { ShieldCheck, Plus, PencilSimple, Trash, Copy, Download, Eye, Gear } from '@phosphor-icons/react';
+import { ShieldCheck, Plus, PencilSimple, Trash, Copy, Download, Eye, Gear, Play, CheckCircle, XCircle, ArrowSquareOut } from '@phosphor-icons/react';
 
 const SAMLApps = () => {
   const { API, getAuthHeader, user } = useAuth();
@@ -18,9 +18,12 @@ const SAMLApps = () => {
   const [showModal, setShowModal] = useState(false);
   const [showMetadataModal, setShowMetadataModal] = useState(false);
   const [showKissflowModal, setShowKissflowModal] = useState(false);
+  const [showTestModal, setShowTestModal] = useState(false);
   const [selectedApp, setSelectedApp] = useState(null);
   const [metadata, setMetadata] = useState('');
   const [kissflowConfig, setKissflowConfig] = useState(null);
+  const [testResult, setTestResult] = useState(null);
+  const [testLoading, setTestLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [form, setForm] = useState({
@@ -124,6 +127,39 @@ const SAMLApps = () => {
     a.click();
   };
 
+  const testSSO = async (app) => {
+    setSelectedApp(app);
+    setTestLoading(true);
+    setTestResult(null);
+    setShowTestModal(true);
+    try {
+      const response = await axios.get(`${API}/saml/${app.id}/test`, getAuthHeader());
+      setTestResult(response.data);
+    } catch (error) {
+      setTestResult({ status: 'error', error: error.response?.data?.detail || 'Failed to generate SAML assertion' });
+    } finally {
+      setTestLoading(false);
+    }
+  };
+
+  const launchRealSSO = () => {
+    if (!testResult || !testResult.saml_response_b64) return;
+    // Create a temporary form and auto-submit to ACS URL
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = testResult.acs_url;
+    form.target = '_blank';
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'SAMLResponse';
+    input.value = testResult.saml_response_b64;
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+    document.body.removeChild(form);
+    toast.success('SAML Response sent to ' + selectedApp?.name);
+  };
+
   const editApp = (app) => {
     setSelectedApp(app);
     setForm({
@@ -191,6 +227,9 @@ const SAMLApps = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button onClick={() => testSSO(app)} className="p-2 hover:bg-[#00CC66]/10" title="Test SSO" data-testid={`test-sso-${app.id}`}>
+                    <Play size={18} className="text-[#00CC66]" weight="fill" />
+                  </button>
                   <button onClick={() => viewKissflowConfig(app)} className="p-2 hover:bg-[#0051FF]/10" title="Kissflow Config">
                     <Gear size={18} className="text-[#0051FF]" />
                   </button>
@@ -317,7 +356,7 @@ const SAMLApps = () => {
           {kissflowConfig && (
             <div className="space-y-4">
               <div className="p-4 bg-[#0051FF]/5 border border-[#0051FF]/20 text-sm">
-                <p className="font-semibold text-[#0051FF] mb-2">Use these values in Kissflow Admin → SSO Settings</p>
+                <p className="font-semibold text-[#0051FF] mb-2">Use these values in Kissflow Admin &rarr; SSO Settings</p>
                 <p className="text-zinc-600">Copy each value and paste it into the corresponding field in Kissflow.</p>
               </div>
 
@@ -383,7 +422,7 @@ const SAMLApps = () => {
                 <ol className="space-y-2 text-sm text-zinc-600">
                   <li className="flex items-start gap-2">
                     <span className="w-5 h-5 bg-[#0051FF] text-white flex items-center justify-center text-xs font-bold flex-shrink-0">1</span>
-                    <span>Go to Kissflow Admin → App Store → Configure App → SSO Settings</span>
+                    <span>Go to Kissflow Admin &rarr; App Store &rarr; Configure App &rarr; SSO Settings</span>
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="w-5 h-5 bg-[#0051FF] text-white flex items-center justify-center text-xs font-bold flex-shrink-0">2</span>
@@ -402,6 +441,132 @@ const SAMLApps = () => {
                     <span>Save and test the SSO connection</span>
                   </li>
                 </ol>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Test SSO Modal */}
+      <Dialog open={showTestModal} onOpenChange={setShowTestModal}>
+        <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Play size={20} weight="fill" className="text-[#00CC66]" />
+              Test SSO - {selectedApp?.name}
+            </DialogTitle>
+          </DialogHeader>
+
+          {testLoading && (
+            <div className="flex items-center justify-center py-12">
+              <div className="spinner" />
+              <span className="ml-3 text-zinc-500">Generating SAML assertion...</span>
+            </div>
+          )}
+
+          {testResult && testResult.status === 'error' && (
+            <div className="p-4 bg-[#FF3333]/10 border border-[#FF3333]/30">
+              <div className="flex items-center gap-2 text-[#FF3333] font-bold mb-1">
+                <XCircle size={18} /> SSO Test Failed
+              </div>
+              <p className="text-sm text-zinc-600">{testResult.error}</p>
+            </div>
+          )}
+
+          {testResult && testResult.status === 'success' && (
+            <div className="space-y-4">
+              {/* Status Banner */}
+              <div className={`p-4 border ${testResult.signed ? 'bg-[#00CC66]/10 border-[#00CC66]/30' : 'bg-[#FFB800]/10 border-[#FFB800]/30'}`}>
+                <div className="flex items-center gap-2 font-bold mb-1">
+                  {testResult.signed
+                    ? <><CheckCircle size={18} className="text-[#00CC66]" /> SAML Response Generated &amp; Signed</>
+                    : <><XCircle size={18} className="text-[#FFB800]" /> SAML Response Generated (Unsigned)</>
+                  }
+                </div>
+                <p className="text-sm text-zinc-600">
+                  {testResult.signed
+                    ? 'The SAML assertion is signed with RSA-SHA256. Ready to send to the Service Provider.'
+                    : 'Warning: The assertion could not be signed. The SP may reject this response.'
+                  }
+                </p>
+              </div>
+
+              {/* Assertion Details */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="p-3 bg-zinc-50 border border-zinc-200">
+                  <Label className="label-uppercase text-xs">Issuer</Label>
+                  <p className="font-mono text-xs mt-1 break-all">{testResult.issuer}</p>
+                </div>
+                <div className="p-3 bg-zinc-50 border border-zinc-200">
+                  <Label className="label-uppercase text-xs">Destination (ACS URL)</Label>
+                  <p className="font-mono text-xs mt-1 break-all">{testResult.destination}</p>
+                </div>
+                <div className="p-3 bg-zinc-50 border border-zinc-200">
+                  <Label className="label-uppercase text-xs">NameID (User)</Label>
+                  <p className="font-mono text-xs mt-1">{testResult.name_id}</p>
+                </div>
+                <div className="p-3 bg-zinc-50 border border-zinc-200">
+                  <Label className="label-uppercase text-xs">Audience</Label>
+                  <p className="font-mono text-xs mt-1 break-all">{testResult.audience}</p>
+                </div>
+                <div className="p-3 bg-zinc-50 border border-zinc-200">
+                  <Label className="label-uppercase text-xs">Issue Instant</Label>
+                  <p className="font-mono text-xs mt-1">{testResult.issue_instant}</p>
+                </div>
+                <div className="p-3 bg-zinc-50 border border-zinc-200">
+                  <Label className="label-uppercase text-xs">Valid Until</Label>
+                  <p className="font-mono text-xs mt-1">{testResult.not_on_or_after}</p>
+                </div>
+              </div>
+
+              {/* Attributes */}
+              <div className="p-3 bg-zinc-50 border border-zinc-200">
+                <Label className="label-uppercase text-xs">SAML Attributes</Label>
+                <div className="mt-2 space-y-1">
+                  {Object.entries(testResult.attributes || {}).map(([key, value]) => (
+                    <div key={key} className="flex items-center gap-2 text-xs">
+                      <span className="font-bold text-zinc-700 min-w-[60px]">{key}:</span>
+                      <span className="font-mono text-zinc-600">{value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* SAML XML */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <Label className="label-uppercase text-xs">SAML Response XML</Label>
+                  <Button
+                    onClick={() => copyToClipboard(testResult.saml_response_xml, 'SAML XML')}
+                    className="btn-secondary py-1 px-2 text-xs"
+                    data-testid="copy-saml-xml"
+                  >
+                    <Copy size={12} className="mr-1" /> Copy XML
+                  </Button>
+                </div>
+                <pre className="code-display max-h-48 overflow-auto text-xs whitespace-pre-wrap" data-testid="saml-xml-output">
+                  {testResult.saml_response_xml}
+                </pre>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-3 pt-2 border-t border-zinc-200">
+                <Button
+                  onClick={launchRealSSO}
+                  className="btn-primary flex-1"
+                  data-testid="launch-sso-btn"
+                >
+                  <ArrowSquareOut size={16} className="mr-2" />
+                  Send to {selectedApp?.name}
+                </Button>
+                <Button
+                  onClick={() => copyToClipboard(testResult.saml_response_b64, 'Base64 SAMLResponse')}
+                  className="btn-secondary"
+                  data-testid="copy-b64-btn"
+                >
+                  <Copy size={16} className="mr-2" />
+                  Copy Base64
+                </Button>
               </div>
             </div>
           )}

@@ -31,6 +31,7 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - Kissflow-specific config endpoint (manual configuration extraction)
 - SSO, SLO, metadata, and complete endpoints
 - Public URL resolution via PUBLIC_URL env var (fixes K8s cluster URL issue)
+- **SSO Test Button**: Inspect & send SAML assertions from SAML Apps page
 
 ### App Management (DONE)
 - SAML app CRUD with certificate management

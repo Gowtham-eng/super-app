@@ -1194,6 +1194,138 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     
     return Response(content=html_content, media_type="text/html")
 
+
+@api_router.get("/saml/{app_id}/test")
+async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Test SAML SSO - Returns decoded SAML assertion details as JSON for inspection"""
+    import base64
+    import uuid as uuid_module
+    from lxml import etree
+
+    app = await db.saml_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="SAML App not found")
+
+    base_url = get_public_base_url(request)
+
+    now = datetime.now(timezone.utc)
+    not_on_or_after = now + timedelta(minutes=5)
+    response_id = f"_{''.join(str(uuid_module.uuid4()).split('-'))}"
+    assertion_id = f"_{''.join(str(uuid_module.uuid4()).split('-'))}"
+
+    issuer = f"{base_url}/api/saml/{app_id}"
+    acs_url = app.get('acs_url', '')
+    name_id = user.get('email', '')
+    name_id_format = app.get('name_id_format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress')
+    now_str = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+    not_on_or_after_str = not_on_or_after.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    NSMAP = {
+        'samlp': 'urn:oasis:names:tc:SAML:2.0:protocol',
+        'saml': 'urn:oasis:names:tc:SAML:2.0:assertion',
+    }
+
+    response_elem = etree.Element('{urn:oasis:names:tc:SAML:2.0:protocol}Response', nsmap=NSMAP)
+    response_elem.set('ID', response_id)
+    response_elem.set('Version', '2.0')
+    response_elem.set('IssueInstant', now_str)
+    response_elem.set('Destination', acs_url)
+
+    issuer_elem = etree.SubElement(response_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}Issuer')
+    issuer_elem.text = issuer
+
+    status_elem = etree.SubElement(response_elem, '{urn:oasis:names:tc:SAML:2.0:protocol}Status')
+    status_code_elem = etree.SubElement(status_elem, '{urn:oasis:names:tc:SAML:2.0:protocol}StatusCode')
+    status_code_elem.set('Value', 'urn:oasis:names:tc:SAML:2.0:status:Success')
+
+    assertion_elem = etree.SubElement(response_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}Assertion')
+    assertion_elem.set('ID', assertion_id)
+    assertion_elem.set('Version', '2.0')
+    assertion_elem.set('IssueInstant', now_str)
+
+    assertion_issuer = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}Issuer')
+    assertion_issuer.text = issuer
+
+    subject_elem = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}Subject')
+    name_id_elem = etree.SubElement(subject_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}NameID')
+    name_id_elem.set('Format', name_id_format)
+    name_id_elem.text = name_id
+
+    subj_conf = etree.SubElement(subject_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}SubjectConfirmation')
+    subj_conf.set('Method', 'urn:oasis:names:tc:SAML:2.0:cm:bearer')
+    subj_conf_data = etree.SubElement(subj_conf, '{urn:oasis:names:tc:SAML:2.0:assertion}SubjectConfirmationData')
+    subj_conf_data.set('NotOnOrAfter', not_on_or_after_str)
+    subj_conf_data.set('Recipient', acs_url)
+
+    conditions_elem = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}Conditions')
+    conditions_elem.set('NotBefore', now_str)
+    conditions_elem.set('NotOnOrAfter', not_on_or_after_str)
+    audience_restriction = etree.SubElement(conditions_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}AudienceRestriction')
+    audience_elem = etree.SubElement(audience_restriction, '{urn:oasis:names:tc:SAML:2.0:assertion}Audience')
+    audience_elem.text = app.get('entity_id', '')
+
+    authn_stmt = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}AuthnStatement')
+    authn_stmt.set('AuthnInstant', now_str)
+    authn_ctx = etree.SubElement(authn_stmt, '{urn:oasis:names:tc:SAML:2.0:assertion}AuthnContext')
+    authn_ctx_ref = etree.SubElement(authn_ctx, '{urn:oasis:names:tc:SAML:2.0:assertion}AuthnContextClassRef')
+    authn_ctx_ref.text = 'urn:oasis:names:tc:SAML:2.0:ac:classes:Password'
+
+    attr_stmt = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeStatement')
+    email_attr = etree.SubElement(attr_stmt, '{urn:oasis:names:tc:SAML:2.0:assertion}Attribute')
+    email_attr.set('Name', 'email')
+    email_val = etree.SubElement(email_attr, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue')
+    email_val.text = user.get('email', '')
+    name_attr = etree.SubElement(attr_stmt, '{urn:oasis:names:tc:SAML:2.0:assertion}Attribute')
+    name_attr.set('Name', 'name')
+    name_val = etree.SubElement(name_attr, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue')
+    name_val.text = user.get('name', '')
+
+    # Sign the assertion
+    cert_pem = app.get('certificate', '')
+    key_pem = app.get('private_key', '')
+    signed = False
+
+    if key_pem and cert_pem:
+        try:
+            import signxml
+            from signxml import XMLSigner
+            signer = XMLSigner(
+                method=signxml.methods.enveloped,
+                signature_algorithm="rsa-sha256",
+                digest_algorithm="sha256",
+                c14n_algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"
+            )
+            signed_assertion = signer.sign(assertion_elem, key=key_pem, cert=cert_pem, reference_uri=f'#{assertion_id}')
+            for child in list(response_elem):
+                if child.tag == '{urn:oasis:names:tc:SAML:2.0:assertion}Assertion':
+                    response_elem.remove(child)
+            response_elem.append(signed_assertion)
+            signed = True
+        except Exception as e:
+            logging.error(f"SAML test signing failed: {e}")
+
+    xml_str = etree.tostring(response_elem, xml_declaration=False, encoding='unicode')
+    pretty_xml = etree.tostring(response_elem, pretty_print=True, xml_declaration=False, encoding='unicode')
+    saml_b64 = base64.b64encode(xml_str.encode('utf-8')).decode('utf-8')
+
+    return {
+        "status": "success",
+        "signed": signed,
+        "response_id": response_id,
+        "assertion_id": assertion_id,
+        "issuer": issuer,
+        "destination": acs_url,
+        "audience": app.get('entity_id', ''),
+        "name_id": name_id,
+        "name_id_format": name_id_format,
+        "issue_instant": now_str,
+        "not_on_or_after": not_on_or_after_str,
+        "attributes": {"email": user.get('email', ''), "name": user.get('name', '')},
+        "saml_response_b64": saml_b64,
+        "saml_response_xml": pretty_xml,
+        "acs_url": acs_url,
+    }
+
 # ===================== OIDC APP ROUTES =====================
 
 @api_router.get("/apps/oidc")
