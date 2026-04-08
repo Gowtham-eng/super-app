@@ -43,6 +43,7 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 
 ### Frontend Pages (DONE)
 - Login/Register with organization selection
+- Login page with Refex branding, business carousel (Ash, Green Mobility, Wind), no register
 - Dashboard (admin only), App Launcher ("My Apps"), App Catalog ("Request Access")
 - SAML Apps, OIDC Apps management (admin only)
 - Users, Groups, Roles, Policies management (admin only)

@@ -1,314 +1,261 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
-import { toast } from 'sonner';
 import axios from 'axios';
-import { ShieldCheck, Eye, EyeSlash, Buildings, Plus } from '@phosphor-icons/react';
-import { Button } from '../components/ui/button';
-import { Input } from '../components/ui/input';
-import { Label } from '../components/ui/label';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '../components/ui/dialog';
+import { useAuth } from '../context/AuthContext';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { toast } from 'sonner';
+import { Eye, EyeSlash, ArrowRight } from '@phosphor-icons/react';
 
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+const REFEX_LOGO = 'https://customer-assets.emergentagent.com/job_kissflow-access-hub/artifacts/7t1td79v_refex-logo.png';
+
+const CAROUSEL_SLIDES = [
+  {
+    image: 'https://www.refex.co.in/uploads/images/image-1765792912552-76106071.webp',
+    title: 'Ash Utilization & Coal Handling',
+    description: 'End-to-end ash handling, coal yard management and trading solutions for thermal power plants across India.',
+    accent: '#F59E0B',
+  },
+  {
+    image: 'https://www.refex.co.in/uploads/images/image-1765793262489-602378423.jpg',
+    title: 'Green Mobility',
+    description: 'Tailored corporate commuting and daily rides powered by electric vehicle fleets for a sustainable future.',
+    accent: '#10B981',
+  },
+  {
+    image: 'https://www.refex.co.in/uploads/images/image-1765793200200-726200018.jpg',
+    title: 'Venwind Refex',
+    description: 'Driving sustainable wind energy adoption with advanced 5.3 MW turbine manufacturing in India.',
+    accent: '#3B82F6',
+  },
+];
 
 const Login = () => {
-  const [mode, setMode] = useState('login'); // login, register, create-org
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [organizations, setOrganizations] = useState([]);
-  const [selectedOrg, setSelectedOrg] = useState('');
-  const [showOrgModal, setShowOrgModal] = useState(false);
-  const [orgForm, setOrgForm] = useState({ name: '', domain: '', description: '' });
+  const [isLoading, setIsLoading] = useState(false);
+  const [currentSlide, setCurrentSlide] = useState(0);
   const [ssoAppId, setSsoAppId] = useState(null);
   const ssoRedirecting = React.useRef(false);
-  
-  const { login, register, createOrganization, token } = useAuth();
+
+  const { login, token } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
+  const API = process.env.REACT_APP_BACKEND_URL + '/api';
+
+  // Carousel auto-rotate
   useEffect(() => {
-    fetchOrganizations();
+    const timer = setInterval(() => {
+      setCurrentSlide(prev => (prev + 1) % CAROUSEL_SLIDES.length);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     const ssoApp = searchParams.get('sso_app');
-    if (ssoApp) {
-      setSsoAppId(ssoApp);
-    }
+    if (ssoApp) setSsoAppId(ssoApp);
   }, [searchParams]);
 
-  // If already logged in and SSO redirect, go to SSO completion
   useEffect(() => {
     if (token && ssoAppId && !ssoRedirecting.current) {
       ssoRedirecting.current = true;
       completeSSOLogin(ssoAppId);
+    } else if (token && !ssoAppId) {
+      navigate('/');
     }
-  }, [token, ssoAppId]);
-
-  const fetchOrganizations = async () => {
-    try {
-      const response = await axios.get(`${API}/organizations`);
-      setOrganizations(response.data);
-      if (response.data.length > 0) {
-        setSelectedOrg(response.data[0].id);
-      }
-    } catch (error) {
-      console.error('Failed to fetch organizations:', error);
-    }
-  };
+  }, [token, ssoAppId, navigate]);
 
   const completeSSOLogin = async (appId) => {
-    // Small delay to ensure token is stored after login
     await new Promise(resolve => setTimeout(resolve, 300));
     const storedToken = localStorage.getItem('iam_token');
     if (storedToken) {
       const relayState = searchParams.get('relay_state') || '';
       let completeUrl = `${process.env.REACT_APP_BACKEND_URL}/api/saml/${appId}/complete?token=${encodeURIComponent(storedToken)}`;
-      if (relayState) {
-        completeUrl += `&relay_state=${encodeURIComponent(relayState)}`;
-      }
+      if (relayState) completeUrl += `&relay_state=${encodeURIComponent(relayState)}`;
       window.location.href = completeUrl;
     } else {
       toast.error('Please login first to continue SSO');
     }
   };
 
-  const handleSubmit = async (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
-    setLoading(true);
-
+    if (!email || !password) {
+      toast.error('Please enter email and password');
+      return;
+    }
+    setIsLoading(true);
     try {
-      if (mode === 'login') {
-        await login(email, password);
-        toast.success('Welcome back!');
-      } else {
-        if (!selectedOrg) {
-          toast.error('Please select or create an organization');
-          setLoading(false);
-          return;
-        }
-        await register(email, password, name, selectedOrg);
-        toast.success('Account created successfully!');
-      }
-      
-      // If SSO redirect, complete SSO flow
+      await login(email, password);
+      toast.success('Welcome back!');
       if (ssoAppId) {
         completeSSOLogin(ssoAppId);
-      } else {
-        navigate('/');
       }
     } catch (error) {
-      const message = error.response?.data?.detail || 'Authentication failed';
-      toast.error(message);
+      toast.error(error.response?.data?.detail || 'Login failed');
     } finally {
-      setLoading(false);
+      setIsLoading(false);
     }
   };
 
-  const handleCreateOrg = async (e) => {
-    e.preventDefault();
-    try {
-      const newOrg = await createOrganization(orgForm.name, orgForm.domain, orgForm.description);
-      setOrganizations([...organizations, newOrg]);
-      setSelectedOrg(newOrg.id);
-      setShowOrgModal(false);
-      setOrgForm({ name: '', domain: '', description: '' });
-      toast.success('Organization created!');
-    } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create organization');
-    }
-  };
+  const slide = CAROUSEL_SLIDES[currentSlide];
 
   return (
-    <div className="min-h-screen blueprint-bg flex items-center justify-center p-4">
-      <div className="w-full max-w-md animate-fadeIn">
-        {/* Logo */}
-        <div className="flex items-center justify-center gap-3 mb-8">
-          <div className="w-12 h-12 bg-[#0051FF] flex items-center justify-center">
-            <ShieldCheck weight="bold" className="text-white w-7 h-7" />
+    <div className="min-h-screen flex" data-testid="login-page">
+      {/* Left: Carousel */}
+      <div className="hidden lg:flex lg:w-[55%] relative overflow-hidden bg-zinc-900">
+        {/* Background Images */}
+        {CAROUSEL_SLIDES.map((s, i) => (
+          <div
+            key={i}
+            className="absolute inset-0 transition-opacity duration-1000"
+            style={{ opacity: i === currentSlide ? 1 : 0 }}
+          >
+            <img
+              src={s.image}
+              alt={s.title}
+              className="w-full h-full object-cover"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-black/20" />
           </div>
+        ))}
+
+        {/* Content Overlay */}
+        <div className="relative z-10 flex flex-col justify-between w-full h-full p-10">
+          {/* Top: Logo */}
           <div>
-            <h1 className="font-heading font-black text-2xl tracking-tight text-zinc-900">
-              Kissflow IAM
-            </h1>
-            <p className="text-xs text-zinc-500 uppercase tracking-[0.1em]">Identity & Access Management</p>
+            <img src={REFEX_LOGO} alt="Refex" className="h-10 object-contain" />
+          </div>
+
+          {/* Bottom: Slide Text */}
+          <div className="max-w-lg">
+            <div
+              className="inline-block px-3 py-1 text-xs font-bold uppercase tracking-wider text-white/90 mb-4 rounded-full"
+              style={{ backgroundColor: slide.accent + '99' }}
+            >
+              Our Businesses
+            </div>
+            <h2 className="text-3xl font-black text-white mb-3 leading-tight">
+              {slide.title}
+            </h2>
+            <p className="text-white/70 text-base leading-relaxed mb-8">
+              {slide.description}
+            </p>
+
+            {/* Dots */}
+            <div className="flex gap-2">
+              {CAROUSEL_SLIDES.map((_, i) => (
+                <button
+                  key={i}
+                  onClick={() => setCurrentSlide(i)}
+                  className="transition-all duration-300"
+                  style={{
+                    width: i === currentSlide ? 32 : 8,
+                    height: 8,
+                    borderRadius: 4,
+                    backgroundColor: i === currentSlide ? slide.accent : 'rgba(255,255,255,0.3)',
+                  }}
+                />
+              ))}
+            </div>
           </div>
         </div>
+      </div>
 
-        {/* Card */}
-        <div className="bg-white border border-zinc-200 shadow-lg">
-          {/* Tabs */}
-          <div className="flex border-b border-zinc-200">
-            <button
-              type="button"
-              onClick={() => setMode('login')}
-              data-testid="login-tab"
-              className={`flex-1 py-4 text-sm font-bold uppercase tracking-[0.1em] transition-colors ${
-                mode === 'login' ? 'text-[#0051FF] border-b-2 border-[#0051FF] bg-zinc-50' : 'text-zinc-500 hover:text-zinc-700'
-              }`}
-            >
-              Sign In
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode('register')}
-              data-testid="register-tab"
-              className={`flex-1 py-4 text-sm font-bold uppercase tracking-[0.1em] transition-colors ${
-                mode === 'register' ? 'text-[#0051FF] border-b-2 border-[#0051FF] bg-zinc-50' : 'text-zinc-500 hover:text-zinc-700'
-              }`}
-            >
-              Register
-            </button>
+      {/* Right: Login Form */}
+      <div className="flex-1 flex items-center justify-center px-6 py-12 bg-white">
+        <div className="w-full max-w-md">
+          {/* Mobile logo */}
+          <div className="lg:hidden flex justify-center mb-8">
+            <img src={REFEX_LOGO} alt="Refex" className="h-10 object-contain" />
           </div>
 
-          {/* Form */}
-          <form onSubmit={handleSubmit} className="p-6 space-y-5">
-            {mode === 'register' && (
-              <>
-                <div>
-                  <Label className="label-uppercase">Full Name</Label>
-                  <Input
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Enter your name"
-                    required
-                    data-testid="name-input"
-                    className="input-brutalist w-full mt-1"
-                  />
-                </div>
+          <div className="mb-10">
+            <h1 className="text-3xl font-black text-zinc-900 tracking-tight">
+              Refex Super App
+            </h1>
+            <p className="text-zinc-500 mt-2">
+              Sign in to your workplace
+            </p>
+          </div>
 
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <Label className="label-uppercase">Organization</Label>
-                    <button
-                      type="button"
-                      onClick={() => setShowOrgModal(true)}
-                      className="text-xs text-[#0051FF] hover:underline flex items-center gap-1"
-                    >
-                      <Plus size={12} /> New Org
-                    </button>
-                  </div>
-                  <select
-                    value={selectedOrg}
-                    onChange={(e) => setSelectedOrg(e.target.value)}
-                    required
-                    data-testid="org-select"
-                    className="input-brutalist w-full py-2"
-                  >
-                    <option value="">Select organization...</option>
-                    {organizations.map((org) => (
-                      <option key={org.id} value={org.id}>{org.name}</option>
-                    ))}
-                  </select>
-                </div>
-              </>
-            )}
+          {/* SSO Banner */}
+          {ssoAppId && (
+            <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-xl">
+              <p className="text-sm text-blue-800 font-medium">
+                Sign in to continue to your application
+              </p>
+            </div>
+          )}
 
+          <form onSubmit={handleLogin} className="space-y-5">
             <div>
-              <Label className="label-uppercase">Email Address</Label>
-              <Input
+              <label className="block text-sm font-semibold text-zinc-700 mb-2">
+                Email Address
+              </label>
+              <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@company.com"
-                required
+                placeholder="name@refex.co.in"
+                className="w-full px-4 py-3.5 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-zinc-400 focus:bg-white transition-all"
                 data-testid="email-input"
-                className="input-brutalist w-full mt-1"
+                autoComplete="email"
               />
             </div>
 
             <div>
-              <Label className="label-uppercase">Password</Label>
+              <label className="block text-sm font-semibold text-zinc-700 mb-2">
+                Password
+              </label>
               <div className="relative">
-                <Input
+                <input
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter your password"
-                  required
+                  className="w-full px-4 py-3.5 pr-12 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-zinc-400 focus:bg-white transition-all"
                   data-testid="password-input"
-                  className="input-brutalist w-full mt-1 pr-10"
+                  autoComplete="current-password"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
                 >
                   {showPassword ? <EyeSlash size={18} /> : <Eye size={18} />}
                 </button>
               </div>
             </div>
 
-            <Button type="submit" disabled={loading} data-testid="submit-button" className="btn-primary w-full">
-              {loading ? <span className="spinner mr-2" /> : null}
-              {mode === 'login' ? 'Sign In' : 'Create Account'}
-            </Button>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full py-3.5 bg-zinc-900 hover:bg-zinc-800 text-white font-semibold rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+              data-testid="submit-button"
+            >
+              {isLoading ? (
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              ) : (
+                <>
+                  Sign In
+                  <ArrowRight size={18} weight="bold" />
+                </>
+              )}
+            </button>
           </form>
+
+          {/* Footer */}
+          <div className="mt-12 pt-6 border-t border-zinc-100 text-center">
+            <p className="text-xs text-zinc-400">
+              Refex Industries Limited
+            </p>
+            <p className="text-xs text-zinc-300 mt-1">
+              Sustainability &middot; Innovation &middot; Long-term Value
+            </p>
+          </div>
         </div>
-
-        <p className="text-center text-xs text-zinc-400 mt-6">
-          Enterprise Identity & Access Management for Kissflow
-        </p>
       </div>
-
-      {/* Create Organization Modal */}
-      <Dialog open={showOrgModal} onOpenChange={setShowOrgModal}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Buildings size={20} /> Create Organization
-            </DialogTitle>
-          </DialogHeader>
-          <form onSubmit={handleCreateOrg} className="space-y-4">
-            <div>
-              <Label className="label-uppercase">Organization Name *</Label>
-              <Input
-                type="text"
-                value={orgForm.name}
-                onChange={(e) => setOrgForm({ ...orgForm, name: e.target.value })}
-                placeholder="Acme Corporation"
-                required
-                className="input-brutalist w-full mt-1"
-              />
-            </div>
-            <div>
-              <Label className="label-uppercase">Domain *</Label>
-              <Input
-                type="text"
-                value={orgForm.domain}
-                onChange={(e) => setOrgForm({ ...orgForm, domain: e.target.value })}
-                placeholder="acme.com"
-                required
-                className="input-brutalist w-full mt-1"
-              />
-            </div>
-            <div>
-              <Label className="label-uppercase">Description</Label>
-              <Input
-                type="text"
-                value={orgForm.description}
-                onChange={(e) => setOrgForm({ ...orgForm, description: e.target.value })}
-                placeholder="Optional description"
-                className="input-brutalist w-full mt-1"
-              />
-            </div>
-            <div className="flex gap-3 pt-2">
-              <Button type="button" onClick={() => setShowOrgModal(false)} className="btn-secondary flex-1">
-                Cancel
-              </Button>
-              <Button type="submit" className="btn-primary flex-1">
-                Create
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 };

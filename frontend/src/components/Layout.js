@@ -93,7 +93,7 @@ const Layout = ({ children }) => {
           <div className="w-8 h-8 bg-[#0051FF] flex items-center justify-center">
             <ShieldCheck weight="bold" className="text-white w-5 h-5" />
           </div>
-          <span className="font-heading font-black text-lg">Kissflow IAM</span>
+          <span className="font-heading font-black text-lg">Refex Super App</span>
         </div>
         <button 
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -120,7 +120,7 @@ const Layout = ({ children }) => {
             <ShieldCheck weight="bold" className="text-white w-6 h-6" />
           </div>
           <div>
-            <div className="font-heading font-black text-lg tracking-tight">Kissflow IAM</div>
+            <div className="font-heading font-black text-lg tracking-tight">Refex Super App</div>
             <div className="text-xs text-zinc-500 truncate max-w-[140px]">{organization?.name || 'Identity Provider'}</div>
           </div>
         </div>
