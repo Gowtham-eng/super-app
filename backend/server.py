@@ -1060,7 +1060,7 @@ async def saml_slo(app_id: str, request: Request):
     return Response(content=html_content, media_type="text/html")
 
 @api_router.get("/saml/{app_id}/complete")
-async def saml_complete_sso(app_id: str, request: Request, token: str = None, relay_state: str = None):
+async def saml_complete_sso(app_id: str, request: Request, token: str = None, relay_state: str = None, debug: int = 0):
     """Complete SAML SSO - Generate signed SAML Response and POST to ACS URL"""
     import base64
     import uuid as uuid_module
@@ -1267,18 +1267,65 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
                    request.client.host if request.client else None)
     
     # Return an HTML form that auto-submits to the ACS URL
-    html_content = f'''<!DOCTYPE html>
+    # Log the base64 length for debugging
+    logging.info(f"SAML base64 length: {len(saml_response_b64)}, mod4: {len(saml_response_b64) % 4}")
+    
+    if debug:
+        # Debug mode: show diagnostic info and submit to our debug endpoint first
+        debug_url = f"{base_url}/api/saml/debug/receive"
+        html_content = f'''<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>SAML Debug Mode</title></head>
+<body style="font-family:sans-serif;padding:20px;max-width:800px;margin:0 auto">
+<h2>SAML SSO Debug Mode</h2>
+<div id="diagnostics" style="background:#f5f5f5;padding:15px;border-radius:8px;margin:15px 0;font-family:monospace;font-size:13px"></div>
+<form id="debugForm" method="POST" action="{debug_url}">
+    <input type="hidden" name="SAMLResponse" id="samlResponse"/>
+    <input type="hidden" name="ACS" value="{escape(acs_url)}"/>
+    {'<input type="hidden" name="RelayState" value="' + escape(relay_state) + '"/>' if relay_state else ''}
+    <button type="submit" style="padding:12px 24px;font-size:16px;background:#10b981;color:white;border:none;border-radius:6px;cursor:pointer;margin:5px">
+        Step 1: Verify data via debug endpoint
+    </button>
+</form>
+<form id="directForm" method="POST" action="{escape(acs_url)}">
+    <input type="hidden" name="SAMLResponse" id="samlResponseDirect"/>
+    {'<input type="hidden" name="RelayState" value="' + escape(relay_state) + '"/>' if relay_state else ''}
+    <button type="submit" style="padding:12px 24px;font-size:16px;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;margin:5px">
+        Step 2: Submit directly to Kissflow
+    </button>
+</form>
+<script>
+var samlData = "{saml_response_b64}";
+document.getElementById('samlResponse').value = samlData;
+document.getElementById('samlResponseDirect').value = samlData;
+var diag = document.getElementById('diagnostics');
+var lines = [];
+lines.push("Base64 length: " + samlData.length);
+lines.push("Length mod 4: " + (samlData.length % 4));
+lines.push("Has newlines: " + (samlData.indexOf("\\n") >= 0));
+lines.push("Has spaces: " + (samlData.indexOf(" ") >= 0));
+lines.push("Starts with: " + samlData.substring(0, 60) + "...");
+lines.push("Ends with: ..." + samlData.substring(samlData.length - 40));
+try {{
+    var decoded = atob(samlData);
+    lines.push("Browser atob() decode: SUCCESS (" + decoded.length + " chars)");
+    lines.push("XML starts with: " + decoded.substring(0, 80));
+}} catch(e) {{
+    lines.push("Browser atob() decode: FAILED - " + e.message);
+}}
+diag.innerHTML = lines.join("<br>");
+</script>
+</body></html>'''
+    else:
+        html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <title>Redirecting to {escape(app.get('name', 'Application'))}...</title>
 </head>
-<body onload="document.forms[0].submit();">
-    <noscript>
-        <p>JavaScript is required. Please click the button below to continue.</p>
-    </noscript>
-    <form method="POST" action="{escape(acs_url)}">
-        <input type="hidden" name="SAMLResponse" value="{saml_response_b64}"/>
+<body>
+    <form id="samlForm" method="POST" action="{escape(acs_url)}">
+        <input type="hidden" name="SAMLResponse" id="samlResponse"/>
         {'<input type="hidden" name="RelayState" value="' + escape(relay_state) + '"/>' if relay_state else ''}
         <noscript>
             <input type="submit" value="Continue to {escape(app.get('name', 'Application'))}"/>
@@ -1287,10 +1334,64 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     <p style="font-family: sans-serif; color: #666; text-align: center; margin-top: 50px;">
         Redirecting to {escape(app.get('name', 'Application'))}...
     </p>
+    <script>
+        // Set SAMLResponse value via JavaScript to avoid any HTML attribute encoding issues
+        var samlData = "{saml_response_b64}";
+        document.getElementById('samlResponse').value = samlData;
+        // Auto-submit
+        document.getElementById('samlForm').submit();
+    </script>
 </body>
 </html>'''
     
     return Response(content=html_content, media_type="text/html")
+
+
+
+@api_router.post("/saml/debug/receive")
+async def saml_debug_receive(request: Request):
+    """Debug endpoint: receives SAML form POST, validates base64, re-submits to Kissflow"""
+    import base64
+    form = await request.form()
+    saml_response = form.get('SAMLResponse', '')
+    relay_state = form.get('RelayState', '')
+    acs_url = form.get('ACS', '')
+    
+    # Validate the received SAMLResponse
+    diagnostics = []
+    diagnostics.append(f"Received SAMLResponse length: {len(saml_response)}")
+    diagnostics.append(f"Length mod 4: {len(saml_response) % 4}")
+    diagnostics.append(f"Has newlines: {chr(10) in saml_response}")
+    diagnostics.append(f"Has spaces: {' ' in saml_response}")
+    
+    valid = False
+    try:
+        decoded = base64.b64decode(saml_response, validate=True)
+        diagnostics.append(f"Strict base64 decode: SUCCESS ({len(decoded)} bytes)")
+        diagnostics.append(f"XML starts with: {decoded[:80].decode('utf-8', errors='replace')}")
+        valid = True
+    except Exception as e:
+        diagnostics.append(f"Strict base64 decode: FAILED - {e}")
+    
+    diag_html = '<br>'.join(diagnostics)
+    
+    html = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><title>SAML Debug</title></head>
+<body style="font-family:monospace;padding:20px">
+<h2>SAML Debug - Browser Received Data</h2>
+<div style="background:#f0f0f0;padding:10px;margin:10px 0">{diag_html}</div>
+<p>Base64 valid: <b>{"YES" if valid else "NO"}</b></p>
+<p>First 100 chars: <code>{saml_response[:100]}</code></p>
+<p>Last 50 chars: <code>{saml_response[-50:]}</code></p>
+<hr>
+<p>Click below to forward this EXACT data to Kissflow:</p>
+<form method="POST" action="{acs_url}">
+    <input type="hidden" name="SAMLResponse" value="{saml_response}"/>
+    {'<input type="hidden" name="RelayState" value="' + relay_state + '"/>' if relay_state else ''}
+    <button type="submit" style="padding:10px 20px;font-size:16px;cursor:pointer">Submit to Kissflow</button>
+</form>
+</body></html>'''
+    return Response(content=html, media_type="text/html")
+
 
 
 @api_router.get("/saml/{app_id}/test")
