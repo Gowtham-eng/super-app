@@ -121,11 +121,7 @@ const Login = () => {
         ))}
 
         {/* Content Overlay */}
-        <div className="relative z-10 flex flex-col justify-between w-full h-full p-10">
-          {/* Top: Logo */}
-          <div>
-            <img src={REFEX_LOGO} alt="Refex" className="h-10 object-contain" />
-          </div>
+        <div className="relative z-10 flex flex-col justify-end w-full h-full p-10">
 
           {/* Bottom: Slide Text */}
           <div className="max-w-lg">
@@ -165,9 +161,9 @@ const Login = () => {
       {/* Right: Login Form */}
       <div className="flex-1 flex items-center justify-center px-6 py-12 bg-white">
         <div className="w-full max-w-md">
-          {/* Logo top-right */}
-          <div className="flex justify-end mb-8">
-            <img src={REFEX_LOGO} alt="Refex" className="h-10 object-contain" />
+          {/* Logo top-right, aligned with form */}
+          <div className="flex justify-start mb-10">
+            <img src={REFEX_LOGO} alt="Refex" className="h-9 object-contain" />
           </div>
 
           <div className="mb-10">
