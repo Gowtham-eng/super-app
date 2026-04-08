@@ -1222,6 +1222,14 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
                     response_elem.remove(child)
             response_elem.append(signed_assertion)
             
+            # Clean base64 text content in signature elements (remove PEM newlines)
+            # Kissflow's strict parser rejects newlines inside X509Certificate, SignatureValue, DigestValue
+            ds_ns = 'http://www.w3.org/2000/09/xmldsig#'
+            for tag in ['X509Certificate', 'SignatureValue', 'DigestValue']:
+                for elem in response_elem.iter(f'{{{ds_ns}}}{tag}'):
+                    if elem.text:
+                        elem.text = elem.text.replace('\n', '').replace('\r', '').replace(' ', '')
+            
             signed_response_xml = etree.tostring(response_elem, xml_declaration=False, encoding='unicode', pretty_print=False)
             logging.info(f"SAML Response signed successfully for app {app_id}, user {name_id}")
         except Exception as e:
@@ -1376,6 +1384,13 @@ async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_
             signed = True
         except Exception as e:
             logging.error(f"SAML test signing failed: {e}")
+
+    # Clean base64 text content in signature elements (remove PEM newlines)
+    ds_ns = 'http://www.w3.org/2000/09/xmldsig#'
+    for tag in ['X509Certificate', 'SignatureValue', 'DigestValue']:
+        for elem in response_elem.iter(f'{{{ds_ns}}}{tag}'):
+            if elem.text:
+                elem.text = elem.text.replace('\n', '').replace('\r', '').replace(' ', '')
 
     xml_str = etree.tostring(response_elem, xml_declaration=False, encoding='unicode', pretty_print=False).strip()
     pretty_xml = etree.tostring(response_elem, pretty_print=True, xml_declaration=False, encoding='unicode')
