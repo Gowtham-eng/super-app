@@ -29,10 +29,18 @@ const AppLauncher = () => {
       toast.error(app.policy_reason || 'Access blocked by policy');
       return;
     }
-    // Launch URL already includes /api prefix, use base URL
     const baseUrl = process.env.REACT_APP_BACKEND_URL;
-    toast.success(`Launching ${app.name}...`);
-    window.open(`${baseUrl}${app.launch_url}`, '_blank');
+    const token = localStorage.getItem('iam_token');
+
+    if (app.type === 'saml' && token) {
+      // User is already logged in - skip intermediate SSO page, go directly to SAML complete
+      toast.success(`Launching ${app.name}...`);
+      window.open(`${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`, '_blank');
+    } else {
+      // Fallback: go through SSO login page
+      toast.success(`Launching ${app.name}...`);
+      window.open(`${baseUrl}${app.launch_url}`, '_blank');
+    }
   };
 
   if (loading) {
