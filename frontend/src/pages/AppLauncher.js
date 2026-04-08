@@ -46,7 +46,7 @@ const AppLauncher = () => {
 
     if (app.type === 'saml' && token) {
       // SSO flow: authenticate then redirect to home_url if set
-      let completeUrl = `${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}&debug=1`;
+      let completeUrl = `${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
       if (app.home_url) {
         completeUrl += `&relay_state=${encodeURIComponent(app.home_url)}`;
       }
