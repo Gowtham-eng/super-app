@@ -43,11 +43,12 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 
 ### Frontend Pages (DONE)
 - Login/Register with organization selection
-- Dashboard, App Launcher, App Catalog
-- SAML Apps, OIDC Apps management
-- Users, Groups, Roles, Policies management
-- Access Requests (submit/approve/reject)
-- Audit Logs viewer
+- Dashboard (admin only), App Launcher ("My Apps"), App Catalog ("Request Access")
+- SAML Apps, OIDC Apps management (admin only)
+- Users, Groups, Roles, Policies management (admin only)
+- Access Requests (admin only), Audit Logs (admin only)
+- **Role-based UI**: Admins see full sidebar; Users see only "My Apps" + "Request Access"
+- **Route protection**: AdminRoute redirects users to /launcher for admin-only pages
 
 ## P0 - Completed
 - [x] SAML SSO redirect fix (public URL instead of cluster URL)
