@@ -64,6 +64,8 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - [x] App tiles with Home URL (post-SSO redirect to specific Kissflow modules)
 - [x] 30-day persistent JWT sessions
 - [x] PWA support (manifest + service worker)
+- [x] Bug fix: SAML base64 encoding (clean output, no newlines/spaces, proper padding) - Apr 8 2026
+- [x] Bug fix: Logo upload routing (/api/uploads/ mount for K8s ingress compatibility) - Apr 8 2026
 
 ## P1 - Upcoming
 - [ ] SCIM v2 User Provisioning endpoints (/api/scim/v2/*)
