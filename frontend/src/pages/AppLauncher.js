@@ -36,6 +36,30 @@ const AppLauncher = () => {
     }
   };
 
+  // Detect if running as installed PWA on mobile
+  const isPWA = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+  const openInNativeApp = (url) => {
+    // On mobile PWA, use location.href to trigger native app universal links
+    // If Kissflow app is installed, the OS will open it natively
+    // If not, redirect to the appropriate app store
+    const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const isAndroid = /Android/i.test(navigator.userAgent);
+
+    // Try opening via universal link first
+    window.location.href = url;
+
+    // If the app isn't installed, the page will stay — after a timeout, redirect to store
+    setTimeout(() => {
+      if (isIOS) {
+        window.location.href = 'https://apps.apple.com/app/kissflow-digital-workplace/id1470220022';
+      } else if (isAndroid) {
+        window.location.href = 'https://play.google.com/store/apps/details?id=com.orangescape.kfdw';
+      }
+    }, 1500);
+  };
+
   const launchApp = (app) => {
     if (app.policy_blocked) {
       toast.error(app.policy_reason || 'Access blocked by policy');
@@ -46,34 +70,69 @@ const AppLauncher = () => {
 
     if (app.type === 'saml' && token) {
       const completeUrl = `${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
-      if (app.home_url) {
-        // Two-step: SSO first, then navigate to specific module
-        // Kissflow doesn't support RelayState, so we handle redirect ourselves
-        const w = window.open(completeUrl, '_blank');
-        // Poll until Kissflow finishes redirecting (SSO session established)
-        const checkInterval = setInterval(() => {
-          try {
-            // Once the window navigates to kissflow.com (not our domain), SSO is done
-            if (w.closed) {
-              clearInterval(checkInterval);
-              return;
-            }
-            const url = w.location.href;
-            if (url && url.includes('kissflow.com') && !url.includes('login')) {
-              clearInterval(checkInterval);
-              w.location.href = app.home_url;
-            }
-          } catch (e) {
-            // Cross-origin - means Kissflow loaded, SSO succeeded
-            clearInterval(checkInterval);
-            setTimeout(() => { w.location.href = app.home_url; }, 500);
-          }
-        }, 500);
+
+      if (isPWA && isMobile) {
+        // PWA on mobile: do SSO via location.href, which triggers native app handling
+        // After SSO, Kissflow will redirect — the OS handles opening native app
+        if (app.home_url) {
+          // For module-specific tiles: SSO first, then open module in native app
+          // Use fetch to complete SSO silently, then open the home_url natively
+          fetch(completeUrl, { credentials: 'include' })
+            .then(res => res.text())
+            .then(html => {
+              // Extract SAMLResponse and submit it via a hidden form
+              const match = html.match(/var samlData = "([^"]+)"/);
+              const actionMatch = html.match(/action="([^"]+)"/);
+              if (match && actionMatch) {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = actionMatch[1];
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = 'SAMLResponse';
+                input.value = match[1];
+                form.appendChild(input);
+                document.body.appendChild(form);
+                form.submit();
+                // After SSO establishes session, Kissflow will load
+                // The OS will handle opening the native app
+              }
+            })
+            .catch(() => {
+              // Fallback: just navigate
+              window.location.href = completeUrl;
+            });
+        } else {
+          // No home_url: just navigate to SSO endpoint
+          window.location.href = completeUrl;
+        }
       } else {
-        window.open(completeUrl, '_blank');
+        // Desktop or non-PWA: open in new tab
+        if (app.home_url) {
+          const w = window.open(completeUrl, '_blank');
+          const checkInterval = setInterval(() => {
+            try {
+              if (w.closed) { clearInterval(checkInterval); return; }
+              const url = w.location.href;
+              if (url && url.includes('kissflow.com') && !url.includes('login')) {
+                clearInterval(checkInterval);
+                w.location.href = app.home_url;
+              }
+            } catch (e) {
+              clearInterval(checkInterval);
+              setTimeout(() => { w.location.href = app.home_url; }, 500);
+            }
+          }, 500);
+        } else {
+          window.open(completeUrl, '_blank');
+        }
       }
     } else {
-      window.open(`${baseUrl}${app.launch_url}`, '_blank');
+      if (isPWA && isMobile) {
+        window.location.href = `${baseUrl}${app.launch_url}`;
+      } else {
+        window.open(`${baseUrl}${app.launch_url}`, '_blank');
+      }
     }
   };
 
