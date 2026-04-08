@@ -1106,10 +1106,30 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     response_id = f"_{''.join(str(uuid_module.uuid4()).split('-'))}"
     assertion_id = f"_{''.join(str(uuid_module.uuid4()).split('-'))}"
     
-    issuer = f"{base_url}/api/saml/{app_id}"
     acs_url = app.get('acs_url', '')
     name_id = user.get('email', '')
     name_id_format = app.get('name_id_format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress')
+    
+    # Determine issuer, cert, key - if this app shares entity_id + acs_url with another app,
+    # use the original (parent) app's issuer/cert/key so the SP can validate our response
+    issuer = f"{base_url}/api/saml/{app_id}"
+    cert_pem = app.get('certificate', '')
+    key_pem = app.get('private_key', '')
+    
+    # Find the FIRST (earliest) app with same entity_id + acs_url (the "primary" SAML connection)
+    primary_app = await db.saml_apps.find_one({
+        "entity_id": app.get('entity_id'),
+        "acs_url": acs_url,
+        "org_id": app.get('org_id')
+    }, {"_id": 0, "id": 1, "certificate": 1, "private_key": 1}, sort=[("created_at", 1)])
+    
+    if primary_app and primary_app['id'] != app_id:
+        issuer = f"{base_url}/api/saml/{primary_app['id']}"
+        if primary_app.get('certificate'):
+            cert_pem = primary_app['certificate']
+        if primary_app.get('private_key'):
+            key_pem = primary_app['private_key']
+        logging.info(f"App {app_id} shares SP with primary {primary_app['id']}, using primary issuer")
     
     now_str = now.strftime('%Y-%m-%dT%H:%M:%SZ')
     not_on_or_after_str = not_on_or_after.strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -1197,10 +1217,7 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     name_val.set(f'{{{XSI_NS}}}type', 'xs:string')
     name_val.text = user.get('name', '')
     
-    # Sign the SAML Response
-    cert_pem = app.get('certificate', '')
-    key_pem = app.get('private_key', '')
-    
+    # Sign the SAML Response (cert_pem and key_pem already set above, potentially from parent app)
     signed_response_xml = None
     
     if key_pem and cert_pem:
@@ -1416,6 +1433,24 @@ async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_
     acs_url = app.get('acs_url', '')
     name_id = user.get('email', '')
     name_id_format = app.get('name_id_format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress')
+    
+    # If this app shares entity_id + acs_url with another app, use primary's issuer/cert/key
+    cert_pem = app.get('certificate', '')
+    key_pem = app.get('private_key', '')
+    
+    primary_app = await db.saml_apps.find_one({
+        "entity_id": app.get('entity_id'),
+        "acs_url": acs_url,
+        "org_id": user['org_id']
+    }, {"_id": 0, "id": 1, "certificate": 1, "private_key": 1}, sort=[("created_at", 1)])
+    
+    if primary_app and primary_app['id'] != app_id:
+        issuer = f"{base_url}/api/saml/{primary_app['id']}"
+        if primary_app.get('certificate'):
+            cert_pem = primary_app['certificate']
+        if primary_app.get('private_key'):
+            key_pem = primary_app['private_key']
+    
     now_str = now.strftime('%Y-%m-%dT%H:%M:%SZ')
     not_on_or_after_str = not_on_or_after.strftime('%Y-%m-%dT%H:%M:%SZ')
 
@@ -1479,9 +1514,7 @@ async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_
     name_val = etree.SubElement(name_attr, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue')
     name_val.text = user.get('name', '')
 
-    # Sign the assertion
-    cert_pem = app.get('certificate', '')
-    key_pem = app.get('private_key', '')
+    # Sign the assertion (cert_pem and key_pem already set above, potentially from parent app)
     signed = False
 
     if key_pem and cert_pem:

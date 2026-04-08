@@ -152,20 +152,15 @@ const SAMLApps = () => {
 
   const launchRealSSO = () => {
     if (!testResult || !testResult.saml_response_b64) return;
-    // Create a temporary form and auto-submit to ACS URL
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = testResult.acs_url;
-    form.target = '_blank';
-    const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = 'SAMLResponse';
-    input.value = testResult.saml_response_b64;
-    form.appendChild(input);
-    document.body.appendChild(form);
-    form.submit();
-    document.body.removeChild(form);
-    toast.success('SAML Response sent to ' + selectedApp?.name);
+    // Use the /complete endpoint for real SSO (handles parent app, relay_state, etc.)
+    const baseUrl = process.env.REACT_APP_BACKEND_URL;
+    const token = localStorage.getItem('iam_token');
+    let completeUrl = `${baseUrl}/api/saml/${selectedApp.id}/complete?token=${encodeURIComponent(token)}`;
+    if (selectedApp.home_url) {
+      completeUrl += `&relay_state=${encodeURIComponent(selectedApp.home_url)}`;
+    }
+    window.open(completeUrl, '_blank');
+    toast.success('SSO initiated for ' + selectedApp?.name);
   };
 
   const openUsersModal = async (app) => {
