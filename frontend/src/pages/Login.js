@@ -165,8 +165,8 @@ const Login = () => {
       {/* Right: Login Form */}
       <div className="flex-1 flex items-center justify-center px-6 py-12 bg-white">
         <div className="w-full max-w-md">
-          {/* Mobile logo */}
-          <div className="lg:hidden flex justify-center mb-8">
+          {/* Logo top-right */}
+          <div className="flex justify-end mb-8">
             <img src={REFEX_LOGO} alt="Refex" className="h-10 object-contain" />
           </div>
 
@@ -248,10 +248,7 @@ const Login = () => {
           {/* Footer */}
           <div className="mt-12 pt-6 border-t border-zinc-100 text-center">
             <p className="text-xs text-zinc-400">
-              Refex Industries Limited
-            </p>
-            <p className="text-xs text-zinc-300 mt-1">
-              Sustainability &middot; Innovation &middot; Long-term Value
+              Powered by Refex AI team
             </p>
           </div>
         </div>
