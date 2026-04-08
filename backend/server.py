@@ -1334,10 +1334,11 @@ diag.innerHTML = lines.join("<br>");
 </script>
 </body></html>'''
     else:
-        # Base64-encode the RelayState if present, since Kissflow expects it base64-encoded
-        relay_state_b64 = ''
+        # Kissflow expects RelayState as a JSON-encoded value
+        relay_state_encoded = ''
         if relay_state:
-            relay_state_b64 = base64.b64encode(relay_state.encode('utf-8')).decode('ascii')
+            import json as json_module
+            relay_state_encoded = json_module.dumps(relay_state)
         
         html_content = f'''<!DOCTYPE html>
 <html lang="en">
@@ -1348,7 +1349,7 @@ diag.innerHTML = lines.join("<br>");
 <body>
     <form id="samlForm" method="POST" action="{escape(acs_url)}">
         <input type="hidden" name="SAMLResponse" id="samlResponse"/>
-        {'<input type="hidden" name="RelayState" value="' + relay_state_b64 + '"/>' if relay_state_b64 else ''}
+        {'<input type="hidden" name="RelayState" id="relayState"/>' if relay_state_encoded else ''}
         <noscript>
             <input type="submit" value="Continue to {escape(app.get('name', 'Application'))}"/>
         </noscript>
@@ -1359,6 +1360,7 @@ diag.innerHTML = lines.join("<br>");
     <script>
         var samlData = "{saml_response_b64}";
         document.getElementById('samlResponse').value = samlData;
+        {"document.getElementById('relayState').value = " + repr(relay_state_encoded) + ";" if relay_state_encoded else ""}
         document.getElementById('samlForm').submit();
     </script>
 </body>
