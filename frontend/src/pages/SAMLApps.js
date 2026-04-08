@@ -7,7 +7,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Switch } from '../components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
-import { ShieldCheck, Plus, PencilSimple, Trash, Copy, Download, Eye } from '@phosphor-icons/react';
+import { ShieldCheck, Plus, PencilSimple, Trash, Copy, Download, Eye, Gear } from '@phosphor-icons/react';
 
 const SAMLApps = () => {
   const { API, getAuthHeader, user } = useAuth();
@@ -17,8 +17,10 @@ const SAMLApps = () => {
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [showMetadataModal, setShowMetadataModal] = useState(false);
+  const [showKissflowModal, setShowKissflowModal] = useState(false);
   const [selectedApp, setSelectedApp] = useState(null);
   const [metadata, setMetadata] = useState('');
+  const [kissflowConfig, setKissflowConfig] = useState(null);
   const [saving, setSaving] = useState(false);
 
   const [form, setForm] = useState({
@@ -90,6 +92,22 @@ const SAMLApps = () => {
     } catch (error) {
       toast.error('Failed to load metadata');
     }
+  };
+
+  const viewKissflowConfig = async (app) => {
+    try {
+      const response = await axios.get(`${API}/apps/saml/${app.id}/kissflow-config`, getAuthHeader());
+      setKissflowConfig(response.data);
+      setSelectedApp(app);
+      setShowKissflowModal(true);
+    } catch (error) {
+      toast.error('Failed to load Kissflow config');
+    }
+  };
+
+  const copyToClipboard = (text, label) => {
+    navigator.clipboard.writeText(text);
+    toast.success(`${label || 'Value'} copied!`);
   };
 
   const copyMetadata = () => {
@@ -173,6 +191,9 @@ const SAMLApps = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button onClick={() => viewKissflowConfig(app)} className="p-2 hover:bg-[#0051FF]/10" title="Kissflow Config">
+                    <Gear size={18} className="text-[#0051FF]" />
+                  </button>
                   <button onClick={() => viewMetadata(app)} className="p-2 hover:bg-zinc-100" title="View Metadata">
                     <Eye size={18} className="text-zinc-500" />
                   </button>
@@ -280,6 +301,110 @@ const SAMLApps = () => {
             <Button onClick={downloadMetadata} className="btn-primary"><Download size={16} className="mr-2" /> Download</Button>
           </div>
           <pre className="code-display max-h-96 overflow-auto text-xs">{metadata}</pre>
+        </DialogContent>
+      </Dialog>
+
+      {/* Kissflow Configuration Modal */}
+      <Dialog open={showKissflowModal} onOpenChange={setShowKissflowModal}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Gear size={20} className="text-[#0051FF]" />
+              Kissflow SSO Configuration - {selectedApp?.name}
+            </DialogTitle>
+          </DialogHeader>
+          
+          {kissflowConfig && (
+            <div className="space-y-4">
+              <div className="p-4 bg-[#0051FF]/5 border border-[#0051FF]/20 text-sm">
+                <p className="font-semibold text-[#0051FF] mb-2">Use these values in Kissflow Admin → SSO Settings</p>
+                <p className="text-zinc-600">Copy each value and paste it into the corresponding field in Kissflow.</p>
+              </div>
+
+              {/* IdP URL */}
+              <div className="p-4 bg-zinc-50 border border-zinc-200">
+                <Label className="label-uppercase">IdP URL (Single Sign-On URL)</Label>
+                <div className="flex items-center gap-2 mt-2">
+                  <Input value={kissflowConfig.idp_url} readOnly className="input-brutalist flex-1 font-mono text-sm" />
+                  <Button onClick={() => copyToClipboard(kissflowConfig.idp_url, 'IdP URL')} className="btn-secondary py-2 px-3">
+                    <Copy size={16} />
+                  </Button>
+                </div>
+              </div>
+
+              {/* Sign-out URL */}
+              <div className="p-4 bg-zinc-50 border border-zinc-200">
+                <Label className="label-uppercase">Sign-out URL (Single Logout URL)</Label>
+                <div className="flex items-center gap-2 mt-2">
+                  <Input value={kissflowConfig.slo_url} readOnly className="input-brutalist flex-1 font-mono text-sm" />
+                  <Button onClick={() => copyToClipboard(kissflowConfig.slo_url, 'Sign-out URL')} className="btn-secondary py-2 px-3">
+                    <Copy size={16} />
+                  </Button>
+                </div>
+              </div>
+
+              {/* Security Key */}
+              <div className="p-4 bg-[#FFB800]/10 border border-[#FFB800]">
+                <Label className="label-uppercase text-[#FFB800]">Security Key (Certificate Fingerprint SHA256)</Label>
+                <div className="flex items-center gap-2 mt-2">
+                  <Input value={kissflowConfig.security_key} readOnly className="input-brutalist flex-1 font-mono text-xs" />
+                  <Button onClick={() => copyToClipboard(kissflowConfig.security_key, 'Security Key')} className="btn-secondary py-2 px-3">
+                    <Copy size={16} />
+                  </Button>
+                </div>
+                <p className="text-xs text-zinc-500 mt-2">This is the SHA256 fingerprint of the signing certificate</p>
+              </div>
+
+              {/* Metadata URL */}
+              <div className="p-4 bg-zinc-50 border border-zinc-200">
+                <Label className="label-uppercase">Metadata URL (Optional)</Label>
+                <div className="flex items-center gap-2 mt-2">
+                  <Input value={kissflowConfig.metadata_url} readOnly className="input-brutalist flex-1 font-mono text-sm" />
+                  <Button onClick={() => copyToClipboard(kissflowConfig.metadata_url, 'Metadata URL')} className="btn-secondary py-2 px-3">
+                    <Copy size={16} />
+                  </Button>
+                </div>
+              </div>
+
+              {/* Entity ID */}
+              <div className="p-4 bg-zinc-50 border border-zinc-200">
+                <Label className="label-uppercase">Entity ID</Label>
+                <div className="flex items-center gap-2 mt-2">
+                  <Input value={kissflowConfig.entity_id} readOnly className="input-brutalist flex-1 font-mono text-sm" />
+                  <Button onClick={() => copyToClipboard(kissflowConfig.entity_id, 'Entity ID')} className="btn-secondary py-2 px-3">
+                    <Copy size={16} />
+                  </Button>
+                </div>
+              </div>
+
+              {/* Instructions */}
+              <div className="border-t border-zinc-200 pt-4">
+                <h4 className="font-bold mb-3">Setup Instructions</h4>
+                <ol className="space-y-2 text-sm text-zinc-600">
+                  <li className="flex items-start gap-2">
+                    <span className="w-5 h-5 bg-[#0051FF] text-white flex items-center justify-center text-xs font-bold flex-shrink-0">1</span>
+                    <span>Go to Kissflow Admin → App Store → Configure App → SSO Settings</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="w-5 h-5 bg-[#0051FF] text-white flex items-center justify-center text-xs font-bold flex-shrink-0">2</span>
+                    <span>Choose "Manual configuration" or enter values manually</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="w-5 h-5 bg-[#0051FF] text-white flex items-center justify-center text-xs font-bold flex-shrink-0">3</span>
+                    <span>Paste the <strong>IdP URL</strong> in the "IdP URL" field</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="w-5 h-5 bg-[#0051FF] text-white flex items-center justify-center text-xs font-bold flex-shrink-0">4</span>
+                    <span>Paste the <strong>Security Key</strong> (SHA256 fingerprint) in the "Security key" field</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="w-5 h-5 bg-[#0051FF] text-white flex items-center justify-center text-xs font-bold flex-shrink-0">5</span>
+                    <span>Save and test the SSO connection</span>
+                  </li>
+                </ol>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

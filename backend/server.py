@@ -824,6 +824,53 @@ async def get_saml_metadata(app_id: str, request: Request):
     metadata = generate_saml_metadata(app, base_url)
     return Response(content=metadata, media_type="application/xml")
 
+@api_router.get("/apps/saml/{app_id}/kissflow-config")
+async def get_kissflow_config(app_id: str, request: Request):
+    """Get configuration values for Kissflow SSO setup (IdP URL, Security Key, etc.)"""
+    import hashlib
+    import base64
+    
+    app = await db.saml_apps.find_one({"id": app_id}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    
+    base_url = str(request.base_url).rstrip('/')
+    
+    # Extract certificate and calculate SHA256 fingerprint
+    cert_pem = app.get('certificate', '')
+    cert_der = None
+    fingerprint = ''
+    
+    if cert_pem:
+        # Remove PEM headers and decode
+        cert_b64 = cert_pem.replace('-----BEGIN CERTIFICATE-----', '').replace('-----END CERTIFICATE-----', '').replace('\n', '').strip()
+        try:
+            cert_der = base64.b64decode(cert_b64)
+            # Calculate SHA256 fingerprint (hex string without colons)
+            fingerprint = hashlib.sha256(cert_der).hexdigest()
+        except:
+            fingerprint = 'Error calculating fingerprint'
+    
+    return {
+        "app_name": app.get('name'),
+        "entity_id": app.get('entity_id'),
+        "idp_url": f"{base_url}/api/saml/{app_id}/sso",
+        "sso_url": f"{base_url}/api/saml/{app_id}/sso",
+        "slo_url": f"{base_url}/api/saml/{app_id}/slo",
+        "security_key": fingerprint,
+        "security_key_formatted": ':'.join(fingerprint[i:i+2] for i in range(0, len(fingerprint), 2)).upper() if fingerprint else '',
+        "metadata_url": f"{base_url}/api/saml/{app_id}/metadata",
+        "certificate": cert_pem,
+        "name_id_format": app.get('name_id_format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress'),
+        "instructions": {
+            "step1": "In Kissflow Admin → SSO Settings, select 'Configure with metadata' or 'Manual configuration'",
+            "step2": f"Set IdP URL to: {base_url}/api/saml/{app_id}/sso",
+            "step3": f"Set Sign-out URL to: {base_url}/api/saml/{app_id}/slo (optional)",
+            "step4": f"Set Security Key to: {fingerprint}",
+            "step5": "Save and test the SSO connection"
+        }
+    }
+
 # ===================== OIDC APP ROUTES =====================
 
 @api_router.get("/apps/oidc")
