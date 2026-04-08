@@ -76,6 +76,7 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - [x] OIDC form: Logo upload, Home URL field, integration credentials display - Apr 8 2026
 - [x] OIDC apps in App Launcher tiles - Apr 8 2026
 - [x] Mobile PWA: Tiles use location.href for native app universal link support - Apr 8 2026
+- [x] Android APK: Capacitor native wrapper with Kissflow deep-linking - Apr 8 2026
 
 ## P1 - Upcoming
 - [ ] SCIM v2 User Provisioning endpoints (/api/scim/v2/*)
