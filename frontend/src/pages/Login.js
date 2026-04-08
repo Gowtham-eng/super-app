@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { toast } from 'sonner';
 import axios from 'axios';
@@ -27,13 +27,28 @@ const Login = () => {
   const [selectedOrg, setSelectedOrg] = useState('');
   const [showOrgModal, setShowOrgModal] = useState(false);
   const [orgForm, setOrgForm] = useState({ name: '', domain: '', description: '' });
+  const [ssoAppId, setSsoAppId] = useState(null);
+  const ssoRedirecting = React.useRef(false);
   
-  const { login, register, createOrganization } = useAuth();
+  const { login, register, createOrganization, token } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   useEffect(() => {
     fetchOrganizations();
-  }, []);
+    const ssoApp = searchParams.get('sso_app');
+    if (ssoApp) {
+      setSsoAppId(ssoApp);
+    }
+  }, [searchParams]);
+
+  // If already logged in and SSO redirect, go to SSO completion
+  useEffect(() => {
+    if (token && ssoAppId && !ssoRedirecting.current) {
+      ssoRedirecting.current = true;
+      completeSSOLogin(ssoAppId);
+    }
+  }, [token, ssoAppId]);
 
   const fetchOrganizations = async () => {
     try {
@@ -44,6 +59,22 @@ const Login = () => {
       }
     } catch (error) {
       console.error('Failed to fetch organizations:', error);
+    }
+  };
+
+  const completeSSOLogin = async (appId) => {
+    // Small delay to ensure token is stored after login
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const storedToken = localStorage.getItem('iam_token');
+    if (storedToken) {
+      const relayState = searchParams.get('relay_state') || '';
+      let completeUrl = `${process.env.REACT_APP_BACKEND_URL}/api/saml/${appId}/complete?token=${encodeURIComponent(storedToken)}`;
+      if (relayState) {
+        completeUrl += `&relay_state=${encodeURIComponent(relayState)}`;
+      }
+      window.location.href = completeUrl;
+    } else {
+      toast.error('Please login first to continue SSO');
     }
   };
 
@@ -64,7 +95,13 @@ const Login = () => {
         await register(email, password, name, selectedOrg);
         toast.success('Account created successfully!');
       }
-      navigate('/');
+      
+      // If SSO redirect, complete SSO flow
+      if (ssoAppId) {
+        completeSSOLogin(ssoAppId);
+      } else {
+        navigate('/');
+      }
     } catch (error) {
       const message = error.response?.data?.detail || 'Authentication failed';
       toast.error(message);

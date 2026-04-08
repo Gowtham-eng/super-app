@@ -27,6 +27,9 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'kissflow-iam-secret-key-2024')
 JWT_ALGORITHM = 'HS256'
 JWT_EXPIRATION_HOURS = 24
 
+# Public URL - MUST be set for SAML SSO to work in Kubernetes
+PUBLIC_URL = os.environ.get('PUBLIC_URL', '').rstrip('/')
+
 app = FastAPI(title="Kissflow IAM - Identity & Access Management")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer()
@@ -244,6 +247,17 @@ async def log_audit(org_id: str, action: str, resource_type: str, user_id: str =
         "status": status
     }
     await db.audit_logs.insert_one(audit_doc)
+
+def get_public_base_url(request: Request = None) -> str:
+    """Get the public-facing base URL. Uses PUBLIC_URL env var, falls back to request headers."""
+    if PUBLIC_URL:
+        return PUBLIC_URL
+    if request:
+        forwarded_host = request.headers.get('x-forwarded-host')
+        host = forwarded_host or request.headers.get('host', '')
+        scheme = request.headers.get('x-forwarded-proto', 'https')
+        return f"{scheme}://{host}"
+    return 'http://localhost:8001'
 
 def generate_self_signed_cert():
     from cryptography import x509
@@ -820,7 +834,7 @@ async def get_saml_metadata(app_id: str, request: Request):
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
     
-    base_url = str(request.base_url).rstrip('/')
+    base_url = get_public_base_url(request)
     metadata = generate_saml_metadata(app, base_url)
     return Response(content=metadata, media_type="application/xml")
 
@@ -834,19 +848,16 @@ async def get_kissflow_config(app_id: str, request: Request):
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
     
-    base_url = str(request.base_url).rstrip('/')
+    base_url = get_public_base_url(request)
     
     # Extract certificate and calculate SHA256 fingerprint
     cert_pem = app.get('certificate', '')
-    cert_der = None
     fingerprint = ''
     
     if cert_pem:
-        # Remove PEM headers and decode
         cert_b64 = cert_pem.replace('-----BEGIN CERTIFICATE-----', '').replace('-----END CERTIFICATE-----', '').replace('\n', '').strip()
         try:
             cert_der = base64.b64decode(cert_b64)
-            # Calculate SHA256 fingerprint (hex string without colons)
             fingerprint = hashlib.sha256(cert_der).hexdigest()
         except:
             fingerprint = 'Error calculating fingerprint'
@@ -863,7 +874,7 @@ async def get_kissflow_config(app_id: str, request: Request):
         "certificate": cert_pem,
         "name_id_format": app.get('name_id_format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress'),
         "instructions": {
-            "step1": "In Kissflow Admin → SSO Settings, select 'Configure with metadata' or 'Manual configuration'",
+            "step1": "In Kissflow Admin > SSO Settings, select Manual configuration",
             "step2": f"Set IdP URL to: {base_url}/api/saml/{app_id}/sso",
             "step3": f"Set Sign-out URL to: {base_url}/api/saml/{app_id}/slo (optional)",
             "step4": f"Set Security Key to: {fingerprint}",
@@ -874,18 +885,24 @@ async def get_kissflow_config(app_id: str, request: Request):
 @api_router.get("/saml/{app_id}/sso")
 @api_router.post("/saml/{app_id}/sso")
 async def saml_sso(app_id: str, request: Request):
-    """SAML Single Sign-On endpoint - IdP-initiated SSO"""
-    import base64
-    import zlib
-    
+    """SAML Single Sign-On endpoint - handles both IdP-initiated and SP-initiated SSO"""
     app = await db.saml_apps.find_one({"id": app_id}, {"_id": 0})
     if not app:
         raise HTTPException(status_code=404, detail="SAML App not found")
     
-    # For IdP-initiated SSO, we need to show a login page or redirect
-    # For now, return an HTML page that explains what to do
-    base_url = str(request.base_url).rstrip('/')
+    base_url = get_public_base_url(request)
+    frontend_url = base_url
     
+    # Capture RelayState if present (SP-initiated flow)
+    params = dict(request.query_params)
+    relay_state = params.get('RelayState', '')
+    
+    # Build login URL with SSO app and optional relay state
+    login_url = f"{frontend_url}/login?sso_app={app_id}"
+    if relay_state:
+        from urllib.parse import quote
+        login_url += f"&relay_state={quote(relay_state)}"
+
     html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -900,7 +917,7 @@ async def saml_sso(app_id: str, request: Request):
         p {{ color: #71717a; margin-bottom: 24px; }}
         .app-info {{ background: #f4f4f5; padding: 16px; margin-bottom: 24px; }}
         .app-name {{ font-weight: 600; font-size: 18px; }}
-        .app-url {{ font-size: 12px; color: #71717a; font-family: monospace; }}
+        .app-url {{ font-size: 12px; color: #71717a; font-family: monospace; word-break: break-all; }}
         .btn {{ display: block; width: 100%; padding: 16px; background: #0051FF; color: white; text-align: center; text-decoration: none; font-weight: 600; margin-bottom: 12px; }}
         .btn:hover {{ background: #003ECC; }}
         .btn-secondary {{ background: #f4f4f5; color: #18181b; }}
@@ -918,7 +935,7 @@ async def saml_sso(app_id: str, request: Request):
             <div class="app-url">{app.get('entity_id', '')}</div>
         </div>
         
-        <a href="{base_url.replace('/api', '')}/login?redirect={app_id}" class="btn">Sign In with Kissflow IAM</a>
+        <a href="{login_url}" class="btn">Sign In with Kissflow IAM</a>
         <a href="{app.get('acs_url', '#')}" class="btn btn-secondary">Cancel</a>
         
         <p class="info">
@@ -970,6 +987,213 @@ async def saml_slo(app_id: str, request: Request):
     
     return Response(content=html_content, media_type="text/html")
 
+@api_router.get("/saml/{app_id}/complete")
+async def saml_complete_sso(app_id: str, request: Request, token: str = None, relay_state: str = None):
+    """Complete SAML SSO - Generate signed SAML Response and POST to ACS URL"""
+    import base64
+    import uuid as uuid_module
+    from xml.sax.saxutils import escape
+    from lxml import etree
+    
+    app = await db.saml_apps.find_one({"id": app_id}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="SAML App not found")
+    
+    base_url = get_public_base_url(request)
+    
+    # Get token from query param or Authorization header
+    auth_token = token
+    if not auth_token:
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            auth_token = auth_header[7:]
+    
+    if not auth_token:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=f"{base_url}/login?sso_app={app_id}")
+    
+    # Decode token and get user
+    try:
+        payload = decode_token(auth_token)
+    except:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=f"{base_url}/login?sso_app={app_id}")
+    
+    user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0, "password": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    
+    # Check user has access to this app
+    has_access = await check_user_app_access(user, app)
+    if not has_access:
+        raise HTTPException(status_code=403, detail="You don't have access to this application")
+    
+    # Generate SAML Response timestamps
+    now = datetime.now(timezone.utc)
+    not_on_or_after = now + timedelta(minutes=5)
+    response_id = f"_{''.join(str(uuid_module.uuid4()).split('-'))}"
+    assertion_id = f"_{''.join(str(uuid_module.uuid4()).split('-'))}"
+    
+    issuer = f"{base_url}/api/saml/{app_id}"
+    acs_url = app.get('acs_url', '')
+    name_id = user.get('email', '')
+    name_id_format = app.get('name_id_format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress')
+    
+    now_str = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+    not_on_or_after_str = not_on_or_after.strftime('%Y-%m-%dT%H:%M:%SZ')
+    
+    # Define SAML namespaces
+    NSMAP = {
+        'samlp': 'urn:oasis:names:tc:SAML:2.0:protocol',
+        'saml': 'urn:oasis:names:tc:SAML:2.0:assertion',
+    }
+    
+    # Build SAML Response XML using lxml
+    response_elem = etree.Element('{urn:oasis:names:tc:SAML:2.0:protocol}Response', nsmap=NSMAP)
+    response_elem.set('ID', response_id)
+    response_elem.set('Version', '2.0')
+    response_elem.set('IssueInstant', now_str)
+    response_elem.set('Destination', acs_url)
+    
+    # Issuer
+    issuer_elem = etree.SubElement(response_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}Issuer')
+    issuer_elem.text = issuer
+    
+    # Status
+    status_elem = etree.SubElement(response_elem, '{urn:oasis:names:tc:SAML:2.0:protocol}Status')
+    status_code_elem = etree.SubElement(status_elem, '{urn:oasis:names:tc:SAML:2.0:protocol}StatusCode')
+    status_code_elem.set('Value', 'urn:oasis:names:tc:SAML:2.0:status:Success')
+    
+    # Assertion
+    assertion_elem = etree.SubElement(response_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}Assertion')
+    assertion_elem.set('ID', assertion_id)
+    assertion_elem.set('Version', '2.0')
+    assertion_elem.set('IssueInstant', now_str)
+    
+    # Assertion > Issuer
+    assertion_issuer = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}Issuer')
+    assertion_issuer.text = issuer
+    
+    # Assertion > Subject
+    subject_elem = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}Subject')
+    name_id_elem = etree.SubElement(subject_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}NameID')
+    name_id_elem.set('Format', name_id_format)
+    name_id_elem.text = name_id
+    
+    subj_conf = etree.SubElement(subject_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}SubjectConfirmation')
+    subj_conf.set('Method', 'urn:oasis:names:tc:SAML:2.0:cm:bearer')
+    subj_conf_data = etree.SubElement(subj_conf, '{urn:oasis:names:tc:SAML:2.0:assertion}SubjectConfirmationData')
+    subj_conf_data.set('NotOnOrAfter', not_on_or_after_str)
+    subj_conf_data.set('Recipient', acs_url)
+    
+    # Assertion > Conditions
+    conditions_elem = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}Conditions')
+    conditions_elem.set('NotBefore', now_str)
+    conditions_elem.set('NotOnOrAfter', not_on_or_after_str)
+    audience_restriction = etree.SubElement(conditions_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}AudienceRestriction')
+    audience_elem = etree.SubElement(audience_restriction, '{urn:oasis:names:tc:SAML:2.0:assertion}Audience')
+    audience_elem.text = app.get('entity_id', '')
+    
+    # Assertion > AuthnStatement
+    authn_stmt = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}AuthnStatement')
+    authn_stmt.set('AuthnInstant', now_str)
+    authn_ctx = etree.SubElement(authn_stmt, '{urn:oasis:names:tc:SAML:2.0:assertion}AuthnContext')
+    authn_ctx_ref = etree.SubElement(authn_ctx, '{urn:oasis:names:tc:SAML:2.0:assertion}AuthnContextClassRef')
+    authn_ctx_ref.text = 'urn:oasis:names:tc:SAML:2.0:ac:classes:Password'
+    
+    # Assertion > AttributeStatement
+    attr_stmt = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeStatement')
+    
+    email_attr = etree.SubElement(attr_stmt, '{urn:oasis:names:tc:SAML:2.0:assertion}Attribute')
+    email_attr.set('Name', 'email')
+    email_attr.set('NameFormat', 'urn:oasis:names:tc:SAML:2.0:attrname-format:basic')
+    email_val = etree.SubElement(email_attr, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue')
+    email_val.text = user.get('email', '')
+    
+    name_attr = etree.SubElement(attr_stmt, '{urn:oasis:names:tc:SAML:2.0:assertion}Attribute')
+    name_attr.set('Name', 'name')
+    name_attr.set('NameFormat', 'urn:oasis:names:tc:SAML:2.0:attrname-format:basic')
+    name_val = etree.SubElement(name_attr, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue')
+    name_val.text = user.get('name', '')
+    
+    # Sign the SAML Response
+    cert_pem = app.get('certificate', '')
+    key_pem = app.get('private_key', '')
+    
+    signed_response_xml = None
+    
+    if key_pem and cert_pem:
+        try:
+            import signxml
+            from signxml import XMLSigner
+            
+            # Sign the assertion using signxml (enveloped signature)
+            signer = XMLSigner(
+                method=signxml.methods.enveloped,
+                signature_algorithm="rsa-sha256",
+                digest_algorithm="sha256",
+                c14n_algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"
+            )
+            
+            # Sign the assertion element
+            signed_assertion = signer.sign(
+                assertion_elem, 
+                key=key_pem, 
+                cert=cert_pem, 
+                reference_uri=f'#{assertion_id}'
+            )
+            
+            # Replace the unsigned assertion with the signed one in the response
+            # Find and remove old assertion, add signed one
+            for child in list(response_elem):
+                if child.tag == '{urn:oasis:names:tc:SAML:2.0:assertion}Assertion':
+                    response_elem.remove(child)
+            response_elem.append(signed_assertion)
+            
+            signed_response_xml = etree.tostring(response_elem, xml_declaration=False, encoding='unicode')
+            logging.info(f"SAML Response signed successfully for app {app_id}, user {name_id}")
+        except Exception as e:
+            logging.error(f"SAML signing failed: {e}")
+            signed_response_xml = None
+    
+    if not signed_response_xml:
+        signed_response_xml = etree.tostring(response_elem, xml_declaration=False, encoding='unicode')
+        logging.warning(f"Sending UNSIGNED SAML response for app {app_id}")
+
+    # Base64 encode the SAML Response
+    saml_response_b64 = base64.b64encode(signed_response_xml.encode('utf-8')).decode('utf-8')
+    
+    # Log the SSO attempt
+    await log_audit(user['org_id'], "saml_sso_initiated", "app", user['id'], user['email'], app_id,
+                   {"app_name": app.get('name'), "acs_url": acs_url}, 
+                   request.client.host if request.client else None)
+    
+    # Return an HTML form that auto-submits to the ACS URL
+    html_content = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Redirecting to {escape(app.get('name', 'Application'))}...</title>
+</head>
+<body onload="document.forms[0].submit();">
+    <noscript>
+        <p>JavaScript is required. Please click the button below to continue.</p>
+    </noscript>
+    <form method="POST" action="{escape(acs_url)}">
+        <input type="hidden" name="SAMLResponse" value="{saml_response_b64}"/>
+        {'<input type="hidden" name="RelayState" value="' + escape(relay_state) + '"/>' if relay_state else ''}
+        <noscript>
+            <input type="submit" value="Continue to {escape(app.get('name', 'Application'))}"/>
+        </noscript>
+    </form>
+    <p style="font-family: sans-serif; color: #666; text-align: center; margin-top: 50px;">
+        Redirecting to {escape(app.get('name', 'Application'))}...
+    </p>
+</body>
+</html>'''
+    
+    return Response(content=html_content, media_type="text/html")
+
 # ===================== OIDC APP ROUTES =====================
 
 @api_router.get("/apps/oidc")
@@ -985,7 +1209,7 @@ async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Dep
     app_id = str(uuid.uuid4())
     client_id = f"oidc_{str(uuid.uuid4()).replace('-', '')[:16]}"
     client_secret = str(uuid.uuid4()).replace('-', '') + str(uuid.uuid4()).replace('-', '')
-    base_url = str(request.base_url).rstrip('/')
+    base_url = get_public_base_url(request)
     
     app_doc = {
         "id": app_id,
@@ -1055,7 +1279,7 @@ async def get_oidc_discovery(app_id: str, request: Request):
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
     
-    base_url = str(request.base_url).rstrip('/')
+    base_url = get_public_base_url(request)
     return {
         "issuer": base_url,
         "authorization_endpoint": f"{base_url}/api/oidc/{app_id}/authorize",

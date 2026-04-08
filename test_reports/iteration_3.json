@@ -1,0 +1,77 @@
+{
+  "summary": "Completed comprehensive testing of SAML SSO integration fixes for Kissflow IAM. All 20 backend tests passed (100%). All critical SAML SSO features verified working: public URL usage, SAML response signing with signxml, correct ACS URL, proper NameID, and no internal cluster URLs.",
+  
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  
+  "passed_tests": [
+    "Health endpoint (/api/health)",
+    "Acme admin login (admin@acme.com / Admin123!)",
+    "Refex admin login (gowtham.s@refex.co.in / Admin123!)",
+    "SAML SSO endpoint returns HTML (/api/saml/{app_id}/sso)",
+    "SAML SSO HTML contains public URL (kissflow-access-hub.preview.emergentagent.com)",
+    "SAML SSO HTML does NOT contain internal cluster URLs",
+    "SAML SSO preserves RelayState parameter",
+    "SAML Complete requires authentication",
+    "SAML Complete returns HTML form with SAMLResponse",
+    "SAML Complete form posts to correct ACS URL (refexgroup.kissflow.com)",
+    "SAML Response is SIGNED (contains SignatureValue, DigestValue, X509Certificate)",
+    "SAML Response Issuer uses public URL",
+    "SAML Response NameID contains user email (gowtham.s@refex.co.in)",
+    "Kissflow config returns public URLs (/api/apps/saml/{app_id}/kissflow-config)",
+    "Kissflow config has security key (certificate fingerprint)",
+    "SAML Metadata returns XML (/api/apps/saml/{app_id}/metadata)",
+    "SAML Metadata contains public domain URLs",
+    "App Launcher shows Kissflow app for authorized user",
+    "Invalid app ID returns 404 for all SAML endpoints",
+    "Login with SSO param redirects to SAML complete after login"
+  ],
+  
+  "test_report_links": [
+    "/app/backend/tests/test_saml_sso.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  
+  "action_items": [],
+  
+  "critical_code_review_comments": [],
+  
+  "updated_files": [
+    "/app/backend/tests/test_saml_sso.py"
+  ],
+  
+  "success_rate": {
+    "backend": "100% (20/20 tests passed)",
+    "frontend": "100% (all UI flows working)"
+  },
+  
+  "test_credentials": {
+    "acme_admin": "admin@acme.com / Admin123!",
+    "refex_admin": "gowtham.s@refex.co.in / Admin123!",
+    "saml_app_id": "e5a4c999-65fd-4301-9ebd-8948893eea0d"
+  },
+  
+  "seed_data_creation": "None - used existing test data",
+  
+  "retest_needed": false,
+  
+  "should_main_agent_self_test": false,
+  
+  "context_for_next_testing_agent": "SAML SSO integration is fully working. Key fixes verified: 1) PUBLIC_URL env var used for URL construction, 2) signxml library used for SAML response signing (replaced broken xmlsec), 3) All endpoints use get_public_base_url() for public URLs. The Kissflow SAML app (e5a4c999-65fd-4301-9ebd-8948893eea0d) belongs to Refex Industries org and is accessible by gowtham.s@refex.co.in user.",
+  
+  "verified_fixes": {
+    "public_url_usage": "All SAML endpoints now use PUBLIC_URL env var (https://kissflow-access-hub.preview.emergentagent.com) instead of internal cluster URLs",
+    "saml_signing": "SAML responses are now properly signed using signxml library with RSA-SHA256 algorithm",
+    "issuer_url": "SAML Issuer is correctly set to https://kissflow-access-hub.preview.emergentagent.com/api/saml/{app_id}",
+    "acs_url": "Form correctly posts to Kissflow ACS URL (https://refexgroup.kissflow.com/signin/2/AcCMptlq60zH/saml/?acs)",
+    "name_id": "NameID correctly contains user email"
+  }
+}
