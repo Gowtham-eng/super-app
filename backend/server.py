@@ -143,6 +143,7 @@ class OIDCAppCreate(BaseModel):
     scopes: List[str] = ["openid", "profile", "email"]
     grant_types: List[str] = ["authorization_code"]
     logo_url: Optional[str] = None
+    home_url: Optional[str] = None
     allowed_group_ids: List[str] = []
     allowed_role_ids: List[str] = []
 
@@ -1597,6 +1598,7 @@ async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Dep
         "token_endpoint": f"{base_url}/api/oidc/{app_id}/token",
         "userinfo_endpoint": f"{base_url}/api/oidc/{app_id}/userinfo",
         "logo_url": app.logo_url,
+        "home_url": app.home_url,
         "allowed_group_ids": app.allowed_group_ids,
         "allowed_role_ids": app.allowed_role_ids,
         "status": "active",
@@ -2226,6 +2228,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
                 "name": app['name'],
                 "description": app.get('description'),
                 "logo_url": app.get('logo_url'),
+                "home_url": app.get('home_url'),
                 "type": "oidc",
                 "launch_url": f"/api/oidc/{app['id']}/authorize",
                 "policy_blocked": not allowed,
