@@ -1334,11 +1334,11 @@ diag.innerHTML = lines.join("<br>");
 </script>
 </body></html>'''
     else:
-        # For Kissflow: DO NOT send RelayState in the SAML form POST.
-        # Kissflow's parser incorrectly tries to base64-decode the RelayState URL,
-        # causing "Incorrect padding" errors. Instead, after SAML SSO is established,
-        # we redirect to the home_url using window.location.
-        home_url_for_redirect = relay_state or ''
+        # Base64-encode the RelayState if present, since Kissflow expects it base64-encoded
+        relay_state_b64 = ''
+        if relay_state:
+            relay_state_b64 = base64.b64encode(relay_state.encode('utf-8')).decode('ascii')
+        
         html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1348,6 +1348,7 @@ diag.innerHTML = lines.join("<br>");
 <body>
     <form id="samlForm" method="POST" action="{escape(acs_url)}">
         <input type="hidden" name="SAMLResponse" id="samlResponse"/>
+        {'<input type="hidden" name="RelayState" value="' + relay_state_b64 + '"/>' if relay_state_b64 else ''}
         <noscript>
             <input type="submit" value="Continue to {escape(app.get('name', 'Application'))}"/>
         </noscript>
