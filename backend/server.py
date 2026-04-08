@@ -1655,11 +1655,313 @@ async def get_oidc_discovery(app_id: str, request: Request):
         "issuer": base_url,
         "authorization_endpoint": f"{base_url}/api/oidc/{app_id}/authorize",
         "token_endpoint": f"{base_url}/api/oidc/{app_id}/token",
-        "userinfo_endpoint": f"{base_url}/api/oidc/{app_id}/userinfo",
-        "jwks_uri": f"{base_url}/api/oidc/{app_id}/jwks",
-        "scopes_supported": app.get('scopes', ["openid", "profile", "email"]),
-        "response_types_supported": ["code", "token", "id_token"],
-        "grant_types_supported": app.get('grant_types', ["authorization_code"]),
+        "userinfo_endpoint": f"{base_url}/api/oidc/userinfo",
+        "jwks_uri": f"{base_url}/api/oidc/jwks",
+        "scopes_supported": ["openid", "profile", "email"],
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "subject_types_supported": ["public"],
+        "id_token_signing_alg_values_supported": ["HS256"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
+    }
+
+# ===================== OIDC PROVIDER FLOW =====================
+
+@api_router.get("/oidc/{app_id}/authorize")
+async def oidc_authorize(
+    app_id: str,
+    request: Request,
+    response_type: str = Query(...),
+    client_id: str = Query(...),
+    redirect_uri: str = Query(...),
+    scope: str = Query("openid"),
+    state: Optional[str] = Query(None),
+    nonce: Optional[str] = Query(None),
+):
+    """OAuth2 Authorization endpoint - shows login page or redirects with auth code"""
+    # Find the OIDC app by client_id
+    app = await db.oidc_apps.find_one({"client_id": client_id, "id": app_id}, {"_id": 0})
+    if not app:
+        # Also try finding just by client_id (some apps don't include app_id in URL)
+        app = await db.oidc_apps.find_one({"client_id": client_id}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=400, detail="Invalid client_id")
+    
+    if app.get('status') != 'active':
+        raise HTTPException(status_code=400, detail="Application is inactive")
+    
+    # Validate redirect_uri
+    if redirect_uri not in app.get('redirect_uris', []):
+        raise HTTPException(status_code=400, detail=f"Invalid redirect_uri. Allowed: {app.get('redirect_uris', [])}")
+    
+    if response_type != 'code':
+        raise HTTPException(status_code=400, detail="Only response_type=code is supported")
+    
+    # Check if user has an active session (IAM token cookie or query param)
+    token = request.query_params.get('token') or request.cookies.get('iam_token')
+    if not token:
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:]
+    
+    base_url = get_public_base_url(request)
+    
+    if token:
+        try:
+            payload = decode_token(token)
+            user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0})
+            if user:
+                # User is authenticated - generate authorization code
+                auth_code = str(uuid.uuid4()).replace('-', '')
+                
+                # Store auth code in DB with expiry
+                await db.oidc_auth_codes.insert_one({
+                    "code": auth_code,
+                    "client_id": client_id,
+                    "app_id": app.get('id'),
+                    "user_id": user['id'],
+                    "email": user['email'],
+                    "name": user.get('name', user.get('full_name', '')),
+                    "org_id": user.get('org_id', ''),
+                    "redirect_uri": redirect_uri,
+                    "scope": scope,
+                    "nonce": nonce,
+                    "created_at": datetime.now(timezone.utc),
+                    "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+                    "used": False,
+                })
+                
+                # Redirect back to the app with authorization code
+                separator = '&' if '?' in redirect_uri else '?'
+                redirect_url = f"{redirect_uri}{separator}code={auth_code}"
+                if state:
+                    redirect_url += f"&state={state}"
+                
+                return Response(
+                    status_code=302,
+                    headers={"Location": redirect_url}
+                )
+        except Exception:
+            pass  # Token invalid, show login page
+    
+    # No valid session - show login page that will redirect back after auth
+    # Build the authorize URL to come back to after login
+    import urllib.parse
+    params = {
+        "response_type": response_type,
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": scope,
+    }
+    if state:
+        params["state"] = state
+    if nonce:
+        params["nonce"] = nonce
+    
+    authorize_url = f"{base_url}/api/oidc/{app_id}/authorize?{urllib.parse.urlencode(params)}"
+    login_url = f"{base_url}/login?oidc_redirect={urllib.parse.quote(authorize_url)}"
+    
+    return Response(
+        status_code=302,
+        headers={"Location": login_url}
+    )
+
+@api_router.post("/oidc/{app_id}/token")
+async def oidc_token(app_id: str, request: Request):
+    """OAuth2 Token endpoint - exchanges authorization code for tokens"""
+    # Parse form data or JSON body
+    content_type = request.headers.get('content-type', '')
+    if 'application/x-www-form-urlencoded' in content_type:
+        form = await request.form()
+        data = dict(form)
+    elif 'application/json' in content_type:
+        data = await request.json()
+    else:
+        # Try form first, fallback to JSON
+        try:
+            form = await request.form()
+            data = dict(form)
+        except:
+            data = await request.json()
+    
+    grant_type = data.get('grant_type')
+    code = data.get('code')
+    redirect_uri = data.get('redirect_uri')
+    client_id = data.get('client_id')
+    client_secret = data.get('client_secret')
+    
+    # Support Basic Auth for client credentials
+    if not client_id or not client_secret:
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Basic '):
+            import base64
+            decoded = base64.b64decode(auth_header[6:]).decode('utf-8')
+            client_id, client_secret = decoded.split(':', 1)
+    
+    if grant_type != 'authorization_code':
+        return Response(
+            content='{"error": "unsupported_grant_type"}',
+            status_code=400,
+            media_type="application/json"
+        )
+    
+    if not code or not client_id or not client_secret:
+        return Response(
+            content='{"error": "invalid_request", "error_description": "Missing required parameters"}',
+            status_code=400,
+            media_type="application/json"
+        )
+    
+    # Verify client credentials
+    app = await db.oidc_apps.find_one({"client_id": client_id}, {"_id": 0})
+    if not app or app.get('client_secret') != client_secret:
+        return Response(
+            content='{"error": "invalid_client"}',
+            status_code=401,
+            media_type="application/json"
+        )
+    
+    # Verify authorization code
+    auth_code = await db.oidc_auth_codes.find_one({"code": code, "client_id": client_id}, {"_id": 0})
+    if not auth_code:
+        return Response(
+            content='{"error": "invalid_grant", "error_description": "Invalid authorization code"}',
+            status_code=400,
+            media_type="application/json"
+        )
+    
+    if auth_code.get('used'):
+        return Response(
+            content='{"error": "invalid_grant", "error_description": "Authorization code already used"}',
+            status_code=400,
+            media_type="application/json"
+        )
+    
+    expires_at = auth_code.get('expires_at')
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at:
+        # Ensure timezone-aware comparison
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < datetime.now(timezone.utc):
+            return Response(
+                content='{"error": "invalid_grant", "error_description": "Authorization code expired"}',
+                status_code=400,
+                media_type="application/json"
+            )
+    
+    if redirect_uri and redirect_uri != auth_code.get('redirect_uri'):
+        return Response(
+            content='{"error": "invalid_grant", "error_description": "redirect_uri mismatch"}',
+            status_code=400,
+            media_type="application/json"
+        )
+    
+    # Mark code as used
+    await db.oidc_auth_codes.update_one({"code": code}, {"$set": {"used": True}})
+    
+    base_url = get_public_base_url(request)
+    now = datetime.now(timezone.utc)
+    
+    # Generate access token
+    access_token_payload = {
+        "sub": auth_code['user_id'],
+        "email": auth_code['email'],
+        "name": auth_code.get('name', ''),
+        "iss": base_url,
+        "aud": client_id,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(hours=1)).timestamp()),
+        "scope": auth_code.get('scope', 'openid'),
+    }
+    access_token = jwt.encode(access_token_payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    
+    # Generate ID token (for OpenID Connect)
+    id_token_payload = {
+        "sub": auth_code['user_id'],
+        "email": auth_code['email'],
+        "name": auth_code.get('name', ''),
+        "iss": base_url,
+        "aud": client_id,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(hours=1)).timestamp()),
+        "at_hash": "",  # Simplified
+    }
+    if auth_code.get('nonce'):
+        id_token_payload['nonce'] = auth_code['nonce']
+    id_token = jwt.encode(id_token_payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    
+    # Store access token for userinfo lookups
+    await db.oidc_access_tokens.insert_one({
+        "access_token": access_token,
+        "user_id": auth_code['user_id'],
+        "email": auth_code['email'],
+        "name": auth_code.get('name', ''),
+        "org_id": auth_code.get('org_id', ''),
+        "client_id": client_id,
+        "scope": auth_code.get('scope', 'openid'),
+        "created_at": now,
+        "expires_at": now + timedelta(hours=1),
+    })
+    
+    return {
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "id_token": id_token,
+        "scope": auth_code.get('scope', 'openid'),
+    }
+
+@api_router.get("/oidc/userinfo")
+@api_router.post("/oidc/userinfo")
+async def oidc_userinfo(request: Request):
+    """OIDC UserInfo endpoint - returns user profile from access token"""
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
+    
+    access_token = auth_header[7:]
+    
+    # Try to decode the JWT directly
+    try:
+        payload = jwt.decode(access_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = payload.get('sub')
+        user = await db.users.find_one({"id": user_id}, {"_id": 0})
+        if user:
+            response = {
+                "sub": user['id'],
+                "email": user.get('email', ''),
+                "email_verified": True,
+                "name": user.get('name', user.get('full_name', '')),
+            }
+            # Add profile fields if scope includes 'profile'
+            if user.get('name') or user.get('full_name'):
+                full_name = user.get('name', user.get('full_name', ''))
+                parts = full_name.split(' ', 1)
+                response['given_name'] = parts[0]
+                response['family_name'] = parts[1] if len(parts) > 1 else ''
+            
+            # Google-compatible picture field
+            if user.get('picture') or user.get('avatar_url'):
+                response['picture'] = user.get('picture', user.get('avatar_url', ''))
+            
+            return response
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except Exception:
+        pass
+    
+    # Fallback: look up in stored tokens
+    token_doc = await db.oidc_access_tokens.find_one({"access_token": access_token}, {"_id": 0})
+    if not token_doc:
+        raise HTTPException(status_code=401, detail="Invalid access token")
+    
+    return {
+        "sub": token_doc['user_id'],
+        "email": token_doc.get('email', ''),
+        "email_verified": True,
+        "name": token_doc.get('name', ''),
     }
 
 # ===================== ACCESS POLICY ROUTES =====================

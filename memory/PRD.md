@@ -67,6 +67,11 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - [x] Bug fix: SAML base64 encoding (clean output, no newlines/spaces, proper padding) - Apr 8 2026
 - [x] Bug fix: Logo upload routing (/api/uploads/ mount for K8s ingress compatibility) - Apr 8 2026
 - [x] Bug fix: SAML X509Certificate PEM newlines stripped from XML (Kissflow strict parser) - Apr 8 2026
+- [x] Bug fix: SAML Signature element position (moved after Issuer per schema) - Apr 8 2026
+- [x] Bug fix: Shared SP support (multiple apps with same entity_id use primary Issuer) - Apr 8 2026
+- [x] Bug fix: Kissflow RelayState removed (Kissflow cannot handle RelayState) - Apr 8 2026
+- [x] OIDC Provider: Full OAuth2/OIDC IdP flow (authorize, token, userinfo) - Apr 8 2026
+- [x] PWA native app deep-linking (opens Kissflow app on mobile, fallback to store) - Apr 8 2026
 
 ## P1 - Upcoming
 - [ ] SCIM v2 User Provisioning endpoints (/api/scim/v2/*)

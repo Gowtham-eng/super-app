@@ -60,10 +60,21 @@ const Login = () => {
     if (token && ssoAppId && !ssoRedirecting.current) {
       ssoRedirecting.current = true;
       completeSSOLogin(ssoAppId);
-    } else if (token && !ssoAppId) {
-      navigate('/');
+    } else if (token) {
+      // Check for OIDC redirect
+      const oidcRedirect = searchParams.get('oidc_redirect');
+      if (oidcRedirect) {
+        // After login, redirect back to OIDC authorize with token
+        const storedToken = localStorage.getItem('iam_token');
+        const separator = oidcRedirect.includes('?') ? '&' : '?';
+        window.location.href = `${oidcRedirect}${separator}token=${encodeURIComponent(storedToken)}`;
+        return;
+      }
+      if (!ssoAppId) {
+        navigate('/');
+      }
     }
-  }, [token, ssoAppId, navigate]);
+  }, [token, ssoAppId, navigate, searchParams]);
 
   const completeSSOLogin = async (appId) => {
     await new Promise(resolve => setTimeout(resolve, 300));

@@ -205,6 +205,70 @@ const OIDCApps = () => {
                   ))}
                 </div>
               </div>
+
+              {/* Integration Config for 3rd-party apps */}
+              <div className="mt-4 pt-4 border-t border-zinc-100">
+                <p className="text-xs font-bold uppercase text-zinc-400 mb-2">OAuth2 / OIDC Config (for your app)</p>
+                <div className="grid gap-2 text-sm">
+                  <div className="flex items-center justify-between bg-zinc-50 px-3 py-2 rounded">
+                    <div>
+                      <span className="text-zinc-500 text-xs">Client ID</span>
+                      <p className="font-mono text-xs break-all">{app.client_id}</p>
+                    </div>
+                    <button onClick={() => copyToClipboard(app.client_id)} className="p-1 hover:bg-zinc-200 rounded" data-testid={`copy-client-id-${app.id}`}>
+                      <Copy size={14} className="text-zinc-500" />
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between bg-zinc-50 px-3 py-2 rounded">
+                    <div>
+                      <span className="text-zinc-500 text-xs">Authorization URL</span>
+                      <p className="font-mono text-xs break-all">{app.authorization_endpoint}</p>
+                    </div>
+                    <button onClick={() => copyToClipboard(app.authorization_endpoint)} className="p-1 hover:bg-zinc-200 rounded">
+                      <Copy size={14} className="text-zinc-500" />
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between bg-zinc-50 px-3 py-2 rounded">
+                    <div>
+                      <span className="text-zinc-500 text-xs">Token URL</span>
+                      <p className="font-mono text-xs break-all">{app.token_endpoint}</p>
+                    </div>
+                    <button onClick={() => copyToClipboard(app.token_endpoint)} className="p-1 hover:bg-zinc-200 rounded">
+                      <Copy size={14} className="text-zinc-500" />
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between bg-zinc-50 px-3 py-2 rounded">
+                    <div>
+                      <span className="text-zinc-500 text-xs">UserInfo URL</span>
+                      <p className="font-mono text-xs break-all">{`${process.env.REACT_APP_BACKEND_URL}/api/oidc/userinfo`}</p>
+                    </div>
+                    <button onClick={() => copyToClipboard(`${process.env.REACT_APP_BACKEND_URL}/api/oidc/userinfo`)} className="p-1 hover:bg-zinc-200 rounded">
+                      <Copy size={14} className="text-zinc-500" />
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between bg-zinc-50 px-3 py-2 rounded">
+                    <div>
+                      <span className="text-zinc-500 text-xs">Discovery URL</span>
+                      <p className="font-mono text-xs break-all">{`${process.env.REACT_APP_BACKEND_URL}/api/apps/oidc/${app.id}/.well-known/openid-configuration`}</p>
+                    </div>
+                    <button onClick={() => copyToClipboard(`${process.env.REACT_APP_BACKEND_URL}/api/apps/oidc/${app.id}/.well-known/openid-configuration`)} className="p-1 hover:bg-zinc-200 rounded">
+                      <Copy size={14} className="text-zinc-500" />
+                    </button>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await axios.get(`${API}/apps/oidc/${app.id}?include_secret=true`, getAuthHeader());
+                        setShowSecret({ ...showSecret, [app.id]: res.data.client_secret });
+                      } catch { toast.error('Failed to fetch secret'); }
+                    }}
+                    className="text-xs text-[#00CC66] hover:underline text-left flex items-center gap-1"
+                    data-testid={`reveal-secret-${app.id}`}
+                  >
+                    <Eye size={14} /> {showSecret[app.id] ? 'Secret shown above' : 'Reveal Client Secret'}
+                  </button>
+                </div>
+              </div>
             </div>
           ))}
         </div>
