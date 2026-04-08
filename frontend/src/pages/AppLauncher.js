@@ -45,11 +45,33 @@ const AppLauncher = () => {
     const token = localStorage.getItem('iam_token');
 
     if (app.type === 'saml' && token) {
-      let completeUrl = `${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
+      const completeUrl = `${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
       if (app.home_url) {
-        completeUrl += `&relay_state=${encodeURIComponent(app.home_url)}`;
+        // Two-step: SSO first, then navigate to specific module
+        // Kissflow doesn't support RelayState, so we handle redirect ourselves
+        const w = window.open(completeUrl, '_blank');
+        // Poll until Kissflow finishes redirecting (SSO session established)
+        const checkInterval = setInterval(() => {
+          try {
+            // Once the window navigates to kissflow.com (not our domain), SSO is done
+            if (w.closed) {
+              clearInterval(checkInterval);
+              return;
+            }
+            const url = w.location.href;
+            if (url && url.includes('kissflow.com') && !url.includes('login')) {
+              clearInterval(checkInterval);
+              w.location.href = app.home_url;
+            }
+          } catch (e) {
+            // Cross-origin - means Kissflow loaded, SSO succeeded
+            clearInterval(checkInterval);
+            setTimeout(() => { w.location.href = app.home_url; }, 500);
+          }
+        }, 500);
+      } else {
+        window.open(completeUrl, '_blank');
       }
-      window.open(completeUrl, '_blank');
     } else {
       window.open(`${baseUrl}${app.launch_url}`, '_blank');
     }
