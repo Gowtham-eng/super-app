@@ -38,7 +38,7 @@ security = HTTPBearer()
 UPLOAD_DIR = ROOT_DIR / 'uploads'
 UPLOAD_DIR.mkdir(exist_ok=True)
 from fastapi.staticfiles import StaticFiles
-app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+app.mount("/api/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 # ===================== MODELS =====================
 
@@ -523,7 +523,7 @@ async def upload_logo(file: UploadFile = File(...), user: dict = Depends(get_cur
         f.write(contents)
     
     base_url = get_public_base_url()
-    logo_url = f"{base_url}/uploads/{filename}"
+    logo_url = f"{base_url}/api/uploads/{filename}"
     return {"logo_url": logo_url, "filename": filename}
 
 
@@ -1222,18 +1222,19 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
                     response_elem.remove(child)
             response_elem.append(signed_assertion)
             
-            signed_response_xml = etree.tostring(response_elem, xml_declaration=False, encoding='unicode')
+            signed_response_xml = etree.tostring(response_elem, xml_declaration=False, encoding='unicode', pretty_print=False)
             logging.info(f"SAML Response signed successfully for app {app_id}, user {name_id}")
         except Exception as e:
             logging.error(f"SAML signing failed: {e}")
             signed_response_xml = None
     
     if not signed_response_xml:
-        signed_response_xml = etree.tostring(response_elem, xml_declaration=False, encoding='unicode')
+        signed_response_xml = etree.tostring(response_elem, xml_declaration=False, encoding='unicode', pretty_print=False)
         logging.warning(f"Sending UNSIGNED SAML response for app {app_id}")
 
-    # Base64 encode the SAML Response
-    saml_response_b64 = base64.b64encode(signed_response_xml.encode('utf-8')).decode('utf-8')
+    # Base64 encode the SAML Response - ensure clean encoding
+    xml_clean = signed_response_xml.strip()
+    saml_response_b64 = base64.b64encode(xml_clean.encode('utf-8')).decode('ascii')
     
     # Log the SSO attempt
     await log_audit(user['org_id'], "saml_sso_initiated", "app", user['id'], user['email'], app_id,
@@ -1376,9 +1377,9 @@ async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_
         except Exception as e:
             logging.error(f"SAML test signing failed: {e}")
 
-    xml_str = etree.tostring(response_elem, xml_declaration=False, encoding='unicode')
+    xml_str = etree.tostring(response_elem, xml_declaration=False, encoding='unicode', pretty_print=False).strip()
     pretty_xml = etree.tostring(response_elem, pretty_print=True, xml_declaration=False, encoding='unicode')
-    saml_b64 = base64.b64encode(xml_str.encode('utf-8')).decode('utf-8')
+    saml_b64 = base64.b64encode(xml_str.encode('utf-8')).decode('ascii')
 
     return {
         "status": "success",
