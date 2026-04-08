@@ -1,126 +1,61 @@
-# Kissflow IAM - Identity & Access Management - PRD
+# Kissflow IAM - Product Requirements Document
 
-## Problem Statement
-Create a full IAM (Identity & Access Management) system for Kissflow SSO integration with:
-- Multiple SAML 2.0 and OpenID Connect applications
-- Role-based access with groups hierarchy
-- Custom roles with granular permissions
-- Access policies (IP restrictions, time-based)
-- Access requests & approvals workflow
-- Audit logs & compliance reporting
-- App launcher portal (like Okta/OneLogin)
-- Multi-tenant support with separate organizations
+## Original Problem Statement
+Build a mobile and web super app integrated with SSO for Kissflow application, configured with SAML/OpenID/User Provisioning. Expanded to a full IAM system with multiple SAML apps, OpenID Connect apps, multi-tenant organizations, and role-based access.
 
 ## Architecture
-
-### Tech Stack
-- **Backend**: FastAPI (Python) with MongoDB
-- **Frontend**: React with Shadcn UI components
-- **Authentication**: JWT-based with bcrypt password hashing
-- **SSO Protocols**: SAML 2.0, OpenID Connect 1.0
-- **User Provisioning**: SCIM 2.0, Manual
-
-### Database Collections
-- organizations
-- users
-- groups
-- roles
-- permissions
-- saml_apps
-- oidc_apps
-- access_policies
-- access_requests
-- audit_logs
-
-## User Personas
-1. **Super Admin**: Manages multiple organizations
-2. **Org Admin**: Manages their organization's IAM settings
-3. **User Manager**: Manages users and groups
-4. **End User**: Accesses applications via SSO
-
-## Core Requirements (Static)
-- [x] Multi-tenant organization support
-- [x] Multiple SAML applications per organization
-- [x] Multiple OIDC applications per organization
-- [x] Groups with hierarchical structure
-- [x] Custom roles with granular permissions
-- [x] Access policies (IP whitelist/blacklist, time restrictions)
-- [x] Access request & approval workflow
-- [x] Comprehensive audit logging
-- [x] App launcher portal
-- [x] App catalog with access requests
+- **Frontend**: React (with Shadcn UI, Phosphor Icons)
+- **Backend**: FastAPI + MongoDB
+- **Auth**: JWT-based with bcrypt password hashing
+- **SAML**: signxml library for XML signing, lxml for XML construction
+- **Key Env**: PUBLIC_URL in backend/.env for SAML endpoint URL construction
 
 ## What's Been Implemented
 
-### April 7, 2026 - Full IAM System
-**Organization Management:**
-- Create organizations with domain
-- First user becomes org_admin
-- Organization-scoped data isolation
+### Core IAM (DONE)
+- Multi-tenant organizations with domain-based isolation
+- User management (CRUD, roles, groups, status)
+- Role-Based Access Control with permissions
+- Group management with nested hierarchy
+- Access policies (IP whitelist/blacklist, time restrictions)
+- Access request workflow (request, approve, reject)
+- Audit logging for all operations
+- Dashboard with stats
 
-**Application Management:**
-- Multiple SAML 2.0 apps with metadata generation
-- Multiple OIDC apps with discovery documents
-- Per-app access restrictions (groups/roles)
-- Auto-generated certificates for SAML signing
+### SAML SSO (DONE - Apr 8, 2026)
+- SAML 2.0 Identity Provider implementation
+- Self-signed certificate generation per SAML app
+- Signed SAML responses (RSA-SHA256 via signxml)
+- IdP-initiated and SP-initiated SSO flows
+- RelayState support
+- Kissflow-specific config endpoint (manual configuration extraction)
+- SSO, SLO, metadata, and complete endpoints
+- Public URL resolution via PUBLIC_URL env var (fixes K8s cluster URL issue)
 
-**Identity Management:**
-- Groups with parent hierarchy
-- Custom roles with permissions
-- 10 system permissions (apps, users, groups, roles, policies, audit, etc.)
-- System roles: Administrator, User Manager, Viewer
+### App Management (DONE)
+- SAML app CRUD with certificate management
+- OIDC app CRUD with client_id/client_secret generation
+- App Launcher (portal for authorized users)
+- App Catalog (browse and request access)
 
-**Access Control:**
-- IP whitelist/blacklist policies
-- Time-based restrictions (UTC hours)
-- App-specific or global policies
-- Policy enable/disable toggle
+### Frontend Pages (DONE)
+- Login/Register with organization selection
+- Dashboard, App Launcher, App Catalog
+- SAML Apps, OIDC Apps management
+- Users, Groups, Roles, Policies management
+- Access Requests (submit/approve/reject)
+- Audit Logs viewer
 
-**Workflow:**
-- Access request submission
-- Admin approval/rejection
-- Auto-assign to groups on approval
+## P0 - Completed
+- [x] SAML SSO redirect fix (public URL instead of cluster URL)
+- [x] SAML response signing with signxml
+- [x] End-to-end SAML flow for Kissflow
 
-**Audit & Compliance:**
-- All actions logged with timestamp
-- User, action, resource tracking
-- IP address logging
-- CSV export functionality
+## P1 - Upcoming
+- [ ] SCIM v2 User Provisioning endpoints (/api/scim/v2/*)
+- [ ] OIDC flow end-to-end testing and verification
 
-**App Launcher:**
-- User's accessible apps
-- Policy-blocked indicators
-- Quick launch functionality
-
-## Test Results
-- Backend: 97.6% (41/42 tests passed)
-- Frontend: 100% (13/13 tests passed)
-
-## Prioritized Backlog
-
-### P0 (Critical) - Done
-- [x] Multi-tenant organizations
-- [x] Multiple SAML/OIDC apps
-- [x] Groups and roles
-- [x] Access policies
-- [x] Audit logging
-
-### P1 (High Priority) - Future
-- [ ] Actual SAML SSO flow implementation
-- [ ] Actual OIDC authorization code flow
-- [ ] JIT provisioning on SSO
-- [ ] Password reset flow
+## P2 - Backlog
+- [ ] Refactor server.py into modular routers (routes/, utils/, models/)
 - [ ] MFA support
-
-### P2 (Medium Priority) - Future
-- [ ] Attribute mapping UI
-- [ ] Group sync with external providers
-- [ ] Session management dashboard
-- [ ] Compliance report generation
-- [ ] Webhook notifications
-
-## Next Tasks
-1. Implement actual SAML SSO authentication flow
-2. Implement OIDC authorization code flow with token issuance
-3. Add MFA support for admin users
-4. Add password reset functionality
+- [ ] Session management improvements
