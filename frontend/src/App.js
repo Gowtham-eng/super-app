@@ -36,24 +36,68 @@ const ProtectedRoute = ({ children }) => {
   return <Layout>{children}</Layout>;
 };
 
+const AdminRoute = ({ children }) => {
+  const { user, loading } = useAuth();
+  
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#FAFAFA]">
+        <div className="spinner" />
+      </div>
+    );
+  }
+  
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+  
+  const isAdmin = user.role === 'org_admin' || user.role === 'admin';
+  if (!isAdmin) {
+    return <Navigate to="/launcher" replace />;
+  }
+  
+  return <Layout>{children}</Layout>;
+};
+
+const DefaultRedirect = () => {
+  const { user, loading } = useAuth();
+  
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#FAFAFA]">
+        <div className="spinner" />
+      </div>
+    );
+  }
+  
+  if (!user) return <Navigate to="/login" replace />;
+  
+  const isAdmin = user.role === 'org_admin' || user.role === 'admin';
+  return isAdmin
+    ? <Layout><Dashboard /></Layout>
+    : <Navigate to="/launcher" replace />;
+};
+
 function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+          <Route path="/" element={<DefaultRedirect />} />
+          {/* User-accessible routes */}
           <Route path="/launcher" element={<ProtectedRoute><AppLauncher /></ProtectedRoute>} />
           <Route path="/catalog" element={<ProtectedRoute><AppCatalog /></ProtectedRoute>} />
-          <Route path="/apps/saml" element={<ProtectedRoute><SAMLApps /></ProtectedRoute>} />
-          <Route path="/apps/oidc" element={<ProtectedRoute><OIDCApps /></ProtectedRoute>} />
-          <Route path="/users" element={<ProtectedRoute><Users /></ProtectedRoute>} />
-          <Route path="/groups" element={<ProtectedRoute><Groups /></ProtectedRoute>} />
-          <Route path="/roles" element={<ProtectedRoute><Roles /></ProtectedRoute>} />
-          <Route path="/policies" element={<ProtectedRoute><Policies /></ProtectedRoute>} />
-          <Route path="/requests" element={<ProtectedRoute><AccessRequests /></ProtectedRoute>} />
-          <Route path="/audit" element={<ProtectedRoute><AuditLogs /></ProtectedRoute>} />
-          <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+          {/* Admin-only routes */}
+          <Route path="/apps/saml" element={<AdminRoute><SAMLApps /></AdminRoute>} />
+          <Route path="/apps/oidc" element={<AdminRoute><OIDCApps /></AdminRoute>} />
+          <Route path="/users" element={<AdminRoute><Users /></AdminRoute>} />
+          <Route path="/groups" element={<AdminRoute><Groups /></AdminRoute>} />
+          <Route path="/roles" element={<AdminRoute><Roles /></AdminRoute>} />
+          <Route path="/policies" element={<AdminRoute><Policies /></AdminRoute>} />
+          <Route path="/requests" element={<AdminRoute><AccessRequests /></AdminRoute>} />
+          <Route path="/audit" element={<AdminRoute><AuditLogs /></AdminRoute>} />
+          <Route path="/settings" element={<AdminRoute><Settings /></AdminRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         <Toaster position="top-right" />

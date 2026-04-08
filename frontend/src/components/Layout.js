@@ -28,7 +28,9 @@ const Layout = ({ children }) => {
   const [appsExpanded, setAppsExpanded] = useState(true);
   const [iamExpanded, setIamExpanded] = useState(true);
 
-  const navSections = [
+  const isAdmin = user?.role === 'org_admin' || user?.role === 'admin';
+
+  const adminSections = [
     {
       title: 'Overview',
       items: [
@@ -68,6 +70,18 @@ const Layout = ({ children }) => {
       ]
     }
   ];
+
+  const userSections = [
+    {
+      title: 'Apps',
+      items: [
+        { path: '/launcher', label: 'My Apps', icon: SquaresFour },
+        { path: '/catalog', label: 'Request Access', icon: Storefront },
+      ]
+    }
+  ];
+
+  const navSections = isAdmin ? adminSections : userSections;
 
   const isActive = (path) => location.pathname === path;
 
@@ -162,7 +176,7 @@ const Layout = ({ children }) => {
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-sm font-semibold text-zinc-900 truncate">{user?.name}</div>
-              <div className="text-xs text-zinc-500 truncate">{user?.role}</div>
+              <div className="text-xs text-zinc-500 truncate">{isAdmin ? 'Admin' : 'User'}</div>
             </div>
           </div>
           <button
