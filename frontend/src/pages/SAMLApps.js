@@ -8,6 +8,7 @@ import { Label } from '../components/ui/label';
 import { Switch } from '../components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
 import { ShieldCheck, Plus, PencilSimple, Trash, Copy, Download, Eye, Gear, Play, CheckCircle, XCircle, ArrowSquareOut, UserPlus, UserMinus, Users } from '@phosphor-icons/react';
+import { Upload } from 'lucide-react';
 
 const SAMLApps = () => {
   const { API, getAuthHeader, user } = useAuth();
@@ -29,6 +30,7 @@ const SAMLApps = () => {
   const [saving, setSaving] = useState(false);
   const [appUsers, setAppUsers] = useState([]);
   const [usersLoading, setUsersLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
   const [form, setForm] = useState({
     name: '', description: '', entity_id: '', acs_url: '', slo_url: '',
@@ -203,6 +205,29 @@ const SAMLApps = () => {
     }
   };
 
+  const uploadLogo = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please select an image file');
+      return;
+    }
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await axios.post(`${API}/upload/logo`, formData, {
+        headers: { ...getAuthHeader().headers, 'Content-Type': 'multipart/form-data' }
+      });
+      setForm(prev => ({ ...prev, logo_url: response.data.logo_url }));
+      toast.success('Logo uploaded');
+    } catch (error) {
+      toast.error('Failed to upload logo');
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const editApp = (app) => {
     setSelectedApp(app);
     setForm({
@@ -228,16 +253,11 @@ const SAMLApps = () => {
   if (loading) return <div className="flex items-center justify-center h-64"><div className="spinner" /></div>;
 
   return (
-    <div className="animate-fadeIn">
+    <div className="animate-fadeIn" data-testid="saml-apps-page">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 bg-[#0051FF] flex items-center justify-center">
-            <ShieldCheck weight="bold" className="text-white w-6 h-6" />
-          </div>
-          <div>
-            <h1 className="font-heading font-black text-3xl tracking-tight text-zinc-900">SAML Applications</h1>
-            <p className="text-zinc-500">{apps.length} applications configured</p>
-          </div>
+        <div>
+          <h1 className="font-heading text-2xl font-semibold text-slate-900">SAML Applications</h1>
+          <p className="text-sm text-slate-500">{apps.length} applications configured</p>
         </div>
         <Button onClick={() => { resetForm(); setShowModal(true); }} className="btn-primary" data-testid="add-saml-app">
           <Plus size={18} className="mr-2" /> Add SAML App
@@ -245,59 +265,56 @@ const SAMLApps = () => {
       </div>
 
       {apps.length === 0 ? (
-        <div className="card-brutalist p-12 text-center">
-          <ShieldCheck size={48} className="text-zinc-300 mx-auto mb-4" />
-          <h3 className="font-bold text-lg mb-2">No SAML Apps</h3>
-          <p className="text-zinc-500">Add your first SAML 2.0 application to get started.</p>
+        <div className="bg-white border border-slate-200 rounded-xl p-12 text-center">
+          <ShieldCheck size={48} className="text-slate-300 mx-auto mb-4" />
+          <h3 className="font-heading font-semibold text-lg mb-2 text-slate-700">No SAML Apps</h3>
+          <p className="text-slate-400 text-sm">Add your first SAML 2.0 application to get started.</p>
         </div>
       ) : (
         <div className="grid gap-4">
           {apps.map((app) => (
-            <div key={app.id} className="card-brutalist p-6" data-testid={`saml-app-${app.id}`}>
+            <div key={app.id} className="bg-white border border-slate-200 rounded-xl p-6 hover:shadow-md hover:border-emerald-200 transition-all" data-testid={`saml-app-${app.id}`}>
               <div className="flex items-start justify-between">
                 <div className="flex items-start gap-4">
                   {app.logo_url ? (
-                    <img src={app.logo_url} alt={app.name} className="w-12 h-12 object-contain" />
+                    <img src={app.logo_url} alt={app.name} className="w-12 h-12 rounded-lg object-contain border border-slate-100" />
                   ) : (
-                    <div className="w-12 h-12 bg-[#0051FF] flex items-center justify-center text-white font-bold">
+                    <div className="w-12 h-12 rounded-lg bg-violet-50 flex items-center justify-center text-violet-600 font-semibold text-lg">
                       {app.name.charAt(0).toUpperCase()}
                     </div>
                   )}
                   <div>
-                    <h3 className="font-bold text-lg">{app.name}</h3>
-                    <p className="text-sm text-zinc-500 font-mono">{app.entity_id}</p>
-                    {app.description && <p className="text-sm text-zinc-600 mt-1">{app.description}</p>}
+                    <h3 className="font-heading font-semibold text-lg text-slate-800">{app.name}</h3>
+                    <p className="text-xs text-slate-400 font-mono">{app.entity_id}</p>
+                    {app.description && <p className="text-sm text-slate-500 mt-1">{app.description}</p>}
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => openUsersModal(app)} className="p-2 hover:bg-[#9333EA]/10" title="Manage Users" data-testid={`manage-users-${app.id}`}>
-                    <Users size={18} className="text-[#9333EA]" />
+                <div className="flex items-center gap-1">
+                  <button onClick={() => openUsersModal(app)} className="p-2 hover:bg-violet-50 rounded-lg" title="Manage Users" data-testid={`manage-users-${app.id}`}>
+                    <Users size={18} className="text-violet-500" />
                   </button>
-                  <button onClick={() => testSSO(app)} className="p-2 hover:bg-[#00CC66]/10" title="Test SSO" data-testid={`test-sso-${app.id}`}>
-                    <Play size={18} className="text-[#00CC66]" weight="fill" />
+                  <button onClick={() => testSSO(app)} className="p-2 hover:bg-emerald-50 rounded-lg" title="Test SSO" data-testid={`test-sso-${app.id}`}>
+                    <Play size={18} className="text-emerald-500" weight="fill" />
                   </button>
-                  <button onClick={() => viewKissflowConfig(app)} className="p-2 hover:bg-[#0051FF]/10" title="Kissflow Config">
-                    <Gear size={18} className="text-[#0051FF]" />
+                  <button onClick={() => viewKissflowConfig(app)} className="p-2 hover:bg-blue-50 rounded-lg" title="Config">
+                    <Gear size={18} className="text-blue-500" />
                   </button>
-                  <button onClick={() => viewMetadata(app)} className="p-2 hover:bg-zinc-100" title="View Metadata">
-                    <Eye size={18} className="text-zinc-500" />
+                  <button onClick={() => viewMetadata(app)} className="p-2 hover:bg-slate-100 rounded-lg" title="Metadata">
+                    <Eye size={18} className="text-slate-400" />
                   </button>
-                  <button onClick={() => editApp(app)} className="p-2 hover:bg-zinc-100" title="Edit">
-                    <PencilSimple size={18} className="text-zinc-500" />
+                  <button onClick={() => editApp(app)} className="p-2 hover:bg-slate-100 rounded-lg" title="Edit">
+                    <PencilSimple size={18} className="text-slate-400" />
                   </button>
-                  <button onClick={() => deleteApp(app)} className="p-2 hover:bg-[#FF3333]/10" title="Delete">
-                    <Trash size={18} className="text-[#FF3333]" />
+                  <button onClick={() => deleteApp(app)} className="p-2 hover:bg-red-50 rounded-lg" title="Delete">
+                    <Trash size={18} className="text-red-400" />
                   </button>
                 </div>
               </div>
-              <div className="mt-4 pt-4 border-t border-zinc-100 flex flex-wrap gap-4 text-sm">
-                <div><span className="text-zinc-500">ACS URL:</span> <span className="font-mono">{app.acs_url}</span></div>
-                <div className="flex items-center gap-1 text-[#9333EA]">
-                  <Users size={14} /> {app.approved_user_ids?.length || 0} user(s) assigned
+              <div className="mt-4 pt-4 border-t border-slate-100 flex flex-wrap gap-4 text-sm">
+                <div><span className="text-slate-400">ACS:</span> <span className="font-mono text-slate-600 text-xs">{app.acs_url}</span></div>
+                <div className="flex items-center gap-1 text-violet-600">
+                  <Users size={14} /> {app.approved_user_ids?.length || 0} user(s)
                 </div>
-                {(app.allowed_group_ids?.length > 0 || app.allowed_role_ids?.length > 0) && (
-                  <div className="text-[#FFB800]">Restricted Access</div>
-                )}
               </div>
             </div>
           ))}
@@ -308,71 +325,74 @@ const SAMLApps = () => {
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{selectedApp ? 'Edit SAML App' : 'Add SAML App'}</DialogTitle>
+            <DialogTitle className="font-heading text-lg">{selectedApp ? 'Edit SAML App' : 'Add SAML App'}</DialogTitle>
           </DialogHeader>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {/* Logo Upload + Name */}
+            <div className="flex items-start gap-5">
+              <div className="flex-shrink-0">
+                <Label className="label-uppercase text-xs mb-1.5 block">Logo</Label>
+                <label className="relative w-16 h-16 rounded-xl border-2 border-dashed border-slate-300 hover:border-emerald-400 flex items-center justify-center cursor-pointer transition-colors overflow-hidden">
+                  {form.logo_url ? (
+                    <img src={form.logo_url} alt="Logo" className="w-full h-full object-contain" />
+                  ) : (
+                    <Upload size={20} className={`text-slate-400 ${uploading ? 'animate-pulse' : ''}`} />
+                  )}
+                  <input type="file" accept="image/*" onChange={uploadLogo} className="absolute inset-0 opacity-0 cursor-pointer" data-testid="logo-upload-input" />
+                </label>
+              </div>
+              <div className="flex-1 space-y-3">
+                <div>
+                  <Label className="label-uppercase text-xs">App Name *</Label>
+                  <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required className="input-brutalist w-full mt-1.5" placeholder="Kissflow" />
+                </div>
+                <div>
+                  <Label className="label-uppercase text-xs">Description</Label>
+                  <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="input-brutalist w-full mt-1.5" placeholder="Brief description" />
+                </div>
+              </div>
+            </div>
+
+            {/* SAML Configuration */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-4">
+              <h4 className="font-heading font-semibold text-sm text-slate-700">SAML Configuration</h4>
               <div>
-                <Label className="label-uppercase">App Name *</Label>
-                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required className="input-brutalist w-full mt-1" />
-              </div>
-              <div>
-                <Label className="label-uppercase">Logo URL</Label>
-                <Input value={form.logo_url} onChange={(e) => setForm({ ...form, logo_url: e.target.value })} className="input-brutalist w-full mt-1" placeholder="https://..." />
-              </div>
-            </div>
-            <div>
-              <Label className="label-uppercase">Description</Label>
-              <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="input-brutalist w-full mt-1" />
-            </div>
-            <div>
-              <Label className="label-uppercase">Entity ID / Client ID *</Label>
-              <Input value={form.entity_id} onChange={(e) => setForm({ ...form, entity_id: e.target.value })} required className="input-brutalist w-full mt-1 font-mono" placeholder="https://app.kissflow.com/saml/" />
-            </div>
-            <div>
-              <Label className="label-uppercase">ACS URL *</Label>
-              <Input value={form.acs_url} onChange={(e) => setForm({ ...form, acs_url: e.target.value })} required className="input-brutalist w-full mt-1 font-mono" placeholder="https://app.kissflow.com/signin/.../saml/?acs" />
-            </div>
-            <div>
-              <Label className="label-uppercase">SLO URL</Label>
-              <Input value={form.slo_url} onChange={(e) => setForm({ ...form, slo_url: e.target.value })} className="input-brutalist w-full mt-1 font-mono" />
-            </div>
-            <div>
-              <Label className="label-uppercase">Name ID Format</Label>
-              <select value={form.name_id_format} onChange={(e) => setForm({ ...form, name_id_format: e.target.value })} className="input-brutalist w-full mt-1 py-2">
-                <option value="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">Email Address</option>
-                <option value="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">Persistent</option>
-                <option value="urn:oasis:names:tc:SAML:2.0:nameid-format:transient">Transient</option>
-              </select>
-            </div>
-            <div className="flex gap-6">
-              <div className="flex items-center gap-2">
-                <Switch checked={form.sign_assertions} onCheckedChange={(c) => setForm({ ...form, sign_assertions: c })} />
-                <Label>Sign Assertions</Label>
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch checked={form.sign_response} onCheckedChange={(c) => setForm({ ...form, sign_response: c })} />
-                <Label>Sign Response</Label>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label className="label-uppercase">Allowed Groups</Label>
-                <select multiple value={form.allowed_group_ids} onChange={(e) => setForm({ ...form, allowed_group_ids: Array.from(e.target.selectedOptions, o => o.value) })} className="input-brutalist w-full mt-1 h-24">
-                  {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
-                </select>
-                <p className="text-xs text-zinc-500 mt-1">Leave empty for all users</p>
+                <Label className="label-uppercase text-xs">Entity ID / Audience *</Label>
+                <Input value={form.entity_id} onChange={(e) => setForm({ ...form, entity_id: e.target.value })} required className="input-brutalist w-full mt-1.5 font-mono text-sm" placeholder="https://app.kissflow.com/saml/" />
               </div>
               <div>
-                <Label className="label-uppercase">Allowed Roles</Label>
-                <select multiple value={form.allowed_role_ids} onChange={(e) => setForm({ ...form, allowed_role_ids: Array.from(e.target.selectedOptions, o => o.value) })} className="input-brutalist w-full mt-1 h-24">
-                  {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-                </select>
+                <Label className="label-uppercase text-xs">ACS URL (Assertion Consumer Service) *</Label>
+                <Input value={form.acs_url} onChange={(e) => setForm({ ...form, acs_url: e.target.value })} required className="input-brutalist w-full mt-1.5 font-mono text-sm" placeholder="https://app.kissflow.com/signin/.../saml/?acs" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="label-uppercase text-xs">SLO URL</Label>
+                  <Input value={form.slo_url} onChange={(e) => setForm({ ...form, slo_url: e.target.value })} className="input-brutalist w-full mt-1.5 font-mono text-sm" />
+                </div>
+                <div>
+                  <Label className="label-uppercase text-xs">Name ID Format</Label>
+                  <select value={form.name_id_format} onChange={(e) => setForm({ ...form, name_id_format: e.target.value })} className="input-brutalist w-full mt-1.5 py-2.5 rounded-lg border border-slate-200">
+                    <option value="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">Email Address</option>
+                    <option value="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">Persistent</option>
+                    <option value="urn:oasis:names:tc:SAML:2.0:nameid-format:transient">Transient</option>
+                  </select>
+                </div>
+              </div>
+              <div className="flex gap-6">
+                <div className="flex items-center gap-2">
+                  <Switch checked={form.sign_assertions} onCheckedChange={(c) => setForm({ ...form, sign_assertions: c })} />
+                  <Label className="text-sm">Sign Assertions</Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Switch checked={form.sign_response} onCheckedChange={(c) => setForm({ ...form, sign_response: c })} />
+                  <Label className="text-sm">Sign Response</Label>
+                </div>
               </div>
             </div>
+
             <DialogFooter>
               <Button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</Button>
-              <Button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</Button>
+              <Button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : (selectedApp ? 'Save Changes' : 'Create App')}</Button>
             </DialogFooter>
           </form>
         </DialogContent>

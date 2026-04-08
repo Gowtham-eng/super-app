@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -33,6 +33,12 @@ PUBLIC_URL = os.environ.get('PUBLIC_URL', '').rstrip('/')
 app = FastAPI(title="Kissflow IAM - Identity & Access Management")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer()
+
+# Static uploads directory
+UPLOAD_DIR = ROOT_DIR / 'uploads'
+UPLOAD_DIR.mkdir(exist_ok=True)
+from fastapi.staticfiles import StaticFiles
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 # ===================== MODELS =====================
 
@@ -494,6 +500,31 @@ async def login(credentials: UserLogin, request: Request):
 async def get_me(user: dict = Depends(get_current_user)):
     org = await db.organizations.find_one({"id": user['org_id']}, {"_id": 0})
     return {**user, "organization": org}
+
+
+# ===================== FILE UPLOAD =====================
+
+@api_router.post("/upload/logo")
+async def upload_logo(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Upload a logo image and return URL"""
+    if not file.content_type or not file.content_type.startswith('image/'):
+        raise HTTPException(status_code=400, detail="Only image files are allowed")
+    
+    ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'png'
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    filepath = UPLOAD_DIR / filename
+    
+    contents = await file.read()
+    if len(contents) > 5 * 1024 * 1024:  # 5MB limit
+        raise HTTPException(status_code=400, detail="File too large (max 5MB)")
+    
+    with open(filepath, 'wb') as f:
+        f.write(contents)
+    
+    base_url = get_public_base_url()
+    logo_url = f"{base_url}/uploads/{filename}"
+    return {"logo_url": logo_url, "filename": filename}
+
 
 # ===================== ORGANIZATION ROUTES =====================
 
@@ -1738,15 +1769,16 @@ async def get_app_catalog(user: dict = Depends(get_current_user)):
     
     saml_apps = await db.saml_apps.find({"org_id": org_id, "status": "active"}, 
                                          {"_id": 0, "id": 1, "name": 1, "description": 1, "logo_url": 1, 
-                                          "allowed_group_ids": 1, "allowed_role_ids": 1}).to_list(100)
+                                          "allowed_group_ids": 1, "allowed_role_ids": 1, "approved_user_ids": 1}).to_list(100)
     oidc_apps = await db.oidc_apps.find({"org_id": org_id, "status": "active"},
                                          {"_id": 0, "id": 1, "name": 1, "description": 1, "logo_url": 1,
-                                          "allowed_group_ids": 1, "allowed_role_ids": 1}).to_list(100)
+                                          "allowed_group_ids": 1, "allowed_role_ids": 1, "approved_user_ids": 1}).to_list(100)
     
     catalog = []
     
     for app in saml_apps:
         has_access = await check_user_app_access(user, app)
+        # requires_approval is always true - explicit assignment needed
         catalog.append({
             "id": app['id'],
             "name": app['name'],
@@ -1754,7 +1786,7 @@ async def get_app_catalog(user: dict = Depends(get_current_user)):
             "logo_url": app.get('logo_url'),
             "type": "saml",
             "has_access": has_access,
-            "requires_approval": bool(app.get('allowed_group_ids') or app.get('allowed_role_ids'))
+            "requires_approval": True
         })
     
     for app in oidc_apps:
@@ -1766,7 +1798,7 @@ async def get_app_catalog(user: dict = Depends(get_current_user)):
             "logo_url": app.get('logo_url'),
             "type": "oidc",
             "has_access": has_access,
-            "requires_approval": bool(app.get('allowed_group_ids') or app.get('allowed_role_ids'))
+            "requires_approval": True
         })
     
     return catalog
