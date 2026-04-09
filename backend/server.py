@@ -1411,6 +1411,11 @@ diag.innerHTML = lines.join("<br>");
             setTimeout(function() {{
                 window.location.href = moduleUrl;
             }}, 2500);
+            // If the module URL opens a native app via deep link,
+            // the browser stays on this page. Redirect back to launcher.
+            setTimeout(function() {{
+                window.location.href = "/launcher";
+            }}, 4000);
         }}
     </script>
 </body>
