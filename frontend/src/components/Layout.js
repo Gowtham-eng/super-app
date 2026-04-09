@@ -186,7 +186,7 @@ const Layout = ({ children }) => {
 
       {/* Main Content */}
       <main className="lg:ml-[260px] pt-14 lg:pt-0 min-h-screen">
-        <div className="p-6 sm:p-8 lg:p-10 max-w-[1400px]">
+        <div className="p-3 sm:p-8 lg:p-10 max-w-[1400px]">
           {children}
         </div>
       </main>

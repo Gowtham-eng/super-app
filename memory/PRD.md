@@ -55,6 +55,7 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - **Route protection**: AdminRoute redirects users to /launcher for admin-only pages
 
 ## P0 - Completed
+- [x] Mobile App Launcher: Zoho Workplace-style compact 4-col icon grid (no scrolling needed) - Apr 9 2026
 - [x] SAML SSO redirect fix (public URL instead of cluster URL)
 - [x] SAML response signing with signxml
 - [x] End-to-end SAML flow for Kissflow
