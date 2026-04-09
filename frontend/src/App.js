@@ -15,6 +15,7 @@ import Policies from "./pages/Policies";
 import AccessRequests from "./pages/AccessRequests";
 import AuditLogs from "./pages/AuditLogs";
 import Settings from "./pages/Settings";
+import HRSync from "./pages/HRSync";
 import Layout from "./components/Layout";
 import "./App.css";
 
@@ -97,7 +98,9 @@ function App() {
           <Route path="/policies" element={<AdminRoute><Policies /></AdminRoute>} />
           <Route path="/requests" element={<AdminRoute><AccessRequests /></AdminRoute>} />
           <Route path="/audit" element={<AdminRoute><AuditLogs /></AdminRoute>} />
+          <Route path="/hr-sync" element={<AdminRoute><HRSync /></AdminRoute>} />
           <Route path="/settings" element={<AdminRoute><Settings /></AdminRoute>} />
+          <Route path="/access-requests" element={<ProtectedRoute><AccessRequests /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         <Toaster position="top-right" />

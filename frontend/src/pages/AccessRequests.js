@@ -2,132 +2,124 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { toast } from 'sonner';
-import { Button } from '../components/ui/button';
-import { ClipboardText, CheckCircle, XCircle, Clock, MagnifyingGlass } from '@phosphor-icons/react';
+import { CheckCircle, XCircle, Clock, Search } from 'lucide-react';
 
 const AccessRequests = () => {
-  const { API, getAuthHeader } = useAuth();
+  const { API, getAuthHeader, user } = useAuth();
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('pending');
+  const isAdmin = user?.role === 'org_admin';
 
   useEffect(() => { fetchRequests(); }, [filter]);
 
   const fetchRequests = async () => {
     try {
-      const url = filter ? `${API}/access-requests?status=${filter}` : `${API}/access-requests`;
-      const response = await axios.get(url, getAuthHeader());
-      setRequests(response.data);
-    } catch (error) {
+      const params = filter !== 'all' ? `?status=${filter}` : '';
+      const res = await axios.get(`${API}/access-requests${params}`, getAuthHeader());
+      setRequests(res.data);
+    } catch (err) {
       toast.error('Failed to load requests');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleAction = async (requestId, action) => {
+  const handleAction = async (requestId, status) => {
     try {
-      await axios.put(`${API}/access-requests/${requestId}?action=${action}`, {}, getAuthHeader());
-      toast.success(`Request ${action}d`);
+      await axios.put(`${API}/access-requests/${requestId}`, { status }, getAuthHeader());
+      toast.success(`Request ${status}`);
       fetchRequests();
-    } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to process request');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to update request');
     }
   };
 
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'approved': return <CheckCircle size={18} weight="fill" className="text-[#00CC66]" />;
-      case 'rejected': return <XCircle size={18} weight="fill" className="text-[#FF3333]" />;
-      default: return <Clock size={18} className="text-[#FFB800]" />;
-    }
-  };
-
-  const getStatusBadge = (status) => {
+  const statusBadge = (status) => {
     const styles = {
-      pending: 'bg-[#FFB800]/10 text-[#FFB800]',
-      approved: 'bg-[#00CC66]/10 text-[#00CC66]',
-      rejected: 'bg-[#FF3333]/10 text-[#FF3333]'
+      pending: 'bg-amber-50 text-amber-700 border-amber-200',
+      approved: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      rejected: 'bg-red-50 text-red-700 border-red-200',
     };
-    return <span className={`text-xs font-bold uppercase px-2 py-1 ${styles[status]}`}>{status}</span>;
+    const icons = { pending: Clock, approved: CheckCircle, rejected: XCircle };
+    const Icon = icons[status] || Clock;
+    return (
+      <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border ${styles[status] || styles.pending}`}>
+        <Icon size={12} /> {status}
+      </span>
+    );
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><div className="spinner" /></div>;
 
   return (
-    <div className="animate-fadeIn">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 bg-[#FFB800] flex items-center justify-center">
-            <ClipboardText weight="bold" className="text-white w-6 h-6" />
-          </div>
-          <div>
-            <h1 className="font-heading font-black text-3xl tracking-tight text-zinc-900">Access Requests</h1>
-            <p className="text-zinc-500">{requests.length} requests</p>
-          </div>
-        </div>
+    <div className="animate-fadeIn" data-testid="access-requests-page">
+      <div className="mb-6">
+        <h1 className="font-heading text-2xl sm:text-3xl font-semibold text-slate-900 mb-1">Access Requests</h1>
+        <p className="text-sm text-slate-400">
+          {isAdmin ? 'Review and manage application access requests' : 'Track your application access requests'}
+        </p>
       </div>
 
-      {/* Filter Tabs */}
-      <div className="flex gap-2 mb-6">
-        {['pending', 'approved', 'rejected', ''].map((status) => (
+      <div className="flex gap-2 mb-5">
+        {['pending', 'approved', 'rejected', 'all'].map(f => (
           <button
-            key={status || 'all'}
-            onClick={() => setFilter(status)}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
-              filter === status ? 'bg-[#0051FF] text-white' : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'
+            key={f}
+            onClick={() => { setFilter(f); setLoading(true); }}
+            data-testid={`filter-${f}`}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              filter === f ? 'bg-emerald-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
             }`}
           >
-            {status || 'All'}
+            {f.charAt(0).toUpperCase() + f.slice(1)}
           </button>
         ))}
       </div>
 
       {requests.length === 0 ? (
-        <div className="card-brutalist p-12 text-center">
-          <ClipboardText size={48} className="text-zinc-300 mx-auto mb-4" />
-          <h3 className="font-bold text-lg mb-2">No Requests</h3>
-          <p className="text-zinc-500">No {filter || ''} access requests found.</p>
+        <div className="text-center py-16 bg-white rounded-2xl border border-slate-200">
+          <Search size={32} className="mx-auto text-slate-300 mb-3" />
+          <p className="text-slate-500 font-medium">No {filter !== 'all' ? filter : ''} requests</p>
         </div>
       ) : (
-        <div className="space-y-4">
-          {requests.map((req) => (
-            <div key={req.id} className="card-brutalist p-6" data-testid={`request-${req.id}`}>
-              <div className="flex items-start justify-between">
-                <div className="flex items-start gap-4">
-                  {getStatusIcon(req.status)}
-                  <div>
-                    <div className="flex items-center gap-3">
-                      <h3 className="font-bold">{req.user_name}</h3>
-                      {getStatusBadge(req.status)}
-                    </div>
-                    <p className="text-sm text-zinc-500">{req.user_email}</p>
-                    <div className="mt-2">
-                      <span className="text-sm">Requesting access to: </span>
-                      <span className="font-semibold">{req.app_name}</span>
-                      <span className="text-xs text-zinc-500 ml-2">({req.app_type})</span>
-                    </div>
-                    <p className="text-sm text-zinc-600 mt-2 bg-zinc-50 p-2 border-l-2 border-zinc-200">
-                      "{req.reason}"
-                    </p>
+        <div className="space-y-3">
+          {requests.map(req => (
+            <div key={req.id} className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5" data-testid={`request-${req.id}`}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex-1">
+                  <div className="flex items-center gap-3 mb-1.5">
+                    <h3 className="font-semibold text-slate-800 text-sm">{req.app_name}</h3>
+                    {statusBadge(req.status)}
                   </div>
+                  <p className="text-xs text-slate-400">
+                    Requested by <span className="font-medium text-slate-600">{req.user_name}</span> ({req.user_email})
+                  </p>
+                  {req.reason && <p className="text-xs text-slate-400 mt-1">Reason: {req.reason}</p>}
+                  <p className="text-xs text-slate-300 mt-1">{new Date(req.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+                  {req.reviewed_by_name && (
+                    <p className="text-xs text-slate-400 mt-1">
+                      {req.status === 'approved' ? 'Approved' : 'Rejected'} by {req.reviewed_by_name}
+                    </p>
+                  )}
                 </div>
-
-                {req.status === 'pending' && (
+                {isAdmin && req.status === 'pending' && (
                   <div className="flex gap-2">
-                    <Button onClick={() => handleAction(req.id, 'approve')} className="bg-[#00CC66] text-white hover:bg-[#00aa55] py-2 px-4">
+                    <button
+                      onClick={() => handleAction(req.id, 'approved')}
+                      data-testid={`approve-${req.id}`}
+                      className="px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors"
+                    >
                       Approve
-                    </Button>
-                    <Button onClick={() => handleAction(req.id, 'reject')} className="bg-[#FF3333] text-white hover:bg-[#dd2222] py-2 px-4">
+                    </button>
+                    <button
+                      onClick={() => handleAction(req.id, 'rejected')}
+                      data-testid={`reject-${req.id}`}
+                      className="px-4 py-2 bg-white border border-red-200 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 transition-colors"
+                    >
                       Reject
-                    </Button>
+                    </button>
                   </div>
                 )}
-              </div>
-
-              <div className="mt-4 pt-4 border-t border-zinc-100 flex flex-wrap gap-4 text-xs text-zinc-500">
-                <div>Requested: {new Date(req.created_at).toLocaleString()}</div>
-                {req.reviewed_at && <div>Reviewed: {new Date(req.reviewed_at).toLocaleString()}</div>}
               </div>
             </div>
           ))}

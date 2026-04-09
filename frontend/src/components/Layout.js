@@ -21,7 +21,8 @@ import {
   X,
   ChevronDown,
   ChevronRight,
-  Camera
+  Camera,
+  RefreshCw
 } from 'lucide-react';
 
 const REFEX_LOGO = 'https://customer-assets.emergentagent.com/job_kissflow-access-hub/artifacts/7t1td79v_refex-logo.png';
@@ -75,6 +76,7 @@ const Layout = ({ children }) => {
       title: 'Compliance',
       items: [
         { path: '/audit', label: 'Audit Logs', icon: ScrollText },
+        { path: '/hr-sync', label: 'HR Sync', icon: RefreshCw },
         { path: '/settings', label: 'Settings', icon: Settings },
       ]
     }

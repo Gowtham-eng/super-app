@@ -14,6 +14,9 @@ import jwt
 import bcrypt
 import ipaddress
 
+from services.email_service import send_email, build_access_request_email, build_request_status_email, build_sync_report_email
+from services.adrenalin_sync import sync_employees
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -33,6 +36,47 @@ PUBLIC_URL = os.environ.get('PUBLIC_URL', '').rstrip('/')
 app = FastAPI(title="Kissflow IAM - Identity & Access Management")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer()
+
+# APScheduler for midnight HR sync
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+scheduler = AsyncIOScheduler()
+
+async def scheduled_hr_sync():
+    """Run Adrenalin HR sync for all organizations that have it configured"""
+    logger = logging.getLogger("hr_sync")
+    logger.info("Starting scheduled HR sync...")
+    orgs = await db.organizations.find({"adrenalin_sync_enabled": True}, {"_id": 0}).to_list(100)
+    if not orgs:
+        # Default: sync for Refex org
+        orgs = await db.organizations.find({}, {"_id": 0}).to_list(1)
+    for org in orgs:
+        try:
+            result = await sync_employees(db, org["id"])
+            # Log the sync
+            await db.hr_sync_logs.insert_one({
+                "org_id": org["id"],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "result": result,
+            })
+            # Email report to admins
+            admins = await db.users.find(
+                {"org_id": org["id"], "role": "org_admin", "status": {"$ne": "disabled"}},
+                {"_id": 0, "email": 1}
+            ).to_list(100)
+            admin_emails = [a["email"] for a in admins if a.get("email")]
+            if admin_emails and (result["created"] > 0 or result["disabled"] > 0 or result["errors"]):
+                html = build_sync_report_email(result["created"], result["disabled"], result["total"], result["errors"])
+                await send_email(admin_emails, "HR Sync Report - Refex Super App", html)
+            logger.info(f"Sync complete for org {org['id']}: {result}")
+        except Exception as e:
+            logger.error(f"Sync failed for org {org['id']}: {e}")
+
+@app.on_event("startup")
+async def start_scheduler():
+    # Fix _id issue for hr_sync_logs
+    scheduler.add_job(scheduled_hr_sync, 'cron', hour=0, minute=0, id='hr_sync_midnight')
+    scheduler.start()
+    logging.getLogger("hr_sync").info("Scheduler started - HR sync at midnight daily")
 
 # Static uploads directory
 UPLOAD_DIR = ROOT_DIR / 'uploads'
@@ -2392,6 +2436,166 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
 @api_router.get("/")
 async def root():
     return {"message": "Kissflow IAM - Identity & Access Management API"}
+
+# ===================== ACCESS REQUESTS =====================
+
+@api_router.post("/access-requests")
+async def create_access_request(body: dict, user: dict = Depends(get_current_user)):
+    """User requests access to an app"""
+    app_id = body.get("app_id")
+    app_type = body.get("app_type", "saml")  # saml or oidc
+    reason = body.get("reason", "")
+
+    if not app_id:
+        raise HTTPException(status_code=400, detail="app_id is required")
+
+    # Check if already requested
+    existing = await db.access_requests.find_one({
+        "user_id": user["id"], "app_id": app_id, "status": "pending"
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="You already have a pending request for this app")
+
+    # Get app details
+    collection = "saml_apps" if app_type == "saml" else "oidc_apps"
+    app_doc = await db[collection].find_one({"id": app_id}, {"_id": 0, "name": 1, "id": 1})
+    if not app_doc:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    request_doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "user_name": user.get("name", user.get("full_name", "")),
+        "user_email": user["email"],
+        "app_id": app_id,
+        "app_type": app_type,
+        "app_name": app_doc.get("name", ""),
+        "reason": reason,
+        "org_id": user["org_id"],
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.access_requests.insert_one(request_doc)
+
+    # Send email to all admins in the org
+    admins = await db.users.find(
+        {"org_id": user["org_id"], "role": "org_admin", "status": {"$ne": "disabled"}},
+        {"_id": 0, "email": 1}
+    ).to_list(100)
+    admin_emails = [a["email"] for a in admins if a.get("email")]
+
+    if admin_emails:
+        base_url = get_public_base_url()
+        approve_url = f"{base_url}/access-requests"
+        html = build_access_request_email(
+            request_doc["user_name"], request_doc["user_email"],
+            request_doc["app_name"], reason, approve_url
+        )
+        await send_email(admin_emails, f"Access Request: {request_doc['app_name']} - {request_doc['user_name']}", html)
+
+    request_doc.pop("_id", None)
+    return request_doc
+
+
+@api_router.get("/access-requests")
+async def list_access_requests(status: str = None, user: dict = Depends(get_current_user)):
+    """List access requests - admins see all for org, users see their own"""
+    query = {"org_id": user["org_id"]}
+    if user.get("role") != "org_admin":
+        query["user_id"] = user["id"]
+    if status:
+        query["status"] = status
+
+    requests = await db.access_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return requests
+
+
+@api_router.put("/access-requests/{request_id}")
+async def update_access_request(request_id: str, body: dict, user: dict = Depends(get_current_user)):
+    """Admin approves or rejects an access request"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Only admins can approve/reject requests")
+
+    new_status = body.get("status")
+    if new_status not in ["approved", "rejected"]:
+        raise HTTPException(status_code=400, detail="Status must be 'approved' or 'rejected'")
+
+    req = await db.access_requests.find_one({"id": request_id, "org_id": user["org_id"]}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if req["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Request already processed")
+
+    await db.access_requests.update_one(
+        {"id": request_id},
+        {"$set": {
+            "status": new_status,
+            "reviewed_by": user["id"],
+            "reviewed_by_name": user.get("name", ""),
+            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        }}
+    )
+
+    # If approved, add user to the app's approved_user_ids
+    if new_status == "approved":
+        collection = "saml_apps" if req.get("app_type") == "saml" else "oidc_apps"
+        await db[collection].update_one(
+            {"id": req["app_id"]},
+            {"$addToSet": {"approved_user_ids": req["user_id"]}}
+        )
+
+    # Send status email to the requester
+    requester = await db.users.find_one({"id": req["user_id"]}, {"_id": 0, "email": 1, "name": 1})
+    if requester and requester.get("email"):
+        html = build_request_status_email(
+            requester.get("name", "User"), req["app_name"],
+            new_status, user.get("name", "Admin")
+        )
+        status_word = "Approved" if new_status == "approved" else "Rejected"
+        await send_email([requester["email"]], f"Access {status_word}: {req['app_name']}", html)
+
+    return {"message": f"Request {new_status}", "id": request_id}
+
+
+# ===================== HR SYNC (ADRENALIN) =====================
+
+@api_router.post("/hr-sync/trigger")
+async def trigger_hr_sync(user: dict = Depends(get_current_user)):
+    """Admin manually triggers HR sync"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Only admins can trigger HR sync")
+
+    result = await sync_employees(db, user["org_id"])
+
+    # Log the sync
+    log_doc = {
+        "org_id": user["org_id"],
+        "triggered_by": user["id"],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "result": result,
+    }
+    await db.hr_sync_logs.insert_one(log_doc)
+
+    # Enable adrenalin sync for this org
+    await db.organizations.update_one(
+        {"id": user["org_id"]},
+        {"$set": {"adrenalin_sync_enabled": True}}
+    )
+
+    return result
+
+
+@api_router.get("/hr-sync/logs")
+async def get_hr_sync_logs(user: dict = Depends(get_current_user)):
+    """Get HR sync history"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Only admins can view sync logs")
+
+    logs = await db.hr_sync_logs.find(
+        {"org_id": user["org_id"]}, {"_id": 0}
+    ).sort("timestamp", -1).to_list(50)
+    return logs
+
 
 @api_router.get("/health")
 async def health():

@@ -29,7 +29,7 @@ const AppCatalog = () => {
     try {
       const [appsRes, reqRes] = await Promise.all([
         axios.get(`${API}/catalog/apps`, getAuthHeader()),
-        axios.get(`${API}/access-requests/my`, getAuthHeader()).catch(() => ({ data: [] }))
+        axios.get(`${API}/access-requests`, getAuthHeader()).catch(() => ({ data: [] }))
       ]);
       setApps(appsRes.data);
       setPendingRequests(reqRes.data);
@@ -40,9 +40,9 @@ const AppCatalog = () => {
     }
   };
 
-  const requestAccess = async (appId) => {
+  const requestAccess = async (appId, appType) => {
     try {
-      await axios.post(`${API}/access-requests`, { app_id: appId, reason: 'Access needed for work' }, getAuthHeader());
+      await axios.post(`${API}/access-requests`, { app_id: appId, app_type: appType, reason: 'Access needed for work' }, getAuthHeader());
       toast.success('Access requested! An admin will review your request.');
       fetchData();
     } catch (error) {
@@ -125,7 +125,7 @@ const AppCatalog = () => {
                     <span className="text-sm font-medium text-amber-700">Request Pending</span>
                   </div>
                 ) : (
-                  <Button onClick={() => requestAccess(app.id)} className="btn-primary w-full" data-testid={`request-access-${app.id}`}>
+                  <Button onClick={() => requestAccess(app.id, app.type)} className="btn-primary w-full" data-testid={`request-access-${app.id}`}>
                     <Send size={14} className="mr-2" /> Request Access
                   </Button>
                 )}
