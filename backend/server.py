@@ -1370,6 +1370,8 @@ diag.innerHTML = lines.join("<br>");
         
         if home_url:
             # Iframe-based auth + redirect to specific module
+            # Include RelayState if present (critical for SP-initiated SSO, especially mobile)
+            relay_field = f'<input type="hidden" name="RelayState" value="{escape(relay_state)}"/>' if relay_state else ''
             html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1391,21 +1393,32 @@ diag.innerHTML = lines.join("<br>");
     <iframe name="authFrame" style="display:none"></iframe>
     <form id="samlForm" method="POST" action="{escape(acs_url)}" target="authFrame">
         <input type="hidden" name="SAMLResponse" id="samlResponse"/>
+        {relay_field}
     </form>
     <script>
         var samlData = "{saml_response_b64}";
         var moduleUrl = "{escape(home_url)}";
+        var hasRelayState = {"true" if relay_state else "false"};
         document.getElementById('samlResponse').value = samlData;
-        document.getElementById('samlForm').submit();
-        // Redirect to module after auth completes (allow time for cookie to set)
-        setTimeout(function() {{
-            window.location.href = moduleUrl;
-        }}, 2500);
+        if (hasRelayState) {{
+            // SP-initiated flow (e.g., from Kissflow native app): submit directly
+            // so Kissflow can process RelayState and redirect back to native app
+            document.getElementById('samlForm').removeAttribute('target');
+            document.getElementById('samlForm').submit();
+        }} else {{
+            // IdP-initiated flow: use iframe auth + redirect to module
+            document.getElementById('samlForm').submit();
+            setTimeout(function() {{
+                window.location.href = moduleUrl;
+            }}, 2500);
+        }}
     </script>
 </body>
 </html>'''
         else:
             # No home_url: direct SAML form submit (lands on Kissflow homepage)
+            # Include RelayState if present (critical for SP-initiated SSO / mobile return)
+            relay_field = f'<input type="hidden" name="RelayState" value="{escape(relay_state)}"/>' if relay_state else ''
             html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1415,6 +1428,7 @@ diag.innerHTML = lines.join("<br>");
 <body>
     <form id="samlForm" method="POST" action="{escape(acs_url)}">
         <input type="hidden" name="SAMLResponse" id="samlResponse"/>
+        {relay_field}
         <noscript>
             <input type="submit" value="Continue to {escape(app.get('name', 'Application'))}"/>
         </noscript>
