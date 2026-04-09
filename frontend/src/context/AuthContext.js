@@ -70,6 +70,20 @@ export const AuthProvider = ({ children }) => {
     headers: { Authorization: `Bearer ${token}` }
   });
 
+  const refreshUser = async () => {
+    if (token) {
+      try {
+        const response = await axios.get(`${API}/auth/me`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        setUser(response.data);
+        setOrganization(response.data.organization);
+      } catch (error) {
+        console.error('Refresh user failed:', error);
+      }
+    }
+  };
+
   return (
     <AuthContext.Provider value={{ 
       user, 
@@ -81,6 +95,7 @@ export const AuthProvider = ({ children }) => {
       createOrganization,
       logout, 
       getAuthHeader,
+      refreshUser,
       API 
     }}>
       {children}

@@ -528,6 +528,16 @@ async def upload_logo(file: UploadFile = File(...), user: dict = Depends(get_cur
     return {"logo_url": logo_url, "filename": filename}
 
 
+@api_router.put("/users/me/profile-pic")
+async def update_profile_pic(body: dict, user: dict = Depends(get_current_user)):
+    """Update current user's profile picture URL"""
+    profile_pic = body.get("profile_pic", "")
+    await db.users.update_one({"id": user["id"]}, {"$set": {"profile_pic": profile_pic}})
+    updated = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password": 0})
+    org = await db.organizations.find_one({"id": updated["org_id"]}, {"_id": 0})
+    return {**updated, "organization": org}
+
+
 # ===================== ORGANIZATION ROUTES =====================
 
 @api_router.post("/organizations")

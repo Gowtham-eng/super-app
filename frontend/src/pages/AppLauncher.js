@@ -84,8 +84,6 @@ const AppLauncher = () => {
     return 'Good evening';
   };
 
-  const initials = (user?.name || 'U').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
-
   if (loading) {
     return <div className="flex items-center justify-center h-64"><div className="spinner" /></div>;
   }
@@ -96,16 +94,11 @@ const AppLauncher = () => {
       <div className="mb-4 sm:mb-8" data-testid="welcome-header">
         {/* Mobile: Zoho-style welcome card */}
         <div className="sm:hidden bg-white rounded-2xl p-4 shadow-sm border border-slate-100 mb-4">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <p className="text-xs text-slate-400 font-medium">{greeting()},</p>
-              <h1 className="font-heading text-xl font-bold text-slate-900">
-                {user?.name || 'User'}
-              </h1>
-            </div>
-            <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-sm font-bold text-emerald-800">
-              {initials}
-            </div>
+          <div className="mb-3">
+            <p className="text-xs text-slate-400 font-medium">{greeting()},</p>
+            <h1 className="font-heading text-xl font-bold text-slate-900">
+              {user?.name || 'User'}
+            </h1>
           </div>
           <div className="relative" data-testid="app-search-mobile">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
