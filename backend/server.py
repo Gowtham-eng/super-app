@@ -1363,9 +1363,50 @@ diag.innerHTML = lines.join("<br>");
 </body></html>'''
     else:
         # Kissflow's SAML parser cannot handle RelayState (it tries to base64/JSON decode it).
-        # Omit RelayState entirely — SSO will land on Kissflow homepage.
-        # Post-SSO redirect to home_url is handled by the frontend.
-        html_content = f'''<!DOCTYPE html>
+        # Omit RelayState entirely.
+        # If the app has a home_url, submit SAML via iframe to authenticate,
+        # then redirect browser to the specific module URL.
+        home_url = app.get('home_url', '')
+        
+        if home_url:
+            # Iframe-based auth + redirect to specific module
+            html_content = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Signing in to {escape(app.get('name', 'Application'))}...</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #f9fafb; }}
+        .loader {{ text-align: center; }}
+        .spinner {{ width: 36px; height: 36px; border: 3px solid #e2e8f0; border-top-color: #10b981; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }}
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+        p {{ color: #64748b; font-size: 14px; }}
+    </style>
+</head>
+<body>
+    <div class="loader">
+        <div class="spinner"></div>
+        <p>Signing in to {escape(app.get('name', 'Application'))}...</p>
+    </div>
+    <iframe name="authFrame" style="display:none"></iframe>
+    <form id="samlForm" method="POST" action="{escape(acs_url)}" target="authFrame">
+        <input type="hidden" name="SAMLResponse" id="samlResponse"/>
+    </form>
+    <script>
+        var samlData = "{saml_response_b64}";
+        var moduleUrl = "{escape(home_url)}";
+        document.getElementById('samlResponse').value = samlData;
+        document.getElementById('samlForm').submit();
+        // Redirect to module after auth completes (allow time for cookie to set)
+        setTimeout(function() {{
+            window.location.href = moduleUrl;
+        }}, 2500);
+    </script>
+</body>
+</html>'''
+        else:
+            # No home_url: direct SAML form submit (lands on Kissflow homepage)
+            html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">

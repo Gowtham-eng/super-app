@@ -58,6 +58,7 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - [x] Mobile App Launcher: Zoho Workplace-style compact 4-col icon grid (no scrolling needed) - Apr 9 2026
 - [x] Profile dropdown: Clickable avatar in mobile header with profile pic upload + sign out - Apr 9 2026
 - [x] Bug fix: SP-initiated SSO access check - allow users with access to sibling apps (same ACS URL) - Apr 9 2026
+- [x] Bug fix: SAML module deep-linking - iframe auth + redirect to specific module home_url - Apr 9 2026
 - [x] SAML SSO redirect fix (public URL instead of cluster URL)
 - [x] SAML response signing with signxml
 - [x] End-to-end SAML flow for Kissflow
