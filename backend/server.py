@@ -1108,6 +1108,23 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     
     # Check user has access to this app
     has_access = await check_user_app_access(user, app)
+    
+    # For SP-initiated SSO: if user doesn't have direct access to this app,
+    # check if they have access to any sibling app sharing the same ACS URL.
+    # Kissflow (SP) only knows about one SAML connection, but we may have 
+    # multiple sub-apps (Expense Mgmt, Travel Mgmt, etc.) pointing to the same SP.
+    if not has_access:
+        acs_url = app.get('acs_url', '')
+        if acs_url:
+            sibling_apps = await db.saml_apps.find(
+                {"org_id": user.get('org_id'), "acs_url": acs_url, "id": {"$ne": app_id}, "status": "active"},
+                {"_id": 0}
+            ).to_list(100)
+            for sibling in sibling_apps:
+                if await check_user_app_access(user, sibling):
+                    has_access = True
+                    break
+    
     if not has_access:
         raise HTTPException(status_code=403, detail="You don't have access to this application")
     
