@@ -59,7 +59,10 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - [x] Profile dropdown: Clickable avatar in mobile header with profile pic upload + sign out - Apr 9 2026
 - [x] Bug fix: SP-initiated SSO access check - allow users with access to sibling apps (same ACS URL) - Apr 9 2026
 - [x] Bug fix: SAML module deep-linking - iframe auth + redirect to specific module home_url - Apr 9 2026
-- [x] Bug fix: SP-initiated SSO RelayState passthrough - enables Kissflow native app return flow - Apr 9 2026
+- [x] HR Sync from Adrenalin HRMS: auto-create users, disable exited employees, daily midnight schedule - Apr 9 2026
+- [x] Access Request system: users request access, admin approve/reject with email notifications - Apr 9 2026
+- [x] SMTP email integration (Zoho) for access request notifications and sync reports - Apr 9 2026
+- [x] Security fix: removed duplicate insecure access request routes - Apr 9 2026
 - [x] SAML SSO redirect fix (public URL instead of cluster URL)
 - [x] SAML response signing with signxml
 - [x] End-to-end SAML flow for Kissflow
