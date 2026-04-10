@@ -77,6 +77,7 @@ const Layout = ({ children }) => {
       items: [
         { path: '/audit', label: 'Audit Logs', icon: ScrollText },
         { path: '/hr-sync', label: 'HR Sync', icon: RefreshCw },
+        { path: '/scim', label: 'SCIM Setup', icon: KeyRound },
         { path: '/settings', label: 'Settings', icon: Settings },
       ]
     }

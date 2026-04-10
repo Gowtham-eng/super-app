@@ -16,6 +16,7 @@ import ipaddress
 
 from services.email_service import send_email, build_access_request_email, build_request_status_email, build_sync_report_email
 from services.adrenalin_sync import sync_employees
+from routes import scim as scim_router_module
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -2323,6 +2324,72 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
 async def root():
     return {"message": "Kissflow IAM - Identity & Access Management API"}
 
+# ===================== SCIM TOKEN MANAGEMENT =====================
+
+@api_router.post("/scim/tokens")
+async def create_scim_token(body: dict, user: dict = Depends(get_current_user)):
+    """Admin generates a SCIM bearer token for external clients"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Only admins can manage SCIM tokens")
+
+    label = body.get("label", "SCIM Token")
+    token_value = f"scim_{uuid.uuid4().hex}{uuid.uuid4().hex}"
+
+    token_doc = {
+        "id": str(uuid.uuid4()),
+        "token": token_value,
+        "label": label,
+        "org_id": user["org_id"],
+        "created_by": user["id"],
+        "active": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.scim_tokens.insert_one(token_doc)
+
+    base_url = get_public_base_url()
+    return {
+        "id": token_doc["id"],
+        "token": token_value,
+        "label": label,
+        "scim_base_url": f"{base_url}/api/scim/v2",
+        "created_at": token_doc["created_at"],
+    }
+
+
+@api_router.get("/scim/tokens")
+async def list_scim_tokens(user: dict = Depends(get_current_user)):
+    """List active SCIM tokens for the org"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Only admins can view SCIM tokens")
+
+    tokens = await db.scim_tokens.find(
+        {"org_id": user["org_id"], "active": True},
+        {"_id": 0, "token": 0}  # Hide actual token value in listings
+    ).to_list(50)
+
+    base_url = get_public_base_url()
+    for t in tokens:
+        t["scim_base_url"] = f"{base_url}/api/scim/v2"
+
+    return tokens
+
+
+@api_router.delete("/scim/tokens/{token_id}")
+async def revoke_scim_token(token_id: str, user: dict = Depends(get_current_user)):
+    """Revoke a SCIM token"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Only admins can manage SCIM tokens")
+
+    result = await db.scim_tokens.update_one(
+        {"id": token_id, "org_id": user["org_id"]},
+        {"$set": {"active": False, "revoked_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Token not found")
+
+    return {"message": "Token revoked"}
+
+
 # ===================== ACCESS REQUESTS =====================
 
 @api_router.post("/access-requests")
@@ -2489,6 +2556,10 @@ async def health():
 
 # Include router
 app.include_router(api_router)
+
+# SCIM v2 router (separate module)
+scim_router_module.db = db
+app.include_router(scim_router_module.router)
 
 app.add_middleware(
     CORSMiddleware,

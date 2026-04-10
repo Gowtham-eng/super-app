@@ -16,6 +16,7 @@ import AccessRequests from "./pages/AccessRequests";
 import AuditLogs from "./pages/AuditLogs";
 import Settings from "./pages/Settings";
 import HRSync from "./pages/HRSync";
+import SCIMSetup from "./pages/SCIMSetup";
 import Layout from "./components/Layout";
 import "./App.css";
 
@@ -99,6 +100,7 @@ function App() {
           <Route path="/requests" element={<AdminRoute><AccessRequests /></AdminRoute>} />
           <Route path="/audit" element={<AdminRoute><AuditLogs /></AdminRoute>} />
           <Route path="/hr-sync" element={<AdminRoute><HRSync /></AdminRoute>} />
+          <Route path="/scim" element={<AdminRoute><SCIMSetup /></AdminRoute>} />
           <Route path="/settings" element={<AdminRoute><Settings /></AdminRoute>} />
           <Route path="/access-requests" element={<ProtectedRoute><AccessRequests /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
