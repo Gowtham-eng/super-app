@@ -86,8 +86,12 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - [x] Mobile PWA: Tiles use location.href for native app universal link support - Apr 8 2026
 - [x] Android APK: Capacitor native wrapper with Kissflow deep-linking - Apr 8 2026
 
+- [x] SCIM v2 Server: Full RFC 7643/7644 compliant endpoints (Users CRUD, Groups CRUD, Discovery) - Apr 10 2026
+- [x] SCIM Token Management: Admin generate/revoke bearer tokens - Apr 10 2026
+- [x] SCIM Setup UI: Admin page with Kissflow connection guide - Apr 10 2026
+
 ## P1 - Upcoming
-- [ ] SCIM v2 User Provisioning endpoints (/api/scim/v2/*)
+- [x] SCIM v2 User Provisioning endpoints (/api/scim/v2/*) - DONE
 - [ ] OIDC flow end-to-end testing and verification
 
 ## P2 - Backlog
