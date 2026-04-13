@@ -6,7 +6,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
-import { Users, UserPlus, Pencil, Trash2, Search, AppWindow, X, Building2, Phone, MapPin, CalendarDays, BadgeCheck, UserCog } from 'lucide-react';
+import { Users, UserPlus, Pencil, Trash2, Search, AppWindow, X, Building2, Phone, MapPin, CalendarDays, BadgeCheck, UserCog, Download } from 'lucide-react';
 
 const Field = ({ label, value }) => {
   if (!value) return null;
@@ -45,6 +45,7 @@ const UsersPage = () => {
   const [selectedUser, setSelectedUser] = useState(null);
   const [detailUser, setDetailUser] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const [form, setForm] = useState({ email: '', password: '', name: '', app_ids: [] });
   const [editForm, setEditForm] = useState({ name: '', status: '', group_ids: [], role_ids: [], app_ids: [] });
@@ -135,6 +136,31 @@ const UsersPage = () => {
     formSetter(prev => ({ ...prev, app_ids: currentIds.includes(appId) ? currentIds.filter(id => id !== appId) : [...currentIds, appId] }));
   };
 
+  const exportUsers = async (format) => {
+    setExporting(true);
+    try {
+      const res = await axios.get(`${API}/users/export?format=${format}`, {
+        ...getAuthHeader(),
+        responseType: 'blob',
+      });
+      const ext = format === 'csv' ? 'csv' : 'xlsx';
+      const blob = new Blob([res.data]);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `users_export.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success(`Exported as ${ext.toUpperCase()}`);
+    } catch (err) {
+      toast.error('Export failed');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const filteredUsers = users.filter(u =>
     u.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     u.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -163,9 +189,29 @@ const UsersPage = () => {
           <h1 className="font-heading text-2xl font-semibold text-slate-900">User Master</h1>
           <p className="text-sm text-slate-500">{users.length} users in your organization</p>
         </div>
-        <Button onClick={() => setShowModal(true)} className="btn-primary" data-testid="add-user">
-          <UserPlus size={16} className="mr-2" /> Add User
-        </Button>
+        <div className="flex items-center gap-2">
+          <div className="relative group">
+            <button
+              disabled={exporting}
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50"
+              data-testid="export-btn"
+              onClick={() => exportUsers('xlsx')}
+            >
+              <Download size={16} /> {exporting ? 'Exporting...' : 'Export'}
+            </button>
+            <div className="absolute right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg hidden group-hover:block z-20 min-w-[140px]">
+              <button onClick={() => exportUsers('xlsx')} className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 rounded-t-lg" data-testid="export-xlsx">
+                Export as Excel
+              </button>
+              <button onClick={() => exportUsers('csv')} className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 rounded-b-lg" data-testid="export-csv">
+                Export as CSV
+              </button>
+            </div>
+          </div>
+          <Button onClick={() => setShowModal(true)} className="btn-primary" data-testid="add-user">
+            <UserPlus size={16} className="mr-2" /> Add User
+          </Button>
+        </div>
       </div>
 
       {/* Search */}

@@ -785,6 +785,143 @@ async def list_users(user: dict = Depends(get_current_user)):
     users = await db.users.find({"org_id": user['org_id']}, {"_id": 0, "password": 0}).to_list(1000)
     return users
 
+
+@api_router.get("/users/export")
+async def export_users(format: str = "xlsx", user: dict = Depends(get_current_user)):
+    """Export all users as CSV or Excel with all HR fields"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Only admins can export users")
+
+    users = await db.users.find(
+        {"org_id": user["org_id"]}, {"_id": 0, "password": 0}
+    ).to_list(5000)
+
+    # Get app assignments
+    saml_apps = await db.saml_apps.find({"org_id": user["org_id"]}, {"_id": 0, "name": 1, "approved_user_ids": 1}).to_list(100)
+    oidc_apps = await db.oidc_apps.find({"org_id": user["org_id"]}, {"_id": 0, "name": 1, "approved_user_ids": 1}).to_list(100)
+    all_apps = saml_apps + oidc_apps
+
+    def get_user_apps(uid):
+        return ", ".join(a["name"] for a in all_apps if uid in a.get("approved_user_ids", []))
+
+    columns = [
+        ("Employee ID", "adrenalin_employee_id"),
+        ("Title", "title"),
+        ("First Name", "first_name"),
+        ("Last Name", "last_name"),
+        ("Full Name", "name"),
+        ("Email", "email"),
+        ("Personal Email", "personal_email"),
+        ("Work Mobile", "work_mobile"),
+        ("Personal Mobile", "employee_mobile"),
+        ("Gender", "sex"),
+        ("Date of Birth", "date_of_birth"),
+        ("PAN Number", "pan_number"),
+        ("Designation", "designation"),
+        ("Department", "department"),
+        ("Department Code", "department_code"),
+        ("Grade", "grade"),
+        ("Company", "company"),
+        ("Legal Entity", "legal_entity_code"),
+        ("Business Line", "business_line"),
+        ("Branch", "branch_code"),
+        ("Location", "location"),
+        ("Office Location", "office_location"),
+        ("Pincode", "employee_pincode"),
+        ("Employee Status", "employee_status"),
+        ("Employee Status Desc", "employee_status_description"),
+        ("Employment Status", "employment_status"),
+        ("Employment Status Desc", "employment_status_description"),
+        ("Joining Date", "joining_date"),
+        ("Date of Exit", "date_of_exit"),
+        ("Added On", "emp_added_on"),
+        ("L1 Manager Name", "supervisor_name"),
+        ("L1 Manager Email", "supervisor_email"),
+        ("L1 Manager Code", "supervisor_employee_code"),
+        ("L2 Manager Name", "l2_manager_name"),
+        ("L2 Manager Email", "l2_manager_email"),
+        ("L2 Manager Code", "l2_manager_employee_code"),
+        ("System Role", "role"),
+        ("Status", "status"),
+        ("Created Via", "created_via"),
+        ("Last HR Sync", "hr_synced_at"),
+        ("Assigned Apps", None),
+    ]
+
+    import io
+    if format == "csv":
+        import csv
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([c[0] for c in columns])
+        for u in users:
+            row = []
+            for label, key in columns:
+                if key is None:
+                    row.append(get_user_apps(u.get("id", "")))
+                else:
+                    row.append(str(u.get(key, "") or ""))
+            writer.writerow(row)
+        content = output.getvalue().encode("utf-8-sig")
+        from fastapi.responses import Response
+        return Response(
+            content=content,
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=users_export.csv"},
+        )
+    else:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Users"
+
+        # Header styling
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        header_fill = PatternFill(start_color="10B981", end_color="10B981", fill_type="solid")
+        thin_border = Border(
+            bottom=Side(style="thin", color="E2E8F0"),
+        )
+
+        # Write headers
+        for col_idx, (label, _) in enumerate(columns, 1):
+            cell = ws.cell(row=1, column=col_idx, value=label)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        # Write data
+        for row_idx, u in enumerate(users, 2):
+            for col_idx, (label, key) in enumerate(columns, 1):
+                if key is None:
+                    val = get_user_apps(u.get("id", ""))
+                else:
+                    val = str(u.get(key, "") or "")
+                cell = ws.cell(row=row_idx, column=col_idx, value=val)
+                cell.border = thin_border
+                cell.alignment = Alignment(vertical="center")
+
+        # Auto-width columns
+        for col_idx in range(1, len(columns) + 1):
+            max_len = max(
+                len(str(ws.cell(row=r, column=col_idx).value or ""))
+                for r in range(1, min(len(users) + 2, 50))
+            )
+            ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = min(max_len + 4, 35)
+
+        # Freeze header row
+        ws.freeze_panes = "A2"
+
+        output = io.BytesIO()
+        wb.save(output)
+        content = output.getvalue()
+        from fastapi.responses import Response
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=users_export.xlsx"},
+        )
+
 @api_router.post("/users")
 async def create_user(new_user: UserCreate, request: Request, user: dict = Depends(get_current_user)):
     if new_user.org_id != user['org_id']:
