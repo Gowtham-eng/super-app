@@ -46,6 +46,7 @@ const UsersPage = () => {
   const [detailUser, setDetailUser] = useState(null);
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [quickFilter, setQuickFilter] = useState('all');
 
   const [form, setForm] = useState({ email: '', password: '', name: '', app_ids: [] });
   const [editForm, setEditForm] = useState({ name: '', status: '', group_ids: [], role_ids: [], app_ids: [] });
@@ -161,14 +162,29 @@ const UsersPage = () => {
     }
   };
 
-  const filteredUsers = users.filter(u =>
-    u.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.designation?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.department?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.company?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.adrenalin_employee_id?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredUsers = users.filter(u => {
+    // Text search
+    const matchesSearch = !searchTerm || [u.name, u.email, u.designation, u.department, u.company, u.adrenalin_employee_id]
+      .some(f => f?.toLowerCase().includes(searchTerm.toLowerCase()));
+
+    // Quick filter
+    let matchesFilter = true;
+    if (quickFilter === 'no_mobile') {
+      matchesFilter = (!u.work_mobile || u.work_mobile === '0') && (!u.employee_mobile || u.employee_mobile === '0');
+    } else if (quickFilter === 'active') {
+      matchesFilter = u.status === 'active';
+    } else if (quickFilter === 'disabled') {
+      matchesFilter = u.status === 'disabled';
+    } else if (quickFilter === 'no_email') {
+      matchesFilter = !u.personal_email;
+    } else if (quickFilter === 'no_manager') {
+      matchesFilter = !u.supervisor_email;
+    } else if (quickFilter === 'hr_synced') {
+      matchesFilter = u.created_via === 'adrenalin_sync';
+    }
+
+    return matchesSearch && matchesFilter;
+  });
 
   const getUserApps = (userId) => samlApps.filter(a => a.approved_user_ids?.includes(userId));
 
@@ -187,7 +203,7 @@ const UsersPage = () => {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
           <h1 className="font-heading text-2xl font-semibold text-slate-900">User Master</h1>
-          <p className="text-sm text-slate-500">{users.length} users in your organization</p>
+          <p className="text-sm text-slate-500">{filteredUsers.length} of {users.length} users</p>
         </div>
         <div className="flex items-center gap-2">
           <div className="relative group">
@@ -214,11 +230,38 @@ const UsersPage = () => {
         </div>
       </div>
 
-      {/* Search */}
+      {/* Search + Quick Filters */}
       <div className="bg-white border border-slate-200 rounded-xl p-4 mb-5">
-        <div className="relative">
+        <div className="relative mb-3">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <Input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search by name, email, designation, department, company, or employee ID..." className="input-brutalist w-full pl-10" data-testid="search-users" />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {[
+            { key: 'all', label: 'All', count: users.length },
+            { key: 'active', label: 'Active', count: users.filter(u => u.status === 'active').length },
+            { key: 'disabled', label: 'Disabled', count: users.filter(u => u.status === 'disabled').length },
+            { key: 'no_mobile', label: 'Missing Mobile', count: users.filter(u => (!u.work_mobile || u.work_mobile === '0') && (!u.employee_mobile || u.employee_mobile === '0')).length },
+            { key: 'no_email', label: 'Missing Personal Email', count: users.filter(u => !u.personal_email).length },
+            { key: 'no_manager', label: 'Missing Manager', count: users.filter(u => !u.supervisor_email).length },
+            { key: 'hr_synced', label: 'HR Synced', count: users.filter(u => u.created_via === 'adrenalin_sync').length },
+          ].map(f => (
+            <button
+              key={f.key}
+              onClick={() => setQuickFilter(f.key)}
+              data-testid={`filter-${f.key}`}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
+                quickFilter === f.key
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              {f.label}
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                quickFilter === f.key ? 'bg-emerald-700 text-emerald-100' : 'bg-slate-200 text-slate-500'
+              }`}>{f.count}</span>
+            </button>
+          ))}
         </div>
       </div>
 
