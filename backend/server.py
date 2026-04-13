@@ -964,6 +964,29 @@ async def update_user(user_id: str, update: UserUpdate, request: Request, user: 
     
     return await db.users.find_one({"id": user_id}, {"_id": 0, "password": 0})
 
+
+@api_router.post("/users/{user_id}/reset-password")
+async def reset_user_password(user_id: str, body: dict, request: Request, user: dict = Depends(get_current_user)):
+    """Admin sets a custom password for a user"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Only admins can reset passwords")
+
+    new_password = body.get("password", "")
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    target = await db.users.find_one({"id": user_id, "org_id": user["org_id"]}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    hashed = hash_password(new_password)
+    await db.users.update_one({"id": user_id}, {"$set": {"password": hashed}})
+    await log_audit(user["org_id"], "password_reset", "user", user["id"], user["email"], user_id,
+                    {"target_email": target["email"]}, request.client.host if request.client else None)
+
+    return {"message": f"Password reset for {target['email']}"}
+
+
 @api_router.delete("/users/{user_id}")
 async def delete_user(user_id: str, request: Request, user: dict = Depends(get_current_user)):
     if user_id == user['id']:

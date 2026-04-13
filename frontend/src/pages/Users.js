@@ -6,7 +6,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
-import { Users, UserPlus, Pencil, Trash2, Search, AppWindow, X, Building2, Phone, MapPin, CalendarDays, BadgeCheck, UserCog, Download } from 'lucide-react';
+import { Users, UserPlus, Pencil, Trash2, Search, AppWindow, X, Building2, Phone, MapPin, CalendarDays, BadgeCheck, UserCog, Download, KeyRound } from 'lucide-react';
 
 const Field = ({ label, value }) => {
   if (!value) return null;
@@ -50,6 +50,8 @@ const UsersPage = () => {
 
   const [form, setForm] = useState({ email: '', password: '', name: '', app_ids: [] });
   const [editForm, setEditForm] = useState({ name: '', status: '', group_ids: [], role_ids: [], app_ids: [] });
+  const [resetUser, setResetUser] = useState(null);
+  const [resetPassword, setResetPassword] = useState('');
 
   useEffect(() => { fetchData(); }, []);
 
@@ -124,6 +126,24 @@ const UsersPage = () => {
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to delete user');
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!resetPassword || resetPassword.length < 6) {
+      toast.error('Password must be at least 6 characters');
+      return;
+    }
+    setSaving(true);
+    try {
+      await axios.post(`${API}/users/${resetUser.id}/reset-password`, { password: resetPassword }, getAuthHeader());
+      toast.success(`Password reset for ${resetUser.name}`);
+      setResetUser(null);
+      setResetPassword('');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to reset password');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -319,6 +339,9 @@ const UsersPage = () => {
                   </td>
                   <td>
                     <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => { setResetUser(user); setResetPassword(''); }} className="p-2 hover:bg-amber-50 rounded-lg" title="Reset Password" data-testid={`reset-pwd-${user.id}`}>
+                        <KeyRound size={15} className="text-amber-500" />
+                      </button>
                       <button onClick={() => editUser(user)} className="p-2 hover:bg-slate-100 rounded-lg" data-testid={`edit-user-${user.id}`}>
                         <Pencil size={15} className="text-slate-500" />
                       </button>
@@ -511,6 +534,35 @@ const UsersPage = () => {
               <Button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save Changes'}</Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+      {/* Reset Password Modal */}
+      <Dialog open={!!resetUser} onOpenChange={() => setResetUser(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader><DialogTitle className="font-heading text-lg">Reset Password</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <div className="bg-slate-50 rounded-lg p-3">
+              <p className="text-sm text-slate-700"><span className="font-semibold">{resetUser?.name}</span></p>
+              <p className="text-xs text-slate-400">{resetUser?.email}</p>
+            </div>
+            <div>
+              <Label className="label-uppercase text-xs">New Password *</Label>
+              <Input
+                type="password"
+                value={resetPassword}
+                onChange={(e) => setResetPassword(e.target.value)}
+                placeholder="Enter new password (min 6 chars)"
+                className="input-brutalist w-full mt-1.5"
+                data-testid="reset-password-input"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" onClick={() => setResetUser(null)} className="btn-secondary">Cancel</Button>
+            <Button onClick={handleResetPassword} disabled={saving} className="btn-primary" data-testid="reset-password-submit">
+              {saving ? 'Resetting...' : 'Reset Password'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
