@@ -89,6 +89,8 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - [x] SCIM v2 Server: Full RFC 7643/7644 compliant endpoints (Users CRUD, Groups CRUD, Discovery) - Apr 10 2026
 - [x] SCIM Token Management: Admin generate/revoke bearer tokens - Apr 10 2026
 - [x] SCIM Setup UI: Admin page with Kissflow connection guide - Apr 10 2026
+- [x] Full Adrenalin HR field capture: All 30 API fields + L1/L2 Manager email resolution - Apr 13 2026
+- [x] SCIM Refex extension schema: exposes all HR fields via urn:ietf:params:scim:schemas:extension:refex:2.0:User - Apr 13 2026
 
 ## P1 - Upcoming
 - [x] SCIM v2 User Provisioning endpoints (/api/scim/v2/*) - DONE

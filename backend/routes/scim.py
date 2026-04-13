@@ -21,6 +21,7 @@ db = None
 SCIM_SCHEMAS = {
     "user": "urn:ietf:params:scim:schemas:core:2.0:User",
     "enterprise_user": "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User",
+    "refex_user": "urn:ietf:params:scim:schemas:extension:refex:2.0:User",
     "group": "urn:ietf:params:scim:schemas:core:2.0:Group",
     "list": "urn:ietf:params:scim:api:messages:2.0:ListResponse",
     "error": "urn:ietf:params:scim:api:messages:2.0:Error",
@@ -58,31 +59,96 @@ async def verify_scim_token(authorization: Optional[str] = Header(None)):
 # ─── Helpers ─────────────────────────────────────────────────
 
 def user_to_scim(user: dict, base_url: str) -> dict:
-    """Convert internal user doc to SCIM User resource"""
-    names = (user.get("name") or user.get("full_name") or "").split(" ", 1)
-    given = names[0] if names else ""
-    family = names[1] if len(names) > 1 else ""
+    """Convert internal user doc to SCIM User resource with ALL Adrenalin fields"""
+    given = user.get("first_name") or (user.get("name") or "").split(" ", 1)[0]
+    family = user.get("last_name") or ((user.get("name") or "").split(" ", 1)[1] if " " in (user.get("name") or "") else "")
+
+    # Build emails list
+    emails = [{"value": user["email"], "type": "work", "primary": True}]
+    if user.get("personal_email") and not user["personal_email"].endswith("@abc.com") and not user["personal_email"].endswith("@test.com"):
+        emails.append({"value": user["personal_email"], "type": "home", "primary": False})
+
+    # Build phone numbers
+    phones = []
+    if user.get("work_mobile"):
+        phones.append({"value": user["work_mobile"], "type": "work"})
+    if user.get("employee_mobile") and user.get("employee_mobile") != user.get("work_mobile"):
+        phones.append({"value": user["employee_mobile"], "type": "mobile"})
 
     scim_user = {
-        "schemas": [SCIM_SCHEMAS["user"], SCIM_SCHEMAS["enterprise_user"]],
+        "schemas": [SCIM_SCHEMAS["user"], SCIM_SCHEMAS["enterprise_user"], SCIM_SCHEMAS["refex_user"]],
         "id": user["id"],
         "externalId": user.get("adrenalin_employee_id", user["id"]),
         "userName": user["email"],
         "name": {
-            "givenName": given,
-            "familyName": family,
             "formatted": user.get("name") or user.get("full_name") or "",
+            "familyName": family,
+            "givenName": given,
+            "honorificPrefix": user.get("title", ""),
         },
         "displayName": user.get("name") or user.get("full_name") or "",
         "active": user.get("status", "active") == "active",
-        "emails": [{"value": user["email"], "type": "work", "primary": True}],
-        "phoneNumbers": [{"value": user.get("mobile", ""), "type": "work"}] if user.get("mobile") else [],
+        "emails": emails,
+        "phoneNumbers": phones,
         "title": user.get("designation", ""),
+        "addresses": [{
+            "type": "work",
+            "postalCode": user.get("employee_pincode", ""),
+            "locality": user.get("location", ""),
+        }] if user.get("employee_pincode") or user.get("location") else [],
+
+        # Enterprise User Extension (standard SCIM)
         SCIM_SCHEMAS["enterprise_user"]: {
+            "employeeNumber": user.get("adrenalin_employee_id", ""),
             "department": user.get("department", ""),
             "organization": user.get("company", ""),
-            "employeeNumber": user.get("adrenalin_employee_id", ""),
+            "division": user.get("business_line", ""),
+            "costCenter": user.get("department_code", ""),
+            "manager": {
+                "value": user.get("supervisor_employee_code", ""),
+                "displayName": user.get("supervisor_name", ""),
+                "$ref": "",
+            } if user.get("supervisor_employee_code") else None,
         },
+
+        # Refex Custom Extension (all Adrenalin-specific fields)
+        SCIM_SCHEMAS["refex_user"]: {
+            # Identity
+            "sex": user.get("sex", ""),
+            "dateOfBirth": user.get("date_of_birth", ""),
+            "panNumber": user.get("pan_number", ""),
+
+            # Organization details
+            "departmentCode": user.get("department_code", ""),
+            "grade": user.get("grade", ""),
+            "legalEntityCode": user.get("legal_entity_code", ""),
+            "businessLine": user.get("business_line", ""),
+            "branchCode": user.get("branch_code", ""),
+            "location": user.get("location", ""),
+            "officeLocation": user.get("office_location", ""),
+
+            # Employment status
+            "employeeStatus": user.get("employee_status", ""),
+            "employeeStatusDescription": user.get("employee_status_description", ""),
+            "employmentStatus": str(user.get("employment_status", "")),
+            "employmentStatusDescription": user.get("employment_status_description", ""),
+
+            # Dates
+            "joiningDate": user.get("joining_date", ""),
+            "dateOfExit": user.get("date_of_exit", ""),
+            "empAddedOn": user.get("emp_added_on", ""),
+
+            # L1 Manager (Direct Supervisor)
+            "supervisorEmployeeCode": user.get("supervisor_employee_code", ""),
+            "supervisorEmail": user.get("supervisor_email", ""),
+            "supervisorName": user.get("supervisor_name", ""),
+
+            # L2 Manager (Supervisor's Supervisor)
+            "l2ManagerEmployeeCode": user.get("l2_manager_employee_code", ""),
+            "l2ManagerEmail": user.get("l2_manager_email", ""),
+            "l2ManagerName": user.get("l2_manager_name", ""),
+        },
+
         "meta": {
             "resourceType": "User",
             "created": user.get("created_at", ""),
@@ -90,6 +156,11 @@ def user_to_scim(user: dict, base_url: str) -> dict:
             "location": f"{base_url}/api/scim/v2/Users/{user['id']}",
         },
     }
+
+    # Clean up null manager in enterprise extension
+    if scim_user[SCIM_SCHEMAS["enterprise_user"]]["manager"] is None:
+        del scim_user[SCIM_SCHEMAS["enterprise_user"]]["manager"]
+
     return scim_user
 
 
@@ -172,8 +243,8 @@ async def get_schemas():
     base_url = get_base_url()
     return {
         "schemas": [SCIM_SCHEMAS["list"]],
-        "totalResults": 2,
-        "itemsPerPage": 2,
+        "totalResults": 3,
+        "itemsPerPage": 3,
         "startIndex": 1,
         "Resources": [
             {
@@ -187,14 +258,47 @@ async def get_schemas():
                          {"name": "givenName", "type": "string", "mutability": "readWrite"},
                          {"name": "familyName", "type": "string", "mutability": "readWrite"},
                          {"name": "formatted", "type": "string", "mutability": "readWrite"},
+                         {"name": "honorificPrefix", "type": "string", "mutability": "readWrite"},
                      ]},
                     {"name": "displayName", "type": "string", "multiValued": False, "required": False, "mutability": "readWrite"},
                     {"name": "emails", "type": "complex", "multiValued": True, "required": True, "mutability": "readWrite"},
                     {"name": "active", "type": "boolean", "multiValued": False, "required": False, "mutability": "readWrite"},
                     {"name": "phoneNumbers", "type": "complex", "multiValued": True, "required": False, "mutability": "readWrite"},
                     {"name": "title", "type": "string", "multiValued": False, "required": False, "mutability": "readWrite"},
+                    {"name": "addresses", "type": "complex", "multiValued": True, "required": False, "mutability": "readWrite"},
                 ],
                 "meta": {"resourceType": "Schema", "location": f"{base_url}/api/scim/v2/Schemas/{SCIM_SCHEMAS['user']}"},
+            },
+            {
+                "id": SCIM_SCHEMAS["refex_user"],
+                "name": "Refex User Extension",
+                "description": "Refex-specific employee fields from Adrenalin HRMS (includes L1/L2 managers)",
+                "attributes": [
+                    {"name": "sex", "type": "string", "mutability": "readWrite"},
+                    {"name": "dateOfBirth", "type": "string", "mutability": "readWrite"},
+                    {"name": "panNumber", "type": "string", "mutability": "readWrite"},
+                    {"name": "departmentCode", "type": "string", "mutability": "readWrite"},
+                    {"name": "grade", "type": "string", "mutability": "readWrite"},
+                    {"name": "legalEntityCode", "type": "string", "mutability": "readWrite"},
+                    {"name": "businessLine", "type": "string", "mutability": "readWrite"},
+                    {"name": "branchCode", "type": "string", "mutability": "readWrite"},
+                    {"name": "location", "type": "string", "mutability": "readWrite"},
+                    {"name": "officeLocation", "type": "string", "mutability": "readWrite"},
+                    {"name": "employeeStatus", "type": "string", "mutability": "readWrite"},
+                    {"name": "employeeStatusDescription", "type": "string", "mutability": "readWrite"},
+                    {"name": "employmentStatus", "type": "string", "mutability": "readWrite"},
+                    {"name": "employmentStatusDescription", "type": "string", "mutability": "readWrite"},
+                    {"name": "joiningDate", "type": "string", "mutability": "readWrite"},
+                    {"name": "dateOfExit", "type": "string", "mutability": "readWrite"},
+                    {"name": "empAddedOn", "type": "string", "mutability": "readWrite"},
+                    {"name": "supervisorEmployeeCode", "type": "string", "mutability": "readWrite"},
+                    {"name": "supervisorEmail", "type": "string", "mutability": "readWrite"},
+                    {"name": "supervisorName", "type": "string", "mutability": "readWrite"},
+                    {"name": "l2ManagerEmployeeCode", "type": "string", "mutability": "readWrite"},
+                    {"name": "l2ManagerEmail", "type": "string", "mutability": "readWrite"},
+                    {"name": "l2ManagerName", "type": "string", "mutability": "readWrite"},
+                ],
+                "meta": {"resourceType": "Schema", "location": f"{base_url}/api/scim/v2/Schemas/{SCIM_SCHEMAS['refex_user']}"},
             },
             {
                 "id": SCIM_SCHEMAS["group"],
@@ -225,7 +329,10 @@ async def get_resource_types():
                 "name": "User",
                 "endpoint": "/Users",
                 "schema": SCIM_SCHEMAS["user"],
-                "schemaExtensions": [{"schema": SCIM_SCHEMAS["enterprise_user"], "required": False}],
+                "schemaExtensions": [
+                    {"schema": SCIM_SCHEMAS["enterprise_user"], "required": False},
+                    {"schema": SCIM_SCHEMAS["refex_user"], "required": False},
+                ],
                 "meta": {"resourceType": "ResourceType", "location": f"{base_url}/api/scim/v2/ResourceTypes/User"},
             },
             {
