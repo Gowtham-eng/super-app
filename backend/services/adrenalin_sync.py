@@ -1,6 +1,7 @@
 """
 Adrenalin HRMS Sync Service
 Syncs ALL employee fields from Adrenalin API + resolves L1/L2 Manager emails.
+After sync, pushes created/updated users to Kissflow via SCIM.
 """
 import os
 import uuid
@@ -8,6 +9,7 @@ import logging
 import httpx
 import bcrypt
 from datetime import datetime, timezone
+from services.kissflow_scim_client import sync_to_kissflow
 
 logger = logging.getLogger(__name__)
 
@@ -275,5 +277,20 @@ async def sync_employees(db, org_id: str) -> dict:
             err_msg = f"Error processing {emp.get('EMAIL_ADDRESS', 'unknown')}: {str(e)}"
             result["errors"].append(err_msg)
             logger.error(err_msg)
+
+    # After HR sync, push created/updated users to Kissflow
+    kissflow_result = None
+    try:
+        if result["created"] > 0 or result["updated"] > 0 or result["disabled"] > 0:
+            logger.info(f"Triggering Kissflow SCIM push after HR sync ({result['created']} created, {result['updated']} updated, {result['disabled']} disabled)")
+            kissflow_result = await sync_to_kissflow(db, org_id)
+            result["kissflow_sync"] = kissflow_result
+            logger.info(f"Kissflow push result: created={kissflow_result.get('created', 0)}, updated={kissflow_result.get('updated', 0)}, errors={len(kissflow_result.get('errors', []))}")
+        else:
+            result["kissflow_sync"] = {"skipped": True, "reason": "No changes from HR sync"}
+    except Exception as e:
+        err_msg = f"Kissflow SCIM push failed: {str(e)}"
+        result["kissflow_sync"] = {"error": err_msg}
+        logger.error(err_msg)
 
     return result

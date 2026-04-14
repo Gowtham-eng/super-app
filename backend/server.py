@@ -16,6 +16,7 @@ import ipaddress
 
 from services.email_service import send_email, build_access_request_email, build_request_status_email, build_sync_report_email
 from services.adrenalin_sync import sync_employees
+from services.kissflow_scim_client import sync_to_kissflow, push_single_user_to_kissflow, get_kissflow_scim_config, save_kissflow_scim_config
 from routes import scim as scim_router_module
 
 ROOT_DIR = Path(__file__).parent
@@ -53,12 +54,21 @@ async def scheduled_hr_sync():
     for org in orgs:
         try:
             result = await sync_employees(db, org["id"])
-            # Log the sync
+            # Log the HR sync
             await db.hr_sync_logs.insert_one({
                 "org_id": org["id"],
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "result": result,
             })
+            # Log the Kissflow push result separately if present
+            kf_result = result.get("kissflow_sync")
+            if kf_result and not kf_result.get("skipped"):
+                await db.kissflow_sync_logs.insert_one({
+                    "org_id": org["id"],
+                    "trigger_type": "scheduled_hr_sync",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "result": kf_result,
+                })
             # Email report to admins
             admins = await db.users.find(
                 {"org_id": org["id"], "role": "org_admin", "status": {"$ne": "disabled"}},
@@ -961,6 +971,13 @@ async def update_user(user_id: str, update: UserUpdate, request: Request, user: 
         await db.users.update_one({"id": user_id}, {"$set": update_data})
         await log_audit(user['org_id'], "user_updated", "user", user['id'], user['email'], user_id,
                        update_data, request.client.host if request.client else None)
+        # Push updated user to Kissflow in background
+        try:
+            email = target_user.get("email", "")
+            if email:
+                await push_single_user_to_kissflow(db, user["org_id"], email)
+        except Exception as e:
+            logging.getLogger("kissflow_scim").warning(f"Kissflow push after user update failed for {email}: {e}")
     
     return await db.users.find_one({"id": user_id}, {"_id": 0, "password": 0})
 
@@ -2705,6 +2722,94 @@ async def get_hr_sync_logs(user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Only admins can view sync logs")
 
     logs = await db.hr_sync_logs.find(
+        {"org_id": user["org_id"]}, {"_id": 0}
+    ).sort("timestamp", -1).to_list(50)
+    return logs
+
+
+# ---- Kissflow SCIM Push Endpoints ----
+
+@api_router.get("/kissflow-scim/config")
+async def get_kf_scim_config(user: dict = Depends(get_current_user)):
+    """Get Kissflow SCIM configuration status"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    config = await get_kissflow_scim_config(db, user["org_id"])
+    if not config:
+        return {"configured": False}
+    return {
+        "configured": True,
+        "base_url": config.get("base_url", ""),
+        "token_masked": config.get("token", "")[:8] + "..." if config.get("token") else "",
+        "source": config.get("source", "db"),
+    }
+
+
+@api_router.post("/kissflow-scim/config")
+async def save_kf_scim_config(request: Request, user: dict = Depends(get_current_user)):
+    """Save Kissflow SCIM configuration"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    body = await request.json()
+    base_url = body.get("base_url", "").strip()
+    token = body.get("token", "").strip()
+    if not base_url or not token:
+        raise HTTPException(status_code=400, detail="base_url and token are required")
+    await save_kissflow_scim_config(db, user["org_id"], base_url, token)
+    return {"success": True}
+
+
+@api_router.post("/kissflow-scim/sync")
+async def trigger_kissflow_sync(user: dict = Depends(get_current_user)):
+    """Admin manually triggers Kissflow SCIM push for all users"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Only admins can trigger Kissflow sync")
+
+    result = await sync_to_kissflow(db, user["org_id"])
+
+    log_doc = {
+        "org_id": user["org_id"],
+        "triggered_by": user["id"],
+        "trigger_type": "manual_full",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "result": result,
+    }
+    await db.kissflow_sync_logs.insert_one(log_doc)
+
+    return result
+
+
+@api_router.post("/kissflow-scim/push-user")
+async def push_user_to_kf(request: Request, user: dict = Depends(get_current_user)):
+    """Push a single user to Kissflow (used during admin edits)"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    body = await request.json()
+    email = body.get("email", "").strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="email is required")
+
+    result = await push_single_user_to_kissflow(db, user["org_id"], email)
+
+    log_doc = {
+        "org_id": user["org_id"],
+        "triggered_by": user["id"],
+        "trigger_type": "manual_single",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "email": email,
+        "result": result,
+    }
+    await db.kissflow_sync_logs.insert_one(log_doc)
+
+    return result
+
+
+@api_router.get("/kissflow-scim/logs")
+async def get_kissflow_sync_logs(user: dict = Depends(get_current_user)):
+    """Get Kissflow SCIM sync history"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    logs = await db.kissflow_sync_logs.find(
         {"org_id": user["org_id"]}, {"_id": 0}
     ).sort("timestamp", -1).to_list(50)
     return logs
