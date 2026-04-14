@@ -185,7 +185,7 @@ async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         for user in users:
             email = user.get("email", "")
             if not email or email.endswith("@abc.com"):

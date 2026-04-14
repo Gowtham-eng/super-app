@@ -91,9 +91,15 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - [x] SCIM Setup UI: Admin page with Kissflow connection guide - Apr 10 2026
 - [x] Full Adrenalin HR field capture: All 30 API fields + L1/L2 Manager email resolution - Apr 13 2026
 - [x] SCIM Refex extension schema: exposes all HR fields via urn:ietf:params:scim:schemas:extension:refex:2.0:User - Apr 13 2026
+- [x] Kissflow Outbound SCIM Client: Push IAM users TO Kissflow's SCIM Server (create/update/deactivate) - Apr 14 2026
+- [x] Kissflow SCIM auto-sync: Automatically pushes users to Kissflow after nightly Adrenalin HR sync - Apr 14 2026
+- [x] Kissflow SCIM manual sync: Admin can trigger full sync or push individual users from UI - Apr 14 2026
+- [x] Kissflow SCIM real-time push: User updates via Admin User Master auto-push to Kissflow - Apr 14 2026
+- [x] Kissflow SCIM config: Env var + DB config (with admin UI to save/update) - Apr 14 2026
+- [x] Kissflow SCIM sync logs: Track all sync operations with trigger type and results - Apr 14 2026
+- [x] SCIM Setup UI redesigned: Tabbed UI with Outbound (Push to Kissflow) and Inbound (SCIM Tokens) sections - Apr 14 2026
 
 ## P1 - Upcoming
-- [x] SCIM v2 User Provisioning endpoints (/api/scim/v2/*) - DONE
 - [ ] OIDC flow end-to-end testing and verification
 
 ## P2 - Backlog
