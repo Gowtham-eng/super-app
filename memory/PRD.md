@@ -98,6 +98,9 @@ Build a mobile and web super app integrated with SSO for Kissflow application, c
 - [x] Kissflow SCIM config: Env var + DB config (with admin UI to save/update) - Apr 14 2026
 - [x] Kissflow SCIM sync logs: Track all sync operations with trigger type and results - Apr 14 2026
 - [x] SCIM Setup UI redesigned: Tabbed UI with Outbound (Push to Kissflow) and Inbound (SCIM Tokens) sections - Apr 14 2026
+- [x] Kissflow SCIM field mapping fix: Discovered and implemented Kissflow custom extension schema (urn:kissflow:scim:schemas:extension:AcCMptlq60zH:2:User) with exact field IDs (Employee_ID, Manager, L2_Manager, Designation_1, Department_Code, Branch, Location_1, Office_Location, Employee_Status, Date_of_Exit, L1_Manager_Name, L1_Manager_Email) - Apr 21 2026
+- [x] Background sync: Full sync runs as background task to avoid 502 timeout - Apr 21 2026
+- [x] Rate limiting & retry: 0.5s delay between SCIM requests, retry on 429, early stop after 5 consecutive auth errors - Apr 21 2026
 
 ## P1 - Upcoming
 - [ ] OIDC flow end-to-end testing and verification

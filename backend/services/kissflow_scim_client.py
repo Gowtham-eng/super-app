@@ -60,7 +60,21 @@ async def save_kissflow_scim_config(db, org_id: str, base_url: str, token: str):
 def _build_kissflow_user(user: dict) -> dict:
     """
     Build SCIM User payload for Kissflow.
-    Uses both enterprise extension and Kissflow custom extension for all fields.
+    Uses Kissflow custom extension schema with exact field IDs from Kissflow's schema.
+    
+    Kissflow custom fields (urn:kissflow:scim:schemas:extension:AcCMptlq60zH:2:User):
+    - Manager: complex {value, Email, Name} (L1 Manager)
+    - L2_Manager: complex {value, Email, Name}
+    - Employee_ID: string
+    - Designation_1: string
+    - Department_Code: string
+    - Branch: string
+    - Location_1: string
+    - Office_Location: string
+    - Employee_Status: string
+    - Date_of_Exit: string
+    - L1_Manager_Name: string
+    - L1_Manager_Email: string
     """
     phone = (user.get("work_mobile") or user.get("mobile") or "").strip()
     # Clean phone: remove non-digits, add 91 prefix if needed
@@ -78,7 +92,10 @@ def _build_kissflow_user(user: dict) -> dict:
 
     display_name = user.get("name") or user.get("full_name") or f"{first_name} {last_name}".strip()
 
-    schemas = ["urn:ietf:params:scim:schemas:core:2.0:User"]
+    schemas = [
+        "urn:ietf:params:scim:schemas:core:2.0:User",
+        KISSFLOW_EXTENSION_SCHEMA,
+    ]
 
     payload = {
         "userName": user["email"],
@@ -96,37 +113,70 @@ def _build_kissflow_user(user: dict) -> dict:
     if phone_digits:
         payload["phoneNumbers"] = [{"value": phone_digits, "type": "work"}]
 
-    # Enterprise extension - Manager (L1) and employeeNumber
-    enterprise_ext = {}
-    supervisor_email = user.get("supervisor_email", "")
-    if supervisor_email:
-        enterprise_ext["manager"] = {
-            "value": supervisor_email,
-            "displayName": user.get("supervisor_name", ""),
-        }
+    # Kissflow custom extension - uses exact field IDs from Kissflow schema
+    kf_ext = {}
+
+    # Employee ID
     emp_id = user.get("adrenalin_employee_id", "")
     if emp_id:
-        enterprise_ext["employeeNumber"] = emp_id
-    dept = user.get("department", "")
-    if dept:
-        enterprise_ext["department"] = dept
+        kf_ext["Employee_ID"] = emp_id
 
-    if enterprise_ext:
-        schemas.append(ENTERPRISE_EXTENSION_SCHEMA)
-        payload[ENTERPRISE_EXTENSION_SCHEMA] = enterprise_ext
+    # Designation
+    designation = user.get("designation", "")
+    if designation:
+        kf_ext["Designation_1"] = designation
 
-    # Kissflow custom extension - Employee ID, L2 Manager, and more
-    kf_ext = {}
-    if emp_id:
-        kf_ext["employeeId"] = emp_id
+    # Department Code
+    dept_code = user.get("department_code", "")
+    if dept_code:
+        kf_ext["Department_Code"] = dept_code
+
+    # Branch
+    branch = user.get("branch_code") or user.get("business_line") or ""
+    if branch:
+        kf_ext["Branch"] = branch
+
+    # Location
+    location = user.get("location") or user.get("office_location") or ""
+    if location:
+        kf_ext["Location_1"] = location
+
+    # Office Location
+    office_loc = user.get("office_location", "")
+    if office_loc:
+        kf_ext["Office_Location"] = office_loc
+
+    # Employee Status
+    emp_status = user.get("employee_status_description") or user.get("employee_status") or ""
+    if emp_status:
+        kf_ext["Employee_Status"] = emp_status
+
+    # Date of Exit
+    date_exit = user.get("date_of_exit", "")
+    if date_exit:
+        kf_ext["Date_of_Exit"] = date_exit
+
+    # Manager (L1) - complex type with Email and Name sub-attributes
+    supervisor_email = user.get("supervisor_email", "")
+    supervisor_name = user.get("supervisor_name", "")
+    if supervisor_email:
+        kf_ext["Manager"] = {
+            "Email": supervisor_email,
+            "Name": supervisor_name,
+        }
+        kf_ext["L1_Manager_Email"] = supervisor_email
+        kf_ext["L1_Manager_Name"] = supervisor_name
+
+    # L2 Manager - complex type with Email and Name sub-attributes
     l2_email = user.get("l2_manager_email", "")
+    l2_name = user.get("l2_manager_name", "")
     if l2_email:
-        kf_ext["l2Manager"] = l2_email
+        kf_ext["L2_Manager"] = {
+            "Email": l2_email,
+            "Name": l2_name,
+        }
 
-    if kf_ext:
-        schemas.append(KISSFLOW_EXTENSION_SCHEMA)
-        payload[KISSFLOW_EXTENSION_SCHEMA] = kf_ext
-
+    payload[KISSFLOW_EXTENSION_SCHEMA] = kf_ext
     payload["schemas"] = schemas
     return payload
 
