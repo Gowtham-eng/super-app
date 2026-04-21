@@ -120,22 +120,48 @@ const SCIMSetup = () => {
     setSyncResult(null);
     try {
       const res = await axios.post(`${API}/kissflow-scim/sync`, {}, getAuthHeader());
+      if (res.data.status === 'running') {
+        toast.success('Sync started in background. Refreshing logs automatically...');
+        setSyncResult({ message: 'Sync running in background...' });
+        // Auto-refresh logs every 10 seconds while sync is running
+        const interval = setInterval(async () => {
+          try {
+            const logsRes = await axios.get(`${API}/kissflow-scim/logs`, getAuthHeader());
+            setSyncLogs(logsRes.data);
+            const latest = logsRes.data[0];
+            if (latest && latest.status !== 'running') {
+              clearInterval(interval);
+              setSyncing(false);
+              const r = latest.result || {};
+              if (r.error) {
+                toast.error('Sync failed: ' + r.error);
+              } else {
+                toast.success(`Sync complete: ${r.created || 0} created, ${r.updated || 0} updated, ${(r.errors || []).length} errors`);
+              }
+              setSyncResult(r);
+            }
+          } catch (e) { /* ignore poll errors */ }
+        }, 10000);
+        // Safety: stop polling after 30 min
+        setTimeout(() => { clearInterval(interval); setSyncing(false); }, 1800000);
+        return; // Don't set syncing=false yet
+      }
       setSyncResult(res.data);
       fetchSyncLogs();
-      const created = res.data.created || 0;
-      const updated = res.data.updated || 0;
-      const errors = (res.data.errors || []).length;
       if (res.data.error) {
         toast.error(res.data.error);
       } else {
-        toast.success(`Sync complete: ${created} created, ${updated} updated, ${errors} errors`);
+        toast.success(`Sync complete: ${res.data.created || 0} created, ${res.data.updated || 0} updated`);
       }
     } catch (err) {
       toast.error('Sync failed: ' + (err.response?.data?.detail || err.message));
     } finally {
-      setSyncing(false);
+      if (!syncing) setSyncing(false);
     }
   };
+
+  // Don't reset syncing in finally if background task
+  const stopSyncing = () => setSyncing(false);
 
   const copyToClipboard = (text) => {
     navigator.clipboard.writeText(text);
@@ -269,35 +295,53 @@ const SCIMSetup = () => {
             {/* Sync Result */}
             {syncResult && !syncResult.error && (
               <div className="bg-slate-50 rounded-lg p-4 mt-3" data-testid="sync-result">
-                <h3 className="text-sm font-semibold text-slate-700 mb-3">Latest Sync Result</h3>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div className="bg-white rounded-lg p-3 border border-slate-100 text-center">
-                    <div className="text-2xl font-bold text-emerald-600" data-testid="sync-created">{syncResult.created}</div>
-                    <div className="text-xs text-slate-500 mt-0.5">Created</div>
+                {syncResult.message ? (
+                  <div className="flex items-center gap-3 text-blue-600">
+                    <RefreshCw size={18} className="animate-spin" />
+                    <span className="text-sm font-medium">{syncResult.message}</span>
                   </div>
-                  <div className="bg-white rounded-lg p-3 border border-slate-100 text-center">
-                    <div className="text-2xl font-bold text-blue-600" data-testid="sync-updated">{syncResult.updated}</div>
-                    <div className="text-xs text-slate-500 mt-0.5">Updated</div>
-                  </div>
-                  <div className="bg-white rounded-lg p-3 border border-slate-100 text-center">
-                    <div className="text-2xl font-bold text-slate-600" data-testid="sync-deactivated">{syncResult.deactivated}</div>
-                    <div className="text-xs text-slate-500 mt-0.5">Deactivated</div>
-                  </div>
-                  <div className="bg-white rounded-lg p-3 border border-slate-100 text-center">
-                    <div className="text-2xl font-bold text-red-500" data-testid="sync-errors">{(syncResult.errors || []).length}</div>
-                    <div className="text-xs text-slate-500 mt-0.5">Errors</div>
-                  </div>
-                </div>
-                {syncResult.errors && syncResult.errors.length > 0 && (
-                  <div className="mt-3 bg-red-50 rounded-lg p-3 max-h-40 overflow-y-auto">
-                    <h4 className="text-xs font-semibold text-red-700 mb-1">Errors:</h4>
-                    {syncResult.errors.slice(0, 20).map((err, i) => (
-                      <p key={i} className="text-xs text-red-600 font-mono truncate">{err}</p>
-                    ))}
-                    {syncResult.errors.length > 20 && (
-                      <p className="text-xs text-red-500 mt-1">...and {syncResult.errors.length - 20} more</p>
+                ) : (
+                  <>
+                    <h3 className="text-sm font-semibold text-slate-700 mb-3">Latest Sync Result</h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                      <div className="bg-white rounded-lg p-3 border border-slate-100 text-center">
+                        <div className="text-2xl font-bold text-emerald-600" data-testid="sync-created">{syncResult.created}</div>
+                        <div className="text-xs text-slate-500 mt-0.5">Created</div>
+                      </div>
+                      <div className="bg-white rounded-lg p-3 border border-slate-100 text-center">
+                        <div className="text-2xl font-bold text-blue-600" data-testid="sync-updated">{syncResult.updated}</div>
+                        <div className="text-xs text-slate-500 mt-0.5">Updated</div>
+                      </div>
+                      <div className="bg-white rounded-lg p-3 border border-slate-100 text-center">
+                        <div className="text-2xl font-bold text-slate-600" data-testid="sync-deactivated">{syncResult.deactivated}</div>
+                        <div className="text-xs text-slate-500 mt-0.5">Deactivated</div>
+                      </div>
+                      <div className="bg-white rounded-lg p-3 border border-slate-100 text-center">
+                        <div className="text-2xl font-bold text-amber-500" data-testid="sync-auth-errors">{syncResult.auth_errors || 0}</div>
+                        <div className="text-xs text-slate-500 mt-0.5">Auth Errors</div>
+                      </div>
+                      <div className="bg-white rounded-lg p-3 border border-slate-100 text-center">
+                        <div className="text-2xl font-bold text-red-500" data-testid="sync-errors">{(syncResult.errors || []).length}</div>
+                        <div className="text-xs text-slate-500 mt-0.5">Errors</div>
+                      </div>
+                    </div>
+                    {syncResult.auth_errors > 0 && (
+                      <div className="mt-3 bg-amber-50 rounded-lg p-3 text-sm text-amber-700">
+                        Auth errors detected. Please verify your SCIM token is valid and SCIM is enabled in Kissflow.
+                      </div>
                     )}
-                  </div>
+                    {syncResult.errors && syncResult.errors.length > 0 && (
+                      <div className="mt-3 bg-red-50 rounded-lg p-3 max-h-40 overflow-y-auto">
+                        <h4 className="text-xs font-semibold text-red-700 mb-1">Errors:</h4>
+                        {syncResult.errors.slice(0, 20).map((err, i) => (
+                          <p key={i} className="text-xs text-red-600 font-mono truncate">{err}</p>
+                        ))}
+                        {syncResult.errors.length > 20 && (
+                          <p className="text-xs text-red-500 mt-1">...and {syncResult.errors.length - 20} more</p>
+                        )}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -327,18 +371,21 @@ const SCIMSetup = () => {
               <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto">
                 {syncLogs.map((log, i) => {
                   const r = log.result || {};
-                  const hasError = r.error || (r.errors && r.errors.length > 0);
+                  const isRunning = log.status === 'running';
+                  const hasError = !isRunning && (r.error || (r.errors && r.errors.length > 0) || r.auth_errors > 0);
                   return (
                     <div key={i} className="px-5 py-3 flex items-center justify-between" data-testid={`sync-log-${i}`}>
                       <div>
                         <div className="flex items-center gap-2">
-                          {hasError ? (
+                          {isRunning ? (
+                            <RefreshCw size={14} className="text-blue-500 animate-spin" />
+                          ) : hasError ? (
                             <XCircle size={14} className="text-red-400" />
                           ) : (
                             <CheckCircle size={14} className="text-emerald-500" />
                           )}
                           <span className="text-sm font-medium text-slate-800">
-                            {r.error ? 'Failed' : `${r.created || 0} created, ${r.updated || 0} updated`}
+                            {isRunning ? 'Syncing...' : r.error ? 'Failed' : `${r.created || 0} created, ${r.updated || 0} updated`}
                           </span>
                           <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
                             {log.trigger_type === 'scheduled_hr_sync' ? 'Auto (HR Sync)' : log.trigger_type === 'manual_single' ? `Manual (${log.email})` : 'Manual (Full)'}
@@ -347,6 +394,7 @@ const SCIMSetup = () => {
                         <p className="text-xs text-slate-400 mt-0.5">
                           {new Date(log.timestamp).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
                           {r.total ? ` | ${r.total} users processed` : ''}
+                          {r.auth_errors > 0 ? ` | ${r.auth_errors} auth errors` : ''}
                           {r.errors && r.errors.length > 0 ? ` | ${r.errors.length} errors` : ''}
                         </p>
                       </div>

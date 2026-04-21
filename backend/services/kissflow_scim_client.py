@@ -1,14 +1,32 @@
 """
 Kissflow SCIM Client
 Pushes users FROM Refex Super App TO Kissflow's SCIM Server.
-Reads config from DB (kissflow_scim_config) or falls back to env vars.
+
+Key features:
+- Kissflow custom extension schema for Employee ID, L2 Manager, Department etc.
+- Rate limiting with configurable delay between requests
+- Retry logic for 429 (Too Many Requests) responses
+- Background async sync to avoid HTTP timeout on large user bases
+- Reads config from DB (kissflow_scim_config) or falls back to env vars
 """
 import os
+import asyncio
 import logging
 import httpx
 from datetime import datetime, timezone
 
 logger = logging.getLogger("kissflow_scim")
+
+# Kissflow Account ID from the SCIM URL
+KISSFLOW_ACCOUNT_ID = "AcCMptlq60zH"
+KISSFLOW_EXTENSION_SCHEMA = f"urn:kissflow:scim:schemas:extension:{KISSFLOW_ACCOUNT_ID}:2:User"
+ENTERPRISE_EXTENSION_SCHEMA = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"
+
+# Rate limiting: delay between requests in seconds
+REQUEST_DELAY = 0.5
+# Retry config for 429 responses
+MAX_RETRIES = 3
+RETRY_DELAY = 5  # seconds to wait on 429
 
 
 async def get_kissflow_scim_config(db, org_id: str) -> dict:
@@ -40,42 +58,102 @@ async def save_kissflow_scim_config(db, org_id: str, base_url: str, token: str):
 
 
 def _build_kissflow_user(user: dict) -> dict:
-    """Build SCIM User payload for Kissflow"""
+    """
+    Build SCIM User payload for Kissflow.
+    Uses both enterprise extension and Kissflow custom extension for all fields.
+    """
     phone = (user.get("work_mobile") or user.get("mobile") or "").strip()
-    if phone and not phone.startswith("+") and not phone.startswith("91"):
-        phone = f"91{phone}"
+    # Clean phone: remove non-digits, add 91 prefix if needed
+    phone_digits = "".join(c for c in phone if c.isdigit())
+    if phone_digits and phone_digits != "0":
+        if not phone_digits.startswith("91") and len(phone_digits) == 10:
+            phone_digits = f"91{phone_digits}"
+    else:
+        phone_digits = ""
 
     first_name = user.get("first_name") or (user.get("name", "").split(" ", 1)[0] if user.get("name") else "")
-    last_name = user.get("last_name") or (user.get("name", "").split(" ", 1)[1] if " " in user.get("name", "") else "")
+    last_name = user.get("last_name") or ""
+    if not last_name and user.get("name") and " " in user.get("name", ""):
+        last_name = user["name"].split(" ", 1)[1]
+
+    display_name = user.get("name") or user.get("full_name") or f"{first_name} {last_name}".strip()
+
+    schemas = ["urn:ietf:params:scim:schemas:core:2.0:User"]
 
     payload = {
-        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
         "userName": user["email"],
         "name": {
             "givenName": first_name,
             "familyName": last_name,
         },
-        "displayName": user.get("name") or user.get("full_name") or f"{first_name} {last_name}".strip(),
-        "nickName": user.get("name") or user.get("full_name") or f"{first_name} {last_name}".strip(),
+        "displayName": display_name,
+        "nickName": display_name,
         "active": user.get("status", "active") == "active",
         "emails": [{"value": user["email"], "type": "work", "primary": True}],
         "title": user.get("designation") or "",
     }
 
-    if phone:
-        payload["phoneNumbers"] = [{"value": phone, "type": "work"}]
+    if phone_digits:
+        payload["phoneNumbers"] = [{"value": phone_digits, "type": "work"}]
 
+    # Enterprise extension - Manager (L1) and employeeNumber
+    enterprise_ext = {}
     supervisor_email = user.get("supervisor_email", "")
     if supervisor_email:
-        payload["schemas"].append("urn:ietf:params:scim:schemas:extension:enterprise:2.0:User")
-        payload["urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"] = {
-            "manager": {
-                "value": supervisor_email,
-                "displayName": user.get("supervisor_name", ""),
-            }
+        enterprise_ext["manager"] = {
+            "value": supervisor_email,
+            "displayName": user.get("supervisor_name", ""),
         }
+    emp_id = user.get("adrenalin_employee_id", "")
+    if emp_id:
+        enterprise_ext["employeeNumber"] = emp_id
+    dept = user.get("department", "")
+    if dept:
+        enterprise_ext["department"] = dept
 
+    if enterprise_ext:
+        schemas.append(ENTERPRISE_EXTENSION_SCHEMA)
+        payload[ENTERPRISE_EXTENSION_SCHEMA] = enterprise_ext
+
+    # Kissflow custom extension - Employee ID, L2 Manager, and more
+    kf_ext = {}
+    if emp_id:
+        kf_ext["employeeId"] = emp_id
+    l2_email = user.get("l2_manager_email", "")
+    if l2_email:
+        kf_ext["l2Manager"] = l2_email
+
+    if kf_ext:
+        schemas.append(KISSFLOW_EXTENSION_SCHEMA)
+        payload[KISSFLOW_EXTENSION_SCHEMA] = kf_ext
+
+    payload["schemas"] = schemas
     return payload
+
+
+async def _request_with_retry(client: httpx.AsyncClient, method: str, url: str, headers: dict, json_data: dict = None) -> httpx.Response:
+    """Make an HTTP request with retry logic for 429 rate limiting."""
+    for attempt in range(MAX_RETRIES + 1):
+        if method == "GET":
+            resp = await client.get(url, headers=headers)
+        elif method == "POST":
+            resp = await client.post(url, json=json_data, headers=headers)
+        elif method == "PUT":
+            resp = await client.put(url, json=json_data, headers=headers)
+        elif method == "PATCH":
+            resp = await client.patch(url, json=json_data, headers=headers)
+        else:
+            raise ValueError(f"Unsupported method: {method}")
+
+        if resp.status_code == 429 and attempt < MAX_RETRIES:
+            wait = RETRY_DELAY * (attempt + 1)
+            logger.warning(f"Rate limited (429) on {method} {url}, waiting {wait}s (attempt {attempt + 1}/{MAX_RETRIES})")
+            await asyncio.sleep(wait)
+            continue
+
+        return resp
+
+    return resp
 
 
 async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token: str, user: dict) -> dict:
@@ -88,22 +166,27 @@ async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token:
     email = user.get("email", "")
 
     try:
+        # Search for existing user
         filter_url = f"{base_url}Users?filter=userName eq \"{email}\""
-        search_resp = await client.get(filter_url, headers=headers)
+        search_resp = await _request_with_retry(client, "GET", filter_url, headers)
 
         if search_resp.status_code == 200:
             data = search_resp.json()
             resources = data.get("Resources", [])
 
             if resources:
+                # User exists -> UPDATE (PUT)
                 kf_user_id = resources[0].get("id")
-                resp = await client.put(f"{base_url}Users/{kf_user_id}", json=payload, headers=headers)
+                await asyncio.sleep(REQUEST_DELAY)
+                resp = await _request_with_retry(client, "PUT", f"{base_url}Users/{kf_user_id}", headers, payload)
                 if resp.status_code in (200, 201):
                     return {"action": "updated", "email": email, "kf_id": kf_user_id}
                 else:
                     return {"action": "update_error", "email": email, "status": resp.status_code, "detail": resp.text[:300]}
             else:
-                resp = await client.post(f"{base_url}Users", json=payload, headers=headers)
+                # User doesn't exist -> CREATE (POST)
+                await asyncio.sleep(REQUEST_DELAY)
+                resp = await _request_with_retry(client, "POST", f"{base_url}Users", headers, payload)
                 if resp.status_code in (200, 201):
                     kf_id = resp.json().get("id", "")
                     return {"action": "created", "email": email, "kf_id": kf_id}
@@ -111,8 +194,13 @@ async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token:
                     return {"action": "already_exists", "email": email}
                 else:
                     return {"action": "create_error", "email": email, "status": resp.status_code, "detail": resp.text[:300]}
+
+        elif search_resp.status_code in (401, 403):
+            return {"action": "auth_error", "email": email, "status": search_resp.status_code, "detail": search_resp.text[:300]}
         else:
-            resp = await client.post(f"{base_url}Users", json=payload, headers=headers)
+            # Search failed, try direct create
+            await asyncio.sleep(REQUEST_DELAY)
+            resp = await _request_with_retry(client, "POST", f"{base_url}Users", headers, payload)
             if resp.status_code in (200, 201):
                 kf_id = resp.json().get("id", "")
                 return {"action": "created", "email": email, "kf_id": kf_id}
@@ -131,7 +219,7 @@ async def deactivate_user_in_kissflow(client: httpx.AsyncClient, base_url: str, 
     }
     try:
         filter_url = f"{base_url}Users?filter=userName eq \"{email}\""
-        search_resp = await client.get(filter_url, headers=headers)
+        search_resp = await _request_with_retry(client, "GET", filter_url, headers)
 
         if search_resp.status_code == 200:
             resources = search_resp.json().get("Resources", [])
@@ -141,13 +229,16 @@ async def deactivate_user_in_kissflow(client: httpx.AsyncClient, base_url: str, 
                     "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
                     "Operations": [{"op": "replace", "path": "active", "value": False}],
                 }
-                resp = await client.patch(f"{base_url}Users/{kf_user_id}", json=patch_payload, headers=headers)
+                await asyncio.sleep(REQUEST_DELAY)
+                resp = await _request_with_retry(client, "PATCH", f"{base_url}Users/{kf_user_id}", headers, patch_payload)
                 if resp.status_code in (200, 204):
                     return {"action": "deactivated", "email": email, "kf_id": kf_user_id}
                 else:
                     return {"action": "deactivate_error", "email": email, "status": resp.status_code, "detail": resp.text[:300]}
             else:
                 return {"action": "not_found", "email": email}
+        elif search_resp.status_code in (401, 403):
+            return {"action": "auth_error", "email": email, "status": search_resp.status_code, "detail": search_resp.text[:300]}
         else:
             return {"action": "search_error", "email": email, "status": search_resp.status_code}
 
@@ -160,6 +251,7 @@ async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
     Push users from IAM to Kissflow via SCIM.
     If user_emails is provided, only push those specific users.
     Otherwise push all active users.
+    Includes rate limiting and retry logic.
     """
     config = await get_kissflow_scim_config(db, org_id)
     if not config:
@@ -181,35 +273,63 @@ async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
         "deactivated": 0,
         "already_exists": 0,
         "errors": [],
+        "auth_errors": 0,
         "skipped": 0,
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
 
+    # Stop early on repeated auth errors
+    consecutive_auth_errors = 0
+    MAX_AUTH_ERRORS = 5
+
     async with httpx.AsyncClient(timeout=60) as client:
-        for user in users:
+        for i, user in enumerate(users):
             email = user.get("email", "")
             if not email or email.endswith("@abc.com"):
                 result["skipped"] += 1
                 continue
 
+            # Stop if too many auth errors (token expired/invalid)
+            if consecutive_auth_errors >= MAX_AUTH_ERRORS:
+                remaining = len(users) - i
+                result["errors"].append(f"Stopped: {remaining} users skipped due to repeated auth errors. Check SCIM token.")
+                result["skipped"] += remaining
+                break
+
+            # Rate limiting delay
+            if i > 0:
+                await asyncio.sleep(REQUEST_DELAY)
+
             if user.get("status") == "disabled":
                 res = await deactivate_user_in_kissflow(client, base_url, token, email)
                 if res["action"] == "deactivated":
                     result["deactivated"] += 1
+                    consecutive_auth_errors = 0
                 elif res["action"] == "not_found":
                     result["skipped"] += 1
+                elif res["action"] == "auth_error":
+                    result["auth_errors"] += 1
+                    consecutive_auth_errors += 1
                 else:
                     result["errors"].append(f"{email}: {res.get('detail', res['action'])}")
+                    consecutive_auth_errors = 0
             else:
                 res = await push_user_to_kissflow(client, base_url, token, user)
                 if res["action"] == "created":
                     result["created"] += 1
+                    consecutive_auth_errors = 0
                 elif res["action"] == "updated":
                     result["updated"] += 1
+                    consecutive_auth_errors = 0
                 elif res["action"] == "already_exists":
                     result["already_exists"] += 1
+                    consecutive_auth_errors = 0
+                elif res["action"] == "auth_error":
+                    result["auth_errors"] += 1
+                    consecutive_auth_errors += 1
                 else:
                     result["errors"].append(f"{email}: {res.get('detail', res['action'])}")
+                    consecutive_auth_errors = 0
 
             kf_id = res.get("kf_id")
             if kf_id:
@@ -217,6 +337,11 @@ async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
                     {"email": email, "org_id": org_id},
                     {"$set": {"kissflow_user_id": kf_id, "kissflow_synced_at": datetime.now(timezone.utc).isoformat()}}
                 )
+
+            # Log progress every 100 users
+            processed = i + 1
+            if processed % 100 == 0:
+                logger.info(f"Kissflow sync progress: {processed}/{len(users)} (created={result['created']}, updated={result['updated']}, errors={len(result['errors'])})")
 
     result["completed_at"] = datetime.now(timezone.utc).isoformat()
     return result

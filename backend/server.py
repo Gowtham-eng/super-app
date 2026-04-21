@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query, UploadFile, File, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -2760,23 +2760,43 @@ async def save_kf_scim_config(request: Request, user: dict = Depends(get_current
 
 
 @api_router.post("/kissflow-scim/sync")
-async def trigger_kissflow_sync(user: dict = Depends(get_current_user)):
-    """Admin manually triggers Kissflow SCIM push for all users"""
+async def trigger_kissflow_sync(background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+    """Admin manually triggers Kissflow SCIM push for all users (runs in background)"""
     if user.get("role") != "org_admin":
         raise HTTPException(status_code=403, detail="Only admins can trigger Kissflow sync")
 
-    result = await sync_to_kissflow(db, user["org_id"])
+    org_id = user["org_id"]
+    user_id = user["id"]
 
+    # Create a pending log entry immediately
     log_doc = {
-        "org_id": user["org_id"],
-        "triggered_by": user["id"],
+        "org_id": org_id,
+        "triggered_by": user_id,
         "trigger_type": "manual_full",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "result": result,
+        "status": "running",
+        "result": {"message": "Sync started in background..."},
     }
     await db.kissflow_sync_logs.insert_one(log_doc)
+    log_id = log_doc.get("_id")
 
-    return result
+    async def _run_sync():
+        try:
+            result = await sync_to_kissflow(db, org_id)
+            await db.kissflow_sync_logs.update_one(
+                {"_id": log_id},
+                {"$set": {"result": result, "status": "completed"}}
+            )
+        except Exception as e:
+            await db.kissflow_sync_logs.update_one(
+                {"_id": log_id},
+                {"$set": {"result": {"error": str(e)}, "status": "failed"}}
+            )
+
+    # Run in background so the HTTP response returns immediately
+    background_tasks.add_task(_run_sync)
+
+    return {"message": "Kissflow SCIM sync started in background. Check Sync History for progress.", "status": "running"}
 
 
 @api_router.post("/kissflow-scim/push-user")
