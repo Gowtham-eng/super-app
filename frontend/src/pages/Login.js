@@ -179,7 +179,7 @@ const Login = () => {
 
           <div className="mb-10">
             <h1 className="text-3xl font-black text-zinc-900 tracking-tight">
-              Refex Super App
+              Super App
             </h1>
             <p className="text-zinc-500 mt-2">
               Sign in to your workplace
