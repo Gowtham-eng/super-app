@@ -156,25 +156,34 @@ def _build_kissflow_user(user: dict) -> dict:
     if date_exit:
         kf_ext["Date_of_Exit"] = date_exit
 
-    # Manager (L1) - complex type with Email and Name sub-attributes
+    # Manager (L1) - complex type: needs Kissflow user ID in 'value' for lookup to work
     supervisor_email = user.get("supervisor_email", "")
     supervisor_name = user.get("supervisor_name", "")
     if supervisor_email:
-        kf_ext["Manager"] = {
+        manager_obj = {
             "Email": supervisor_email,
             "Name": supervisor_name,
         }
+        # If we have the manager's Kissflow ID, include it for proper lookup resolution
+        supervisor_kf_id = user.get("_supervisor_kf_id", "")
+        if supervisor_kf_id:
+            manager_obj["value"] = supervisor_kf_id
+        kf_ext["Manager"] = manager_obj
         kf_ext["L1_Manager_Email"] = supervisor_email
         kf_ext["L1_Manager_Name"] = supervisor_name
 
-    # L2 Manager - complex type with Email and Name sub-attributes
+    # L2 Manager - complex type: needs Kissflow user ID in 'value' for lookup to work
     l2_email = user.get("l2_manager_email", "")
     l2_name = user.get("l2_manager_name", "")
     if l2_email:
-        kf_ext["L2_Manager"] = {
+        l2_obj = {
             "Email": l2_email,
             "Name": l2_name,
         }
+        l2_kf_id = user.get("_l2_manager_kf_id", "")
+        if l2_kf_id:
+            l2_obj["value"] = l2_kf_id
+        kf_ext["L2_Manager"] = l2_obj
 
     payload[KISSFLOW_EXTENSION_SCHEMA] = kf_ext
     payload["schemas"] = schemas
@@ -441,3 +450,114 @@ async def push_single_user_to_kissflow(db, org_id: str, email: str) -> dict:
         )
 
     return res
+
+
+
+async def resolve_managers_in_kissflow(db, org_id: str) -> dict:
+    """
+    Second pass: Update Manager and L2_Manager lookup fields with Kissflow User IDs.
+    This must run AFTER all users are created in Kissflow, because the Manager lookup
+    requires the manager's Kissflow internal user ID.
+    """
+    config = await get_kissflow_scim_config(db, org_id)
+    if not config:
+        return {"error": "Kissflow SCIM not configured"}
+
+    base_url = config["base_url"].rstrip("/") + "/"
+    token = config["token"]
+
+    # Build email -> kissflow_user_id mapping from our DB
+    all_users = await db.users.find(
+        {"org_id": org_id, "kissflow_user_id": {"$exists": True, "$ne": ""}},
+        {"_id": 0, "email": 1, "kissflow_user_id": 1}
+    ).to_list(5000)
+
+    email_to_kf_id = {u["email"]: u["kissflow_user_id"] for u in all_users}
+    logger.info(f"Manager resolution: {len(email_to_kf_id)} users with Kissflow IDs")
+
+    # Get users who have managers that we can now resolve
+    users_with_managers = await db.users.find(
+        {
+            "org_id": org_id,
+            "kissflow_user_id": {"$exists": True, "$ne": ""},
+            "$or": [
+                {"supervisor_email": {"$exists": True, "$ne": ""}},
+                {"l2_manager_email": {"$exists": True, "$ne": ""}},
+            ]
+        },
+        {"_id": 0, "password": 0}
+    ).to_list(5000)
+
+    result = {"total": len(users_with_managers), "updated": 0, "skipped": 0, "errors": [], "auth_errors": 0}
+    consecutive_auth_errors = 0
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/scim+json",
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        for i, user in enumerate(users_with_managers):
+            email = user.get("email", "")
+            kf_user_id = user.get("kissflow_user_id", "")
+            if not kf_user_id:
+                result["skipped"] += 1
+                continue
+
+            if consecutive_auth_errors >= 5:
+                result["errors"].append(f"Stopped: auth errors. Check token.")
+                break
+
+            supervisor_email = user.get("supervisor_email", "")
+            l2_email = user.get("l2_manager_email", "")
+
+            supervisor_kf_id = email_to_kf_id.get(supervisor_email, "")
+            l2_kf_id = email_to_kf_id.get(l2_email, "")
+
+            # Skip if no manager IDs to resolve
+            if not supervisor_kf_id and not l2_kf_id:
+                result["skipped"] += 1
+                continue
+
+            # Build PATCH payload for manager fields only
+            kf_ext = {}
+            if supervisor_kf_id:
+                kf_ext["Manager"] = {
+                    "value": supervisor_kf_id,
+                    "Email": supervisor_email,
+                    "Name": user.get("supervisor_name", ""),
+                }
+            if l2_kf_id:
+                kf_ext["L2_Manager"] = {
+                    "value": l2_kf_id,
+                    "Email": l2_email,
+                    "Name": user.get("l2_manager_name", ""),
+                }
+
+            # Use PUT to update the user with resolved manager IDs
+            user["_supervisor_kf_id"] = supervisor_kf_id
+            user["_l2_manager_kf_id"] = l2_kf_id
+            payload = _build_kissflow_user(user)
+
+            if i > 0:
+                await asyncio.sleep(REQUEST_DELAY)
+
+            try:
+                resp = await _request_with_retry(client, "PUT", f"{base_url}Users/{kf_user_id}", headers, payload)
+                if resp.status_code in (200, 201):
+                    result["updated"] += 1
+                    consecutive_auth_errors = 0
+                elif resp.status_code in (401, 403):
+                    result["auth_errors"] += 1
+                    consecutive_auth_errors += 1
+                else:
+                    result["errors"].append(f"{email}: {resp.status_code} {resp.text[:100]}")
+                    consecutive_auth_errors = 0
+            except Exception as e:
+                result["errors"].append(f"{email}: {str(e)[:100]}")
+
+            if (i + 1) % 100 == 0:
+                logger.info(f"Manager resolution progress: {i+1}/{len(users_with_managers)} (updated={result['updated']})")
+
+    result["completed_at"] = datetime.now(timezone.utc).isoformat()
+    return result

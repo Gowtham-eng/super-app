@@ -16,7 +16,7 @@ import ipaddress
 
 from services.email_service import send_email, build_access_request_email, build_request_status_email, build_sync_report_email
 from services.adrenalin_sync import sync_employees
-from services.kissflow_scim_client import sync_to_kissflow, push_single_user_to_kissflow, get_kissflow_scim_config, save_kissflow_scim_config
+from services.kissflow_scim_client import sync_to_kissflow, push_single_user_to_kissflow, get_kissflow_scim_config, save_kissflow_scim_config, resolve_managers_in_kissflow
 from routes import scim as scim_router_module
 
 ROOT_DIR = Path(__file__).parent
@@ -2833,6 +2833,44 @@ async def get_kissflow_sync_logs(user: dict = Depends(get_current_user)):
         {"org_id": user["org_id"]}, {"_id": 0}
     ).sort("timestamp", -1).to_list(50)
     return logs
+
+
+@api_router.post("/kissflow-scim/resolve-managers")
+async def trigger_manager_resolution(background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+    """Second pass: resolve Manager/L2_Manager lookup fields with Kissflow User IDs"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Only admins can trigger manager resolution")
+
+    org_id = user["org_id"]
+
+    log_doc = {
+        "org_id": org_id,
+        "triggered_by": user["id"],
+        "trigger_type": "resolve_managers",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": "running",
+        "result": {"message": "Resolving manager lookups..."},
+    }
+    await db.kissflow_sync_logs.insert_one(log_doc)
+    log_id = log_doc.get("_id")
+
+    async def _run_resolve():
+        try:
+            result = await resolve_managers_in_kissflow(db, org_id)
+            await db.kissflow_sync_logs.update_one(
+                {"_id": log_id},
+                {"$set": {"result": result, "status": "completed"}}
+            )
+        except Exception as e:
+            await db.kissflow_sync_logs.update_one(
+                {"_id": log_id},
+                {"$set": {"result": {"error": str(e)}, "status": "failed"}}
+            )
+
+    background_tasks.add_task(_run_resolve)
+    return {"message": "Manager resolution started in background.", "status": "running"}
+
+
 
 
 @api_router.get("/health")
