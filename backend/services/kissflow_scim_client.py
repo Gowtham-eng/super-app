@@ -23,7 +23,7 @@ KISSFLOW_EXTENSION_SCHEMA = f"urn:kissflow:scim:schemas:extension:{KISSFLOW_ACCO
 ENTERPRISE_EXTENSION_SCHEMA = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"
 
 # Rate limiting: delay between requests in seconds
-REQUEST_DELAY = 0.5
+REQUEST_DELAY = 0.25
 # Retry config for 429 responses
 MAX_RETRIES = 3
 RETRY_DELAY = 5  # seconds to wait on 429
@@ -206,8 +206,11 @@ async def _request_with_retry(client: httpx.AsyncClient, method: str, url: str, 
     return resp
 
 
-async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token: str, user: dict) -> dict:
-    """Push a single user to Kissflow via SCIM. Creates if not exists, updates if exists."""
+async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token: str, user: dict, create_only: bool = False) -> dict:
+    """Push a single user to Kissflow via SCIM. 
+    If create_only=True, skip search and POST directly (faster for fresh sync).
+    Otherwise, search first then create or update.
+    """
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/scim+json",
@@ -216,6 +219,18 @@ async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token:
     email = user.get("email", "")
 
     try:
+        # Fast path: direct create (skip search) for fresh sync
+        if create_only:
+            resp = await _request_with_retry(client, "POST", f"{base_url}Users", headers, payload)
+            if resp.status_code in (200, 201):
+                kf_id = resp.json().get("id", "")
+                return {"action": "created", "email": email, "kf_id": kf_id}
+            elif resp.status_code == 409:
+                # Already exists - fall through to search+update
+                pass
+            else:
+                return {"action": "create_error", "email": email, "status": resp.status_code, "detail": resp.text[:300]}
+
         # Search for existing user
         filter_url = f"{base_url}Users?filter=userName eq \"{email}\""
         search_resp = await _request_with_retry(client, "GET", filter_url, headers)
@@ -364,7 +379,9 @@ async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
                     result["errors"].append(f"{email}: {res.get('detail', res['action'])}")
                     consecutive_auth_errors = 0
             else:
-                res = await push_user_to_kissflow(client, base_url, token, user)
+                # Use create_only mode if user has no kissflow_user_id (faster - skips search)
+                is_fresh = not user.get("kissflow_user_id")
+                res = await push_user_to_kissflow(client, base_url, token, user, create_only=is_fresh)
                 if res["action"] == "created":
                     result["created"] += 1
                     consecutive_auth_errors = 0
