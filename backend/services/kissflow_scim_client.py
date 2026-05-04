@@ -76,14 +76,22 @@ def _build_kissflow_user(user: dict) -> dict:
     - L1_Manager_Name: string
     - L1_Manager_Email: string
     """
-    phone = (user.get("work_mobile") or user.get("mobile") or "").strip()
-    # Clean phone: remove non-digits, add 91 prefix if needed
-    phone_digits = "".join(c for c in phone if c.isdigit())
-    if phone_digits and phone_digits != "0":
-        if not phone_digits.startswith("91") and len(phone_digits) == 10:
-            phone_digits = f"91{phone_digits}"
-    else:
-        phone_digits = ""
+    work_mobile = (user.get("work_mobile") or "").strip()
+    personal_mobile = (user.get("employee_mobile") or user.get("mobile") or "").strip()
+
+    def _clean_phone(phone):
+        digits = "".join(c for c in phone if c.isdigit())
+        if digits and digits != "0":
+            if not digits.startswith("91") and len(digits) == 10:
+                digits = f"91{digits}"
+            return digits
+        return ""
+
+    work_digits = _clean_phone(work_mobile)
+    personal_digits = _clean_phone(personal_mobile)
+    # Avoid duplicates
+    if personal_digits == work_digits:
+        personal_digits = ""
 
     first_name = user.get("first_name") or (user.get("name", "").split(" ", 1)[0] if user.get("name") else "")
     last_name = user.get("last_name") or ""
@@ -110,8 +118,14 @@ def _build_kissflow_user(user: dict) -> dict:
         "title": user.get("designation") or "",
     }
 
-    if phone_digits:
-        payload["phoneNumbers"] = [{"value": phone_digits, "type": "work"}]
+    # Phone numbers - include both work and personal if available
+    phone_numbers = []
+    if work_digits:
+        phone_numbers.append({"value": work_digits, "type": "work"})
+    if personal_digits:
+        phone_numbers.append({"value": personal_digits, "type": "mobile"})
+    if phone_numbers:
+        payload["phoneNumbers"] = phone_numbers
 
     # Kissflow custom extension - uses exact field IDs from Kissflow schema
     kf_ext = {}
