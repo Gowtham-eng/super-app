@@ -24,10 +24,8 @@ const CATEGORY_META = {
 
 const CATEGORY_ORDER = ['Expense', 'Productivity', 'Facility', 'Support'];
 
-const getColor = (name) => {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  return APP_COLORS[Math.abs(hash) % APP_COLORS.length];
+const getColor = () => {
+  return { bg: 'bg-white', text: 'text-slate-900', border: 'border-slate-200' };
 };
 
 const AppLauncher = () => {
@@ -150,7 +148,7 @@ const AppLauncher = () => {
                 {/* Mobile: 4-col grid */}
                 <div className="sm:hidden grid grid-cols-4 gap-3">
                   {catApps.map((app) => {
-                    const c = getColor(app.name);
+                    const c = getColor();
                     return (
                       <button
                         key={app.id}
@@ -184,7 +182,7 @@ const AppLauncher = () => {
                 {/* Desktop: Card grid */}
                 <div className="hidden sm:grid sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
                   {catApps.map((app) => {
-                    const c = getColor(app.name);
+                    const c = getColor();
                     return (
                       <button
                         key={app.id}
