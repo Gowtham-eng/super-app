@@ -248,9 +248,9 @@ const AppLauncher = () => {
                     </div>
 
                     {/* Footer */}
-                    <div className="px-5 py-3 border-t border-slate-100">
+                    <div className="px-5 py-3 border-t border-slate-200">
                       <p className="text-[11px] text-slate-400">
-                        <span className="text-slate-300">Type</span>
+                        <span className="text-slate-400">Type</span>
                       </p>
                       <p className="text-xs text-slate-600 font-medium">{app.type === 'saml' ? 'SAML Application' : 'OIDC Application'}</p>
                     </div>
@@ -269,7 +269,7 @@ const AppLauncher = () => {
             </div>
           ) : (
             /* List View */
-            <div className="hidden sm:block bg-white rounded-xl border border-slate-200 divide-y divide-slate-100" data-testid="apps-list">
+            <div className="hidden sm:block bg-white rounded-xl border border-slate-300 shadow-sm divide-y divide-slate-200" data-testid="apps-list">
               {filtered.map((app, i) => {
                 const c = getColor(i);
                 return (
