@@ -220,14 +220,11 @@ const AppLauncher = () => {
                     onClick={() => launchApp(app)}
                     disabled={app.policy_blocked}
                     data-testid={`launch-app-desktop-${app.id}`}
-                    className={`group relative text-left bg-white rounded-xl transition-all duration-200 flex flex-col ${
+                    className={`group relative text-left bg-white rounded-xl border transition-all duration-200 flex flex-col ${
                       app.policy_blocked
-                        ? 'opacity-50 cursor-not-allowed'
-                        : 'hover:shadow-lg cursor-pointer active:scale-[0.98]'
+                        ? 'opacity-50 cursor-not-allowed border-slate-200'
+                        : 'border-slate-200 hover:border-blue-300 hover:shadow-lg cursor-pointer active:scale-[0.98]'
                     }`}
-                    style={{ boxShadow: app.policy_blocked ? '0 0 0 1.5px #cbd5e1' : '0 0 0 1.5px #94a3b8, 0 1px 3px 0 rgba(0,0,0,0.06)' }}
-                    onMouseEnter={(e) => { if (!app.policy_blocked) e.currentTarget.style.boxShadow = '0 0 0 2px #60a5fa, 0 4px 12px rgba(0,0,0,0.1)'; }}
-                    onMouseLeave={(e) => { if (!app.policy_blocked) e.currentTarget.style.boxShadow = '0 0 0 1.5px #94a3b8, 0 1px 3px 0 rgba(0,0,0,0.06)'; }}
                   >
                     {/* Card Body */}
                     <div className="p-5 flex-1 flex flex-col">
@@ -265,7 +262,7 @@ const AppLauncher = () => {
             </div>
           ) : (
             /* List View */
-            <div className="hidden sm:block bg-white rounded-xl divide-y divide-slate-200" style={{ boxShadow: '0 0 0 1.5px #94a3b8, 0 1px 3px 0 rgba(0,0,0,0.06)' }} data-testid="apps-list">
+            <div className="hidden sm:block bg-white rounded-xl border border-slate-200 divide-y divide-slate-100" data-testid="apps-list">
               {filtered.map((app, i) => {
                 const c = getColor(i);
                 return (
