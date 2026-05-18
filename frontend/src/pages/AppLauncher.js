@@ -23,7 +23,7 @@ const AppLauncher = () => {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState('grid');
-  const [sortBy, setSortBy] = useState('name');
+  const [sortBy, setSortBy] = useState('usage');
   const [showSort, setShowSort] = useState(false);
 
   useEffect(() => { fetchApps(); }, []);
@@ -84,6 +84,7 @@ const AppLauncher = () => {
   } else if (sortBy === 'type') {
     filtered = [...filtered].sort((a, b) => (a.type || '').localeCompare(b.type || ''));
   }
+  // sortBy === 'usage' keeps the backend order (most used first)
 
   if (loading) {
     return <div className="flex items-center justify-center h-64"><div className="spinner" /></div>;
@@ -119,12 +120,12 @@ const AppLauncher = () => {
               className="flex items-center gap-1.5 px-3 py-2 text-xs text-slate-500 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
               data-testid="sort-dropdown"
             >
-              Sort: <span className="text-slate-700 font-medium">{sortBy === 'name' ? 'Name' : 'Type'}</span>
+              Sort: <span className="text-slate-700 font-medium">{sortBy === 'usage' ? 'Most Used' : sortBy === 'name' ? 'Name' : 'Type'}</span>
               <ChevronDown size={14} />
             </button>
             {showSort && (
               <div className="absolute right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-10 py-1 min-w-[120px]">
-                {[{ key: 'name', label: 'Name' }, { key: 'type', label: 'Type' }].map(opt => (
+                {[{ key: 'usage', label: 'Most Used' }, { key: 'name', label: 'Name' }, { key: 'type', label: 'Type' }].map(opt => (
                   <button
                     key={opt.key}
                     onClick={() => { setSortBy(opt.key); setShowSort(false); }}
@@ -219,11 +220,14 @@ const AppLauncher = () => {
                     onClick={() => launchApp(app)}
                     disabled={app.policy_blocked}
                     data-testid={`launch-app-desktop-${app.id}`}
-                    className={`group relative text-left bg-white rounded-xl border transition-all duration-200 flex flex-col ${
+                    className={`group relative text-left bg-white rounded-xl transition-all duration-200 flex flex-col ${
                       app.policy_blocked
-                        ? 'opacity-50 cursor-not-allowed border-slate-200'
-                        : 'border-slate-200 hover:border-blue-300 hover:shadow-lg cursor-pointer active:scale-[0.98]'
+                        ? 'opacity-50 cursor-not-allowed'
+                        : 'hover:shadow-lg cursor-pointer active:scale-[0.98]'
                     }`}
+                    style={{ boxShadow: app.policy_blocked ? '0 0 0 1.5px #cbd5e1' : '0 0 0 1.5px #94a3b8, 0 1px 3px 0 rgba(0,0,0,0.06)' }}
+                    onMouseEnter={(e) => { if (!app.policy_blocked) e.currentTarget.style.boxShadow = '0 0 0 2px #60a5fa, 0 4px 12px rgba(0,0,0,0.1)'; }}
+                    onMouseLeave={(e) => { if (!app.policy_blocked) e.currentTarget.style.boxShadow = '0 0 0 1.5px #94a3b8, 0 1px 3px 0 rgba(0,0,0,0.06)'; }}
                   >
                     {/* Card Body */}
                     <div className="p-5 flex-1 flex flex-col">
@@ -261,7 +265,7 @@ const AppLauncher = () => {
             </div>
           ) : (
             /* List View */
-            <div className="hidden sm:block bg-white rounded-xl border border-slate-300 shadow-sm divide-y divide-slate-200" data-testid="apps-list">
+            <div className="hidden sm:block bg-white rounded-xl divide-y divide-slate-200" style={{ boxShadow: '0 0 0 1.5px #94a3b8, 0 1px 3px 0 rgba(0,0,0,0.06)' }} data-testid="apps-list">
               {filtered.map((app, i) => {
                 const c = getColor(i);
                 return (

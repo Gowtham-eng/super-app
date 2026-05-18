@@ -2398,10 +2398,21 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
     
     accessible_apps = []
     
+    # Get usage counts per app for this user (from audit logs)
+    usage_pipeline = [
+        {"$match": {"org_id": org_id, "user_id": user["id"], "action": {"$in": ["saml_sso_initiated", "oidc_auth_started"]}}},
+        {"$group": {"_id": "$resource_id", "count": {"$sum": 1}, "last_used": {"$max": "$timestamp"}}},
+    ]
+    usage_cursor = db.audit_logs.aggregate(usage_pipeline)
+    usage_map = {}
+    async for doc in usage_cursor:
+        usage_map[doc["_id"]] = {"count": doc["count"], "last_used": doc.get("last_used", "")}
+
     for app in saml_apps:
         has_access = await check_user_app_access(user, app)
         if has_access:
             allowed, reason = await check_access_policies(user, app, request)
+            usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
             accessible_apps.append({
                 "id": app['id'],
                 "name": app['name'],
@@ -2411,13 +2422,16 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
                 "type": "saml",
                 "launch_url": f"/api/saml/{app['id']}/sso",
                 "policy_blocked": not allowed,
-                "policy_reason": reason
+                "policy_reason": reason,
+                "usage_count": usage["count"],
+                "last_used": usage["last_used"],
             })
     
     for app in oidc_apps:
         has_access = await check_user_app_access(user, app)
         if has_access:
             allowed, reason = await check_access_policies(user, app, request)
+            usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
             accessible_apps.append({
                 "id": app['id'],
                 "name": app['name'],
@@ -2427,8 +2441,13 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
                 "type": "oidc",
                 "launch_url": f"/api/oidc/{app['id']}/authorize",
                 "policy_blocked": not allowed,
-                "policy_reason": reason
+                "policy_reason": reason,
+                "usage_count": usage["count"],
+                "last_used": usage["last_used"],
             })
+    
+    # Sort by usage count (most used first), then by last_used, then by name
+    accessible_apps.sort(key=lambda a: (-a["usage_count"], a.get("last_used", "") or "", a["name"]))
     
     return accessible_apps
 
