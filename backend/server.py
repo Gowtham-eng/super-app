@@ -2391,8 +2391,8 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
     """Get all apps the user has access to"""
     org_id = user['org_id']
     
-    # Get all SAML apps
-    saml_apps = await db.saml_apps.find({"org_id": org_id, "status": "active"}, {"_id": 0, "private_key": 0, "certificate": 0}).to_list(100)
+    # Get all SAML apps (exclude hidden ones)
+    saml_apps = await db.saml_apps.find({"org_id": org_id, "status": "active", "show_in_launcher": {"$ne": False}}, {"_id": 0, "private_key": 0, "certificate": 0}).to_list(100)
     # Get all OIDC apps  
     oidc_apps = await db.oidc_apps.find({"org_id": org_id, "status": "active"}, {"_id": 0, "client_secret": 0}).to_list(100)
     
@@ -2425,6 +2425,9 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
                 "policy_reason": reason,
                 "usage_count": usage["count"],
                 "last_used": usage["last_used"],
+                "category": app.get("category", ""),
+                "sort_order": app.get("sort_order", 99),
+                "is_placeholder": app.get("is_placeholder", False),
             })
     
     for app in oidc_apps:
@@ -2444,10 +2447,14 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
                 "policy_reason": reason,
                 "usage_count": usage["count"],
                 "last_used": usage["last_used"],
+                "category": app.get("category", ""),
+                "sort_order": app.get("sort_order", 99),
+                "is_placeholder": app.get("is_placeholder", False),
             })
     
-    # Sort by usage count (most used first), then by last_used, then by name
-    accessible_apps.sort(key=lambda a: (-a["usage_count"], a.get("last_used", "") or "", a["name"]))
+    # Sort by category order, then sort_order within category
+    category_order = {"Expense": 0, "Productivity": 1, "Facility": 2, "Support": 3}
+    accessible_apps.sort(key=lambda a: (category_order.get(a.get("category", ""), 99), a.get("sort_order", 99)))
     
     return accessible_apps
 
