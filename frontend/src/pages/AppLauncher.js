@@ -247,14 +247,6 @@ const AppLauncher = () => {
                       </p>
                     </div>
 
-                    {/* Footer */}
-                    <div className="px-5 py-3 border-t border-slate-200">
-                      <p className="text-[11px] text-slate-400">
-                        <span className="text-slate-400">Type</span>
-                      </p>
-                      <p className="text-xs text-slate-600 font-medium">{app.type === 'saml' ? 'SAML Application' : 'OIDC Application'}</p>
-                    </div>
-
                     {/* Hover indicator */}
                     {app.policy_blocked ? (
                       <div className="absolute top-4 right-4">
