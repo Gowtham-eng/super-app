@@ -1293,7 +1293,7 @@ async def saml_slo(app_id: str, request: Request):
     return Response(content=html_content, media_type="text/html")
 
 @api_router.get("/saml/{app_id}/complete")
-async def saml_complete_sso(app_id: str, request: Request, token: str = None, relay_state: str = None, debug: int = 0):
+async def saml_complete_sso(app_id: str, request: Request, token: str = None, relay_state: str = None, debug: int = 0, mobile_module: str = None):
     """Complete SAML SSO - Generate signed SAML Response and POST to ACS URL"""
     import base64
     import uuid as uuid_module
@@ -1590,17 +1590,54 @@ diag.innerHTML = lines.join("<br>");
         # then redirect browser to the specific module URL.
         home_url = app.get('home_url', '')
         
-        if home_url:
+        if home_url or mobile_module:
+            module_target = mobile_module or home_url
             # Module app (Expense, Travel, etc.)
             # For SP-initiated flow: pass RelayState through directly
-            # For IdP-initiated flow: direct SAML POST (no RelayState, no iframe)
-            # The frontend handles the two-step redirect to the module URL
             if relay_state:
                 relay_field = f'<input type="hidden" name="RelayState" value="{escape(relay_state)}"/>'
             else:
                 relay_field = ''
             
-            html_content = f'''<!DOCTYPE html>
+            if mobile_module:
+                # MOBILE: Use iframe to establish Kissflow session, then redirect to module
+                # Mobile WebViews (Capacitor/Android) allow third-party cookies in iframes
+                html_content = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Signing in to {escape(app.get('name', 'Application'))}...</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #f9fafb; }}
+        .loader {{ text-align: center; }}
+        .spinner {{ width: 36px; height: 36px; border: 3px solid #e2e8f0; border-top-color: #10b981; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }}
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+        p {{ color: #64748b; font-size: 14px; }}
+    </style>
+</head>
+<body>
+    <div class="loader">
+        <div class="spinner"></div>
+        <p>Signing in to {escape(app.get('name', 'Application'))}...</p>
+    </div>
+    <iframe id="authFrame" name="authFrame" style="display:none"></iframe>
+    <form id="samlForm" method="POST" action="{escape(acs_url)}" target="authFrame">
+        <input type="hidden" name="SAMLResponse" id="samlResponse"/>
+    </form>
+    <script>
+        document.getElementById('samlResponse').value = "{saml_response_b64}";
+        document.getElementById('samlForm').submit();
+        // After Kissflow processes SAML in iframe (session cookie set), redirect to module
+        setTimeout(function() {{
+            window.location.href = "{escape(module_target)}";
+        }}, 3500);
+    </script>
+</body>
+</html>'''
+            else:
+                # DESKTOP: Direct SAML POST (frontend handles two-step named window redirect)
+                html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">

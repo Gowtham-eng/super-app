@@ -67,9 +67,15 @@ const AppLauncher = () => {
       const completeUrl = `${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
 
       if (isPWA && isMobile) {
-        window.location.href = completeUrl;
+        if (app.home_url) {
+          // Mobile + module app: pass module URL to backend for iframe-based session + redirect
+          window.location.href = completeUrl + '&mobile_module=' + encodeURIComponent(app.home_url);
+        } else {
+          // Mobile + primary app: direct SSO
+          window.location.href = completeUrl;
+        }
       } else if (app.home_url) {
-        // Module app (Expense, Travel, etc.): Two-step SSO
+        // Desktop + module app: Two-step named window SSO
         // Step 1: Open SSO in a named tab to establish Kissflow session
         const windowName = 'kf_sso_' + app.id.substring(0, 8);
         window.open(completeUrl, windowName);
@@ -78,7 +84,7 @@ const AppLauncher = () => {
           window.open(app.home_url, windowName);
         }, 3500);
       } else {
-        // Primary Kissflow app: direct SSO
+        // Desktop + primary app: direct SSO
         window.open(completeUrl, '_blank');
       }
     } else if (app.type === 'oidc') {
