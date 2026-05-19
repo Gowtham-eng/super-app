@@ -1591,34 +1591,16 @@ diag.innerHTML = lines.join("<br>");
         home_url = app.get('home_url', '')
         
         if home_url:
-            # Two-step SSO for Kissflow module apps:
-            # Step 1: Submit SAML to Kissflow ACS via hidden iframe (NO RelayState) to establish session
-            # Step 2: Once iframe loads (session established), redirect main window to module URL
-            # This fixes the issue where first-time SSO fails because Kissflow's session cookie
-            # isn't set before the RelayState redirect happens.
+            # Module app (Expense, Travel, etc.)
+            # For SP-initiated flow: pass RelayState through directly
+            # For IdP-initiated flow: direct SAML POST (no RelayState, no iframe)
+            # The frontend handles the two-step redirect to the module URL
             if relay_state:
-                # SP-initiated flow: pass RelayState through directly (Kissflow needs it for mobile return)
                 relay_field = f'<input type="hidden" name="RelayState" value="{escape(relay_state)}"/>'
-                html_content = f'''<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Signing in to {escape(app.get('name', 'Application'))}...</title>
-</head>
-<body>
-    <form id="samlForm" method="POST" action="{escape(acs_url)}">
-        <input type="hidden" name="SAMLResponse" id="samlResponse"/>
-        {relay_field}
-    </form>
-    <script>
-        document.getElementById('samlResponse').value = "{saml_response_b64}";
-        document.getElementById('samlForm').submit();
-    </script>
-</body>
-</html>'''
             else:
-                # IdP-initiated flow: iframe auth + redirect to module
-                html_content = f'''<!DOCTYPE html>
+                relay_field = ''
+            
+            html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1636,39 +1618,16 @@ diag.innerHTML = lines.join("<br>");
         <div class="spinner"></div>
         <p>Signing in to {escape(app.get('name', 'Application'))}...</p>
     </div>
-    <iframe id="authFrame" name="authFrame" style="display:none" sandbox="allow-same-origin allow-scripts allow-forms"></iframe>
-    <form id="samlForm" method="POST" action="{escape(acs_url)}" target="authFrame">
+    <form id="samlForm" method="POST" action="{escape(acs_url)}">
         <input type="hidden" name="SAMLResponse" id="samlResponse"/>
+        {relay_field}
+        <noscript>
+            <input type="submit" value="Continue to {escape(app.get('name', 'Application'))}"/>
+        </noscript>
     </form>
     <script>
-        var moduleUrl = "{escape(home_url)}";
         document.getElementById('samlResponse').value = "{saml_response_b64}";
-        
-        // Listen for iframe load - means Kissflow has processed SAML and set session cookie
-        var authFrame = document.getElementById('authFrame');
-        var redirected = false;
-        
-        authFrame.addEventListener('load', function() {{
-            // First load is about:blank, second load is after SAML POST
-            if (!redirected && this.src !== '' || this.contentWindow.location.href !== 'about:blank') {{
-                redirected = true;
-                // Small delay to ensure cookies are fully set
-                setTimeout(function() {{
-                    window.location.href = moduleUrl;
-                }}, 800);
-            }}
-        }});
-        
-        // Submit SAML to iframe
         document.getElementById('samlForm').submit();
-        
-        // Fallback: if iframe load event doesn't fire (cross-origin), use timeout
-        setTimeout(function() {{
-            if (!redirected) {{
-                redirected = true;
-                window.location.href = moduleUrl;
-            }}
-        }}, 4000);
     </script>
 </body>
 </html>'''
