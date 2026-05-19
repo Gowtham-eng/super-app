@@ -1591,9 +1591,9 @@ diag.innerHTML = lines.join("<br>");
         home_url = app.get('home_url', '')
         
         if home_url:
-            # Iframe-based auth + redirect to specific module
-            # Include RelayState if present (critical for SP-initiated SSO, especially mobile)
-            relay_field = f'<input type="hidden" name="RelayState" value="{escape(relay_state)}"/>' if relay_state else ''
+            # For Kissflow module apps: submit SAML with RelayState set to the module URL
+            # This way Kissflow authenticates AND redirects to the correct module in one step
+            relay_field = f'<input type="hidden" name="RelayState" value="{escape(relay_state)}"/>' if relay_state else f'<input type="hidden" name="RelayState" value="{escape(home_url)}"/>'
             html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1612,33 +1612,17 @@ diag.innerHTML = lines.join("<br>");
         <div class="spinner"></div>
         <p>Signing in to {escape(app.get('name', 'Application'))}...</p>
     </div>
-    <iframe name="authFrame" style="display:none"></iframe>
-    <form id="samlForm" method="POST" action="{escape(acs_url)}" target="authFrame">
+    <form id="samlForm" method="POST" action="{escape(acs_url)}">
         <input type="hidden" name="SAMLResponse" id="samlResponse"/>
         {relay_field}
+        <noscript>
+            <input type="submit" value="Continue to {escape(app.get('name', 'Application'))}"/>
+        </noscript>
     </form>
     <script>
         var samlData = "{saml_response_b64}";
-        var moduleUrl = "{escape(home_url)}";
-        var hasRelayState = {"true" if relay_state else "false"};
         document.getElementById('samlResponse').value = samlData;
-        if (hasRelayState) {{
-            // SP-initiated flow (e.g., from Kissflow native app): submit directly
-            // so Kissflow can process RelayState and redirect back to native app
-            document.getElementById('samlForm').removeAttribute('target');
-            document.getElementById('samlForm').submit();
-        }} else {{
-            // IdP-initiated flow: use iframe auth + redirect to module
-            document.getElementById('samlForm').submit();
-            setTimeout(function() {{
-                window.location.href = moduleUrl;
-            }}, 2500);
-            // If the module URL opens a native app via deep link,
-            // the browser stays on this page. Redirect back to launcher.
-            setTimeout(function() {{
-                window.location.href = "/launcher";
-            }}, 4000);
-        }}
+        document.getElementById('samlForm').submit();
     </script>
 </body>
 </html>'''
