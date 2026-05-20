@@ -104,9 +104,18 @@ const AppLauncher = () => {
     if (app.type === 'saml' && token) {
       const completeUrl = `${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
 
+      // Capacitor (Android native wrapper): launch Kissflow URLs directly so MainActivity
+      // can intercept and open them in the Kissflow native app via Intent.
+      // The Kissflow native app has its own session store — after a one-time sign-in,
+      // it remembers the user and opens modules directly without showing the login screen.
+      if (isCapacitor && app.home_url && app.home_url.includes('kissflow.com')) {
+        window.location.href = app.home_url;
+        return;
+      }
+
       if (isPWA && isMobile) {
         if (app.home_url) {
-          // Mobile + module app: pass module URL to backend for iframe-based session + redirect
+          // Mobile web (PWA, not Capacitor) + module app: backend iframe-based session + redirect
           window.location.href = completeUrl + '&mobile_module=' + encodeURIComponent(app.home_url);
         } else {
           // Mobile + primary app: direct SSO
