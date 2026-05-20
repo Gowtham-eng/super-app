@@ -275,7 +275,7 @@ const AppLauncher = () => {
                 </div>
 
                 {/* Desktop: Joget-style colorful circular icon tiles */}
-                <div className="hidden sm:grid sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                <div className="hidden sm:grid sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 3xl:grid-cols-9 4xl:grid-cols-12 gap-4">
                   {catApps.map((app) => {
                     const dc = getDesktopColor(app);
                     return (
