@@ -48,8 +48,10 @@ const AppLauncher = () => {
     }
   };
 
-  const isPWA = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
-  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  // Detect Capacitor (native Android/iOS wrapper) — display-mode standalone does NOT match in Capacitor
+  const isCapacitor = typeof window !== 'undefined' && !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  const isPWA = isCapacitor || window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  const isMobile = isCapacitor || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
   const launchApp = (app) => {
     if (app.is_placeholder) {

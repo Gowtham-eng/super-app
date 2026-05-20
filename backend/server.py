@@ -1601,7 +1601,9 @@ diag.innerHTML = lines.join("<br>");
             
             if mobile_module:
                 # MOBILE: Use iframe to establish Kissflow session, then redirect to module
-                # Mobile WebViews (Capacitor/Android) allow third-party cookies in iframes
+                # Mobile WebViews (Capacitor/Android) allow third-party cookies in iframes.
+                # We listen for the iframe's onload event (fires AFTER SAML POST is processed by Kissflow ACS)
+                # to reliably detect session-ready, then navigate the main WebView to the module URL.
                 html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1621,17 +1623,30 @@ diag.innerHTML = lines.join("<br>");
         <div class="spinner"></div>
         <p>Signing in to {escape(app.get('name', 'Application'))}...</p>
     </div>
-    <iframe id="authFrame" name="authFrame" style="display:none"></iframe>
+    <iframe id="authFrame" name="authFrame" style="display:none;width:0;height:0;border:0"></iframe>
     <form id="samlForm" method="POST" action="{escape(acs_url)}" target="authFrame">
         <input type="hidden" name="SAMLResponse" id="samlResponse"/>
     </form>
     <script>
+        var moduleUrl = "{escape(module_target)}";
+        var redirected = false;
+        function goToModule() {{
+            if (redirected) return;
+            redirected = true;
+            // Tiny grace period so Set-Cookie headers from ACS finalize in WebView's cookie store
+            setTimeout(function() {{ window.location.href = moduleUrl; }}, 400);
+        }}
+        var iframe = document.getElementById('authFrame');
+        var loadCount = 0;
+        iframe.addEventListener('load', function() {{
+            loadCount++;
+            // First load = blank initial iframe; second load = after Kissflow processes SAML response
+            if (loadCount >= 2) {{ goToModule(); }}
+        }});
         document.getElementById('samlResponse').value = "{saml_response_b64}";
         document.getElementById('samlForm').submit();
-        // After Kissflow processes SAML in iframe (session cookie set), redirect to module
-        setTimeout(function() {{
-            window.location.href = "{escape(module_target)}";
-        }}, 3500);
+        // Safety fallback in case iframe onload doesn't fire (e.g., cross-origin opaque response)
+        setTimeout(goToModule, 6000);
     </script>
 </body>
 </html>'''
