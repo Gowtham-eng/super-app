@@ -16,18 +16,19 @@ const APP_COLORS = [
   { bg: 'bg-teal-50', text: 'text-teal-600', border: 'border-teal-100' },
 ];
 
-// Desktop palette — vibrant circular icon backgrounds (Joget-style)
+// Desktop palette — refined enterprise tints (tinted bg + matching icon color)
+// Inspired by Linear/Stripe/Notion: subtle, restrained, sophisticated.
 const DESKTOP_CIRCLE_COLORS = [
-  { bg: '#FB923C', ring: 'ring-orange-200' },   // Orange
-  { bg: '#14B8A6', ring: 'ring-teal-200' },     // Teal
-  { bg: '#FBBF24', ring: 'ring-amber-200' },    // Yellow
-  { bg: '#F472B6', ring: 'ring-pink-200' },     // Pink
-  { bg: '#3B82F6', ring: 'ring-blue-200' },     // Blue
-  { bg: '#A855F7', ring: 'ring-purple-200' },   // Purple
-  { bg: '#10B981', ring: 'ring-emerald-200' },  // Emerald
-  { bg: '#06B6D4', ring: 'ring-cyan-200' },     // Cyan
-  { bg: '#EF4444', ring: 'ring-red-200' },      // Red
-  { bg: '#8B5CF6', ring: 'ring-violet-200' },   // Violet
+  { bg: '#F0FDF4', fg: '#15803D', logoBg: '#DCFCE7' }, // Emerald
+  { bg: '#EFF6FF', fg: '#1D4ED8', logoBg: '#DBEAFE' }, // Blue
+  { bg: '#FFF7ED', fg: '#C2410C', logoBg: '#FFEDD5' }, // Orange
+  { bg: '#FAF5FF', fg: '#7E22CE', logoBg: '#F3E8FF' }, // Purple
+  { bg: '#FEF2F2', fg: '#B91C1C', logoBg: '#FEE2E2' }, // Rose
+  { bg: '#ECFEFF', fg: '#0E7490', logoBg: '#CFFAFE' }, // Cyan
+  { bg: '#FEFCE8', fg: '#A16207', logoBg: '#FEF3C7' }, // Amber
+  { bg: '#F5F3FF', fg: '#6D28D9', logoBg: '#EDE9FE' }, // Violet
+  { bg: '#FDF4FF', fg: '#A21CAF', logoBg: '#FAE8FF' }, // Fuchsia
+  { bg: '#F0FDFA', fg: '#0F766E', logoBg: '#CCFBF1' }, // Teal
 ];
 
 const hashString = (str = '') => {
@@ -161,39 +162,43 @@ const AppLauncher = () => {
         <p className="text-sm text-slate-400">{filtered.length} application{filtered.length !== 1 ? 's' : ''} available</p>
       </div>
 
-      {/* Desktop Hero Banner — Joget App Center style (green gradient) */}
+      {/* Desktop Hero Banner — refined enterprise gradient */}
       <div className="hidden sm:block mb-8" data-testid="desktop-hero-banner">
-        <div className="relative overflow-hidden rounded-2xl shadow-lg" style={{ background: 'linear-gradient(135deg, #047857 0%, #10B981 45%, #84CC16 100%)' }}>
-          {/* decorative blobs */}
-          <div className="absolute -top-16 -right-16 w-72 h-72 rounded-full bg-white/10 blur-3xl pointer-events-none" />
-          <div className="absolute -bottom-24 -left-10 w-80 h-80 rounded-full bg-white/5 blur-3xl pointer-events-none" />
+        <div className="relative overflow-hidden rounded-2xl border border-slate-200/60" style={{ background: 'linear-gradient(120deg, #064E3B 0%, #047857 55%, #059669 100%)' }}>
+          {/* subtle noise/dot pattern overlay */}
+          <div className="absolute inset-0 opacity-[0.06] pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 1px 1px, white 1px, transparent 0)', backgroundSize: '24px 24px' }} />
+          <div className="absolute -top-20 -right-10 w-80 h-80 rounded-full bg-white/5 blur-3xl pointer-events-none" />
+          <div className="absolute -bottom-24 -left-16 w-96 h-96 rounded-full bg-white/[0.03] blur-3xl pointer-events-none" />
 
-          <div className="relative px-8 py-10 flex items-center justify-between gap-6">
+          <div className="relative px-8 py-9 flex items-center justify-between gap-6">
             {/* Left: title */}
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-xl bg-white/15 backdrop-blur-sm flex items-center justify-center ring-1 ring-white/20">
-                <LayoutGrid size={22} className="text-white" />
+            <div className="flex items-center gap-3.5">
+              <div className="w-11 h-11 rounded-xl bg-white/10 backdrop-blur-sm flex items-center justify-center ring-1 ring-white/20">
+                <LayoutGrid size={20} className="text-white" strokeWidth={1.75} />
               </div>
-              <h1 className="font-heading text-3xl lg:text-4xl font-semibold text-white tracking-tight">App Center</h1>
+              <div>
+                <h1 className="font-heading text-2xl lg:text-[28px] font-semibold text-white tracking-tight leading-none">App Center</h1>
+                <p className="text-emerald-100/70 text-xs mt-1.5 tracking-wide uppercase">Unified workspace</p>
+              </div>
             </div>
 
             {/* Center: greeting */}
-            <div className="hidden lg:block text-center flex-1">
-              <p className="text-white text-xl font-medium">Hello {firstName},</p>
-              <p className="text-white/85 text-sm mt-1">You have {filtered.length} application{filtered.length !== 1 ? 's' : ''} available.</p>
+            <div className="hidden lg:block text-center flex-1 px-6">
+              <p className="text-white text-lg font-medium tracking-tight">Hello {firstName}</p>
+              <p className="text-emerald-100/80 text-sm mt-1">{filtered.length} application{filtered.length !== 1 ? 's' : ''} available</p>
             </div>
 
             {/* Right: live date/time */}
             <div className="text-right text-white">
-              <p className="text-sm font-medium opacity-95" data-testid="hero-date">{formatDate(now)}</p>
-              <p className="text-2xl font-semibold tabular-nums tracking-tight mt-0.5" data-testid="hero-time">{formatTime(now)}</p>
+              <p className="text-xs font-medium text-emerald-100/80 tracking-wide" data-testid="hero-date">{formatDate(now)}</p>
+              <p className="text-xl font-semibold tabular-nums tracking-tight mt-1" data-testid="hero-time">{formatTime(now)}</p>
             </div>
           </div>
 
-          {/* Mobile-style greeting shown below on medium screens */}
+          {/* Greeting on medium screens */}
           <div className="lg:hidden relative px-8 pb-6 -mt-2">
-            <p className="text-white text-lg font-medium">Hello {firstName},</p>
-            <p className="text-white/85 text-sm">You have {filtered.length} application{filtered.length !== 1 ? 's' : ''} available.</p>
+            <p className="text-white text-base font-medium">Hello {firstName}</p>
+            <p className="text-emerald-100/80 text-sm">{filtered.length} application{filtered.length !== 1 ? 's' : ''} available</p>
           </div>
         </div>
       </div>
@@ -231,13 +236,12 @@ const AppLauncher = () => {
             const Icon = meta.icon;
             return (
               <div key={category} data-testid={`category-${category.toLowerCase()}`}>
-                {/* Category Header */}
-                <div className="flex items-center gap-2.5 mb-4">
-                  <div className={`w-8 h-8 rounded-lg ${meta.bg} flex items-center justify-center`}>
-                    <Icon size={16} className={meta.color} />
-                  </div>
-                  <h2 className="font-heading text-base font-semibold text-slate-800">{category}</h2>
-                  <span className="text-xs text-slate-400">{catApps.length}</span>
+                {/* Category Header — refined */}
+                <div className="flex items-center gap-2 mb-4 sm:mb-5">
+                  <Icon size={14} className={`${meta.color}`} strokeWidth={2} />
+                  <h2 className="font-heading text-[13px] font-semibold text-slate-700 uppercase tracking-wider">{category}</h2>
+                  <span className="text-[11px] text-slate-400 font-medium tabular-nums">{catApps.length}</span>
+                  <div className="flex-1 h-px bg-slate-100 ml-1.5 hidden sm:block" />
                 </div>
 
                 {/* Mobile: 4-col grid */}
@@ -274,8 +278,8 @@ const AppLauncher = () => {
                   })}
                 </div>
 
-                {/* Desktop: Joget-style colorful circular icon tiles */}
-                <div className="hidden sm:grid sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 3xl:grid-cols-9 4xl:grid-cols-12 gap-4">
+                {/* Desktop: Refined enterprise tile grid */}
+                <div className="hidden sm:grid sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 3xl:grid-cols-9 4xl:grid-cols-12 gap-3">
                   {catApps.map((app) => {
                     const dc = getDesktopColor(app);
                     return (
@@ -284,39 +288,39 @@ const AppLauncher = () => {
                         onClick={() => launchApp(app)}
                         disabled={app.policy_blocked && !app.is_placeholder}
                         data-testid={`launch-app-desktop-${app.id}`}
-                        className={`group relative bg-white rounded-2xl border transition-all duration-200 flex flex-col items-center justify-start py-6 px-3 min-h-[170px] ${
-                          app.is_placeholder ? 'border-dashed border-slate-300 bg-slate-50/50 cursor-pointer hover:bg-slate-50' :
+                        className={`group relative bg-white rounded-xl border transition-all duration-200 flex flex-col items-center justify-start py-5 px-3 min-h-[158px] ${
+                          app.is_placeholder ? 'border-dashed border-slate-200 bg-slate-50/40 cursor-pointer hover:bg-slate-50' :
                           app.policy_blocked ? 'opacity-50 cursor-not-allowed border-slate-200' :
-                          'border-slate-200 hover:border-slate-300 hover:shadow-xl hover:-translate-y-0.5 cursor-pointer active:scale-[0.98]'
+                          'border-slate-200/70 hover:border-slate-300 hover:shadow-[0_8px_24px_-12px_rgba(15,23,42,0.12)] hover:-translate-y-0.5 cursor-pointer'
                         }`}
                       >
-                        {/* Colored circle with icon */}
+                        {/* Soft tinted icon container */}
                         <div
-                          className="w-20 h-20 rounded-full flex items-center justify-center mb-3 shadow-md transition-transform group-hover:scale-105 ring-4 ring-white"
+                          className="w-14 h-14 rounded-xl flex items-center justify-center mb-3 transition-transform group-hover:scale-[1.03]"
                           style={{ backgroundColor: dc.bg }}
                         >
                           {app.logo_url ? (
-                            <img src={app.logo_url} alt={app.name} className="w-12 h-12 object-contain" />
+                            <img src={app.logo_url} alt={app.name} className="w-9 h-9 object-contain" />
                           ) : (
-                            <span className="font-heading font-bold text-3xl text-white drop-shadow-sm">
+                            <span className="font-heading font-semibold text-xl" style={{ color: dc.fg }}>
                               {app.name.charAt(0).toUpperCase()}
                             </span>
                           )}
                         </div>
 
                         {/* App name */}
-                        <h3 className="text-sm font-semibold text-slate-800 text-center leading-tight px-1 line-clamp-2">
+                        <h3 className="text-[13px] font-medium text-slate-800 text-center leading-snug px-1 line-clamp-2 tracking-tight">
                           {app.name}
                         </h3>
 
                         {app.is_placeholder && (
-                          <span className="mt-2 inline-block text-[10px] font-medium text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">Coming Soon</span>
+                          <span className="mt-1.5 inline-block text-[10px] font-medium text-slate-400 bg-slate-100/80 px-2 py-0.5 rounded-full">Coming Soon</span>
                         )}
                         {app.policy_blocked && !app.is_placeholder && (
-                          <div className="absolute top-3 right-3"><Lock size={14} className="text-red-400" /></div>
+                          <div className="absolute top-2.5 right-2.5"><Lock size={12} className="text-red-400" /></div>
                         )}
                         {!app.policy_blocked && !app.is_placeholder && (
-                          <ExternalLink size={13} className="absolute top-3 right-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+                          <ExternalLink size={12} className="absolute top-2.5 right-2.5 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
                         )}
                       </button>
                     );
