@@ -1,8 +1,5 @@
 package com.refex.superapp;
 
-import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.CookieManager;
 import android.webkit.WebView;
@@ -13,11 +10,9 @@ import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
 
-    private static final String KISSFLOW_PACKAGE = "com.orangescape.kfdw";
-    private static final String KISSFLOW_DOMAIN = "kissflow.com";
-    // SAML ACS URL must load INSIDE WebView (POST data required for SSO)
-    private static final String SAML_ACS_PATH = "/signin/";
-    private static final String SAML_LOGIN_PATH = "/view/login";
+    private static final String APP_HOST = "superapp.refex.group";
+    // Also match internal IP for development
+    private static final String APP_HOST_DEV = "10.5.7.108";
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -30,94 +25,79 @@ public class MainActivity extends BridgeActivity {
 
         WebView webView = getBridge().getWebView();
 
-        // Enable third-party cookies (required for iframe-based SAML session)
+        // Enable cookies (required for SAML SSO)
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
         cookieManager.setAcceptThirdPartyCookies(webView, true);
 
-        // Enable JavaScript and DOM storage
+        // WebView settings
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        settings.setJavaScriptCanOpenWindowsAutomatically(true);
+        settings.setSupportMultipleWindows(false);
 
+        // All URLs load inside WebView - no external app launches
+        // This is critical for SAML SSO: cookies must stay in our WebView
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                return handleUrl(request.getUrl().toString(), request.getMethod());
+                // Let everything load inside our WebView
+                return false;
             }
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                return handleUrl(url, "GET");
+                // Let everything load inside our WebView
+                return false;
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
 
-                // If we landed on Kissflow home/login after SAML, and this is from
-                // an iframe-based mobile SSO, the iframe has set the session cookie.
-                // The JavaScript setTimeout in the page will handle the redirect.
+                // Inject a floating "Back to Launcher" button when on Kissflow pages
+                if (url != null && url.contains("kissflow.com") && !url.contains("/signin/")) {
+                    view.evaluateJavascript(
+                        "(function() {" +
+                        "  if (document.getElementById('superapp-back-btn')) return;" +
+                        "  var btn = document.createElement('div');" +
+                        "  btn.id = 'superapp-back-btn';" +
+                        "  btn.innerHTML = '<svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"white\" stroke-width=\"2.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 9l4-4-4-4\"/><path d=\"M7 5H3\"/><rect x=\"3\" y=\"11\" width=\"18\" height=\"11\" rx=\"2\"/><circle cx=\"8.5\" cy=\"16.5\" r=\"1.5\"/><circle cx=\"15.5\" cy=\"16.5\" r=\"1.5\"/><path d=\"M12 11v4\"/></svg>';" +
+                        "  btn.style.cssText = 'position:fixed;bottom:20px;left:20px;z-index:999999;background:#10b981;color:white;border-radius:50%;width:48px;height:48px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,0.3);cursor:pointer;';" +
+                        "  btn.onclick = function() { window.location.href = '" + getAppUrl() + "/launcher'; };" +
+                        "  document.body.appendChild(btn);" +
+                        "})();",
+                        null
+                    );
+                }
             }
         });
     }
 
-    private boolean handleUrl(String url, String method) {
-        if (!url.contains(KISSFLOW_DOMAIN)) {
-            // Not a Kissflow URL - load in WebView (our app URLs)
-            return false;
+    private String getAppUrl() {
+        // Return the app's base URL from Capacitor config
+        String url = getBridge().getServerUrl();
+        if (url != null && !url.isEmpty()) {
+            return url;
         }
-
-        // SAML ACS URL - MUST load inside WebView (carries POST body for SSO)
-        if (url.contains(SAML_ACS_PATH)) {
-            return false; // Let WebView handle it
-        }
-
-        // Kissflow login page - load in WebView (user may need to see it)
-        if (url.contains(SAML_LOGIN_PATH)) {
-            return false; // Let WebView handle it
-        }
-
-        // Kissflow module/home URLs - open in Kissflow native app if installed
-        return openInKissflowApp(url);
+        return "https://superapp.refex.group";
     }
 
-    private boolean openInKissflowApp(String url) {
-        PackageManager pm = getPackageManager();
-        try {
-            pm.getPackageInfo(KISSFLOW_PACKAGE, PackageManager.GET_ACTIVITIES);
-            // Kissflow app is installed - open it with the URL
-            Intent intent = pm.getLaunchIntentForPackage(KISSFLOW_PACKAGE);
-            if (intent != null) {
-                intent.setAction(Intent.ACTION_VIEW);
-                intent.setData(Uri.parse(url));
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(intent);
-
-                // Navigate WebView back to launcher after opening Kissflow app
-                WebView webView = getBridge().getWebView();
-                webView.post(() -> webView.loadUrl("javascript:window.location.href='/launcher'"));
-
-                return true;
+    @Override
+    public void onBackPressed() {
+        WebView webView = getBridge().getWebView();
+        if (webView != null && webView.canGoBack()) {
+            String url = webView.getUrl();
+            // If on a Kissflow page, go back to launcher instead of navigating back
+            if (url != null && url.contains("kissflow.com")) {
+                webView.loadUrl(getAppUrl() + "/launcher");
+                return;
             }
-        } catch (PackageManager.NameNotFoundException e) {
-            // Kissflow app not installed - open in external browser
-            try {
-                Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(browserIntent);
-            } catch (android.content.ActivityNotFoundException ex) {
-                // Can't open browser - let WebView handle it
-                return false;
-            }
-
-            // Navigate back to launcher
-            WebView webView = getBridge().getWebView();
-            webView.post(() -> webView.loadUrl("javascript:window.location.href='/launcher'"));
-
-            return true;
+            webView.goBack();
+        } else {
+            super.onBackPressed();
         }
-        return false;
     }
 }
