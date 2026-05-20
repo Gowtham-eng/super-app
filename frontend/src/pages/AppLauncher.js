@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { toast } from 'sonner';
-import { Search, Lock, ExternalLink, MessageCircle, X, DollarSign, Zap, Building2, Headphones } from 'lucide-react';
+import { Search, Lock, ExternalLink, MessageCircle, X, DollarSign, Zap, Building2, Headphones, LayoutGrid } from 'lucide-react';
 
+// Mobile palette (kept untouched)
 const APP_COLORS = [
   { bg: 'bg-blue-50', text: 'text-blue-600', border: 'border-blue-100' },
   { bg: 'bg-emerald-50', text: 'text-emerald-600', border: 'border-emerald-100' },
@@ -14,6 +15,30 @@ const APP_COLORS = [
   { bg: 'bg-orange-50', text: 'text-orange-600', border: 'border-orange-100' },
   { bg: 'bg-teal-50', text: 'text-teal-600', border: 'border-teal-100' },
 ];
+
+// Desktop palette — vibrant circular icon backgrounds (Joget-style)
+const DESKTOP_CIRCLE_COLORS = [
+  { bg: '#FB923C', ring: 'ring-orange-200' },   // Orange
+  { bg: '#14B8A6', ring: 'ring-teal-200' },     // Teal
+  { bg: '#FBBF24', ring: 'ring-amber-200' },    // Yellow
+  { bg: '#F472B6', ring: 'ring-pink-200' },     // Pink
+  { bg: '#3B82F6', ring: 'ring-blue-200' },     // Blue
+  { bg: '#A855F7', ring: 'ring-purple-200' },   // Purple
+  { bg: '#10B981', ring: 'ring-emerald-200' },  // Emerald
+  { bg: '#06B6D4', ring: 'ring-cyan-200' },     // Cyan
+  { bg: '#EF4444', ring: 'ring-red-200' },      // Red
+  { bg: '#8B5CF6', ring: 'ring-violet-200' },   // Violet
+];
+
+const hashString = (str = '') => {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) - h) + str.charCodeAt(i);
+  return Math.abs(h);
+};
+
+const getDesktopColor = (app) => {
+  return DESKTOP_CIRCLE_COLORS[hashString(app.id || app.name) % DESKTOP_CIRCLE_COLORS.length];
+};
 
 const CATEGORY_META = {
   Expense: { icon: DollarSign, color: 'text-emerald-600', bg: 'bg-emerald-50' },
@@ -34,8 +59,18 @@ const AppLauncher = () => {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [chatOpen, setChatOpen] = useState(false);
+  const [now, setNow] = useState(new Date());
 
   useEffect(() => { fetchApps(); }, []);
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 30000); // refresh every 30s
+    return () => clearInterval(t);
+  }, []);
+
+  const formatDate = (d) => d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  const formatTime = (d) => d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+
+  const firstName = (user?.name || user?.full_name || 'there').split(' ')[0];
 
   const fetchApps = async () => {
     try {
@@ -120,10 +155,47 @@ const AppLauncher = () => {
 
   return (
     <div className="animate-fadeIn" data-testid="app-launcher">
-      {/* Header */}
-      <div className="mb-6" data-testid="welcome-header">
-        <h1 className="font-heading text-2xl sm:text-3xl font-semibold text-slate-900 mb-1">Explore</h1>
+      {/* Mobile header — UNCHANGED */}
+      <div className="sm:hidden mb-6" data-testid="welcome-header">
+        <h1 className="font-heading text-2xl font-semibold text-slate-900 mb-1">Explore</h1>
         <p className="text-sm text-slate-400">{filtered.length} application{filtered.length !== 1 ? 's' : ''} available</p>
+      </div>
+
+      {/* Desktop Hero Banner — Joget App Center style (green gradient) */}
+      <div className="hidden sm:block mb-8" data-testid="desktop-hero-banner">
+        <div className="relative overflow-hidden rounded-2xl shadow-lg" style={{ background: 'linear-gradient(135deg, #047857 0%, #10B981 45%, #84CC16 100%)' }}>
+          {/* decorative blobs */}
+          <div className="absolute -top-16 -right-16 w-72 h-72 rounded-full bg-white/10 blur-3xl pointer-events-none" />
+          <div className="absolute -bottom-24 -left-10 w-80 h-80 rounded-full bg-white/5 blur-3xl pointer-events-none" />
+
+          <div className="relative px-8 py-10 flex items-center justify-between gap-6">
+            {/* Left: title */}
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-xl bg-white/15 backdrop-blur-sm flex items-center justify-center ring-1 ring-white/20">
+                <LayoutGrid size={22} className="text-white" />
+              </div>
+              <h1 className="font-heading text-3xl lg:text-4xl font-semibold text-white tracking-tight">App Center</h1>
+            </div>
+
+            {/* Center: greeting */}
+            <div className="hidden lg:block text-center flex-1">
+              <p className="text-white text-xl font-medium">Hello {firstName},</p>
+              <p className="text-white/85 text-sm mt-1">You have {filtered.length} application{filtered.length !== 1 ? 's' : ''} available.</p>
+            </div>
+
+            {/* Right: live date/time */}
+            <div className="text-right text-white">
+              <p className="text-sm font-medium opacity-95" data-testid="hero-date">{formatDate(now)}</p>
+              <p className="text-2xl font-semibold tabular-nums tracking-tight mt-0.5" data-testid="hero-time">{formatTime(now)}</p>
+            </div>
+          </div>
+
+          {/* Mobile-style greeting shown below on medium screens */}
+          <div className="lg:hidden relative px-8 pb-6 -mt-2">
+            <p className="text-white text-lg font-medium">Hello {firstName},</p>
+            <p className="text-white/85 text-sm">You have {filtered.length} application{filtered.length !== 1 ? 's' : ''} available.</p>
+          </div>
+        </div>
       </div>
 
       {/* Search Bar */}
@@ -202,45 +274,49 @@ const AppLauncher = () => {
                   })}
                 </div>
 
-                {/* Desktop: Card grid */}
-                <div className="hidden sm:grid sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                {/* Desktop: Joget-style colorful circular icon tiles */}
+                <div className="hidden sm:grid sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                   {catApps.map((app) => {
-                    const c = getColor();
+                    const dc = getDesktopColor(app);
                     return (
                       <button
                         key={app.id}
                         onClick={() => launchApp(app)}
                         disabled={app.policy_blocked && !app.is_placeholder}
                         data-testid={`launch-app-desktop-${app.id}`}
-                        className={`group relative text-left bg-white rounded-xl border transition-all duration-200 flex flex-col ${
+                        className={`group relative bg-white rounded-2xl border transition-all duration-200 flex flex-col items-center justify-start py-6 px-3 min-h-[170px] ${
                           app.is_placeholder ? 'border-dashed border-slate-300 bg-slate-50/50 cursor-pointer hover:bg-slate-50' :
                           app.policy_blocked ? 'opacity-50 cursor-not-allowed border-slate-200' :
-                          'border-slate-200 hover:border-blue-300 hover:shadow-lg cursor-pointer active:scale-[0.98]'
+                          'border-slate-200 hover:border-slate-300 hover:shadow-xl hover:-translate-y-0.5 cursor-pointer active:scale-[0.98]'
                         }`}
                       >
-                        <div className="p-5 flex-1 flex flex-col">
-                          <div className={`w-11 h-11 rounded-lg ${c.bg} ${c.border} border flex items-center justify-center mb-4 transition-transform group-hover:scale-105`}>
-                            {app.logo_url ? (
-                              <img src={app.logo_url} alt={app.name} className="w-6 h-6 object-contain" />
-                            ) : (
-                              <span className={`font-heading font-bold text-lg ${c.text}`}>
-                                {app.name.charAt(0).toUpperCase()}
-                              </span>
-                            )}
-                          </div>
-                          <h3 className="text-sm font-semibold text-slate-800 mb-1 pr-4">{app.name}</h3>
-                          <p className="text-xs text-slate-400 leading-relaxed line-clamp-2 flex-1">
-                            {app.description || 'No description added'}
-                          </p>
-                          {app.is_placeholder && (
-                            <span className="mt-2 inline-block text-[10px] font-medium text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full w-fit">Coming Soon</span>
+                        {/* Colored circle with icon */}
+                        <div
+                          className="w-20 h-20 rounded-full flex items-center justify-center mb-3 shadow-md transition-transform group-hover:scale-105 ring-4 ring-white"
+                          style={{ backgroundColor: dc.bg }}
+                        >
+                          {app.logo_url ? (
+                            <img src={app.logo_url} alt={app.name} className="w-12 h-12 object-contain" />
+                          ) : (
+                            <span className="font-heading font-bold text-3xl text-white drop-shadow-sm">
+                              {app.name.charAt(0).toUpperCase()}
+                            </span>
                           )}
                         </div>
+
+                        {/* App name */}
+                        <h3 className="text-sm font-semibold text-slate-800 text-center leading-tight px-1 line-clamp-2">
+                          {app.name}
+                        </h3>
+
+                        {app.is_placeholder && (
+                          <span className="mt-2 inline-block text-[10px] font-medium text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">Coming Soon</span>
+                        )}
                         {app.policy_blocked && !app.is_placeholder && (
-                          <div className="absolute top-4 right-4"><Lock size={14} className="text-red-400" /></div>
+                          <div className="absolute top-3 right-3"><Lock size={14} className="text-red-400" /></div>
                         )}
                         {!app.policy_blocked && !app.is_placeholder && (
-                          <ExternalLink size={14} className="absolute top-4 right-4 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+                          <ExternalLink size={13} className="absolute top-3 right-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
                         )}
                       </button>
                     );
