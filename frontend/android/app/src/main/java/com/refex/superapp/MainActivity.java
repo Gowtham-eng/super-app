@@ -2,6 +2,7 @@ package com.refex.superapp;
 
 import android.os.Bundle;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import android.webkit.WebSettings;
 import android.webkit.WebViewClient;
@@ -11,8 +12,12 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
 
     private static final String APP_HOST = "superapp.refex.group";
-    // Also match internal IP for development
     private static final String APP_HOST_DEV = "10.5.7.108";
+
+    // Pending Kissflow module URL set by web page BEFORE submitting SAML.
+    // Read in onPageFinished once Kissflow lands the user post-SSO, then cleared.
+    private volatile String pendingModuleUrl = null;
+    private volatile long pendingSetAt = 0L;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -38,27 +43,49 @@ public class MainActivity extends BridgeActivity {
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
         settings.setSupportMultipleWindows(false);
 
-        // All URLs load inside WebView - no external app launches
-        // This is critical for SAML SSO: cookies must stay in our WebView
+        // Expose native bridge: window.SuperAppBridge.setPendingModule(url)
+        // Called by /api/saml/{id}/complete page right before submitting SAML form.
+        webView.addJavascriptInterface(new SuperAppBridge(), "SuperAppBridge");
+
+        // CRITICAL: All URLs load inside WebView. SAML cookies stay in our WebView session.
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                // Let everything load inside our WebView
                 return false;
             }
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                // Let everything load inside our WebView
                 return false;
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+                if (url == null) return;
 
-                // Inject a floating "Back to Launcher" button when on Kissflow pages
-                if (url != null && url.contains("kissflow.com") && !url.contains("/signin/")) {
+                // ====== POST-SSO MODULE REDIRECT ======
+                // If user just landed on a Kissflow page (post-SAML) AND we have a pending
+                // module URL, the session cookie is now set first-party. Redirect to module.
+                // Conditions: url is on kissflow.com, NOT the signin/SAML endpoint,
+                // and pending module was set within last 30s.
+                if (pendingModuleUrl != null
+                        && url.contains("kissflow.com")
+                        && !url.contains("/signin/")
+                        && !url.contains("/saml")
+                        && (System.currentTimeMillis() - pendingSetAt) < 30_000L) {
+                    String target = pendingModuleUrl;
+                    pendingModuleUrl = null;
+                    pendingSetAt = 0L;
+                    // Avoid infinite loop: only redirect if we're not already at the target.
+                    if (!url.equals(target) && !url.startsWith(target)) {
+                        view.loadUrl(target);
+                        return;
+                    }
+                }
+
+                // Inject floating "Back to Launcher" button on Kissflow module pages
+                if (url.contains("kissflow.com") && !url.contains("/signin/")) {
                     view.evaluateJavascript(
                         "(function() {" +
                         "  if (document.getElementById('superapp-back-btn')) return;" +
@@ -77,7 +104,6 @@ public class MainActivity extends BridgeActivity {
     }
 
     private String getAppUrl() {
-        // Return the app's base URL from Capacitor config
         String url = getBridge().getServerUrl();
         if (url != null && !url.isEmpty()) {
             return url;
@@ -90,7 +116,6 @@ public class MainActivity extends BridgeActivity {
         WebView webView = getBridge().getWebView();
         if (webView != null && webView.canGoBack()) {
             String url = webView.getUrl();
-            // If on a Kissflow page, go back to launcher instead of navigating back
             if (url != null && url.contains("kissflow.com")) {
                 webView.loadUrl(getAppUrl() + "/launcher");
                 return;
@@ -98,6 +123,28 @@ public class MainActivity extends BridgeActivity {
             webView.goBack();
         } else {
             super.onBackPressed();
+        }
+    }
+
+    /**
+     * JavascriptInterface exposed to the WebView as window.SuperAppBridge.
+     * The SAML-completion page (served by /api/saml/{id}/complete?mobile_module=...)
+     * calls SuperAppBridge.setPendingModule(url) right before submitting the SAML form,
+     * so we know where to redirect after Kissflow processes the SSO.
+     */
+    private class SuperAppBridge {
+        @JavascriptInterface
+        public void setPendingModule(String url) {
+            if (url != null && !url.isEmpty() && url.startsWith("http")) {
+                pendingModuleUrl = url;
+                pendingSetAt = System.currentTimeMillis();
+            }
+        }
+
+        @JavascriptInterface
+        public void clearPendingModule() {
+            pendingModuleUrl = null;
+            pendingSetAt = 0L;
         }
     }
 }

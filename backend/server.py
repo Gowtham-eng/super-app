@@ -1600,10 +1600,17 @@ diag.innerHTML = lines.join("<br>");
                 relay_field = ''
             
             if mobile_module:
-                # MOBILE: Use iframe to establish Kissflow session, then redirect to module
-                # Mobile WebViews (Capacitor/Android) allow third-party cookies in iframes.
-                # We listen for the iframe's onload event (fires AFTER SAML POST is processed by Kissflow ACS)
-                # to reliably detect session-ready, then navigate the main WebView to the module URL.
+                # MOBILE FIX: Top-level POST to Kissflow ACS (NOT iframe).
+                # Why: Modern Android WebView/Chrome 80+ blocks cookies set inside cross-site iframes
+                # (SameSite=Lax default). The iframe approach silently failed — Kissflow's session
+                # cookie was never persisted, so subsequent navigation to the module URL got bounced
+                # back to login. Top-level POST keeps the cookie context first-party for Kissflow.
+                #
+                # Then we tell our MainActivity (via window.SuperAppBridge) the target module URL.
+                # When Kissflow finishes processing SAML and lands the user on its home page,
+                # MainActivity sees the kissflow.com page and redirects the WebView to the
+                # specific module URL (which now has a valid session cookie).
+                module_target_js = module_target.replace('\\', '\\\\').replace('"', '\\"')
                 html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1615,38 +1622,33 @@ diag.innerHTML = lines.join("<br>");
         .loader {{ text-align: center; }}
         .spinner {{ width: 36px; height: 36px; border: 3px solid #e2e8f0; border-top-color: #10b981; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }}
         @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-        p {{ color: #64748b; font-size: 14px; }}
+        p {{ color: #64748b; font-size: 14px; margin: 0; }}
+        .hint {{ color: #94a3b8; font-size: 12px; margin-top: 8px; }}
     </style>
 </head>
 <body>
     <div class="loader">
         <div class="spinner"></div>
         <p>Signing in to {escape(app.get('name', 'Application'))}...</p>
+        <p class="hint">Establishing secure session</p>
     </div>
-    <iframe id="authFrame" name="authFrame" style="display:none;width:0;height:0;border:0"></iframe>
-    <form id="samlForm" method="POST" action="{escape(acs_url)}" target="authFrame">
+    <form id="samlForm" method="POST" action="{escape(acs_url)}">
         <input type="hidden" name="SAMLResponse" id="samlResponse"/>
     </form>
     <script>
-        var moduleUrl = "{escape(module_target)}";
-        var redirected = false;
-        function goToModule() {{
-            if (redirected) return;
-            redirected = true;
-            // Tiny grace period so Set-Cookie headers from ACS finalize in WebView's cookie store
-            setTimeout(function() {{ window.location.href = moduleUrl; }}, 400);
-        }}
-        var iframe = document.getElementById('authFrame');
-        var loadCount = 0;
-        iframe.addEventListener('load', function() {{
-            loadCount++;
-            // First load = blank initial iframe; second load = after Kissflow processes SAML response
-            if (loadCount >= 2) {{ goToModule(); }}
-        }});
+        var moduleUrl = "{module_target_js}";
+        // 1. Notify native Android bridge of the pending module URL.
+        //    MainActivity will redirect the WebView to this URL after Kissflow lands post-SSO.
+        try {{
+            if (window.SuperAppBridge && typeof window.SuperAppBridge.setPendingModule === 'function') {{
+                window.SuperAppBridge.setPendingModule(moduleUrl);
+            }}
+        }} catch (e) {{}}
+        // 2. Also persist to sessionStorage so any in-page web fallback can use it.
+        try {{ sessionStorage.setItem('superapp_pending_module', moduleUrl); }} catch (e) {{}}
+        // 3. Submit SAML top-level so Kissflow's session cookie is set first-party.
         document.getElementById('samlResponse').value = "{saml_response_b64}";
         document.getElementById('samlForm').submit();
-        // Safety fallback in case iframe onload doesn't fire (e.g., cross-origin opaque response)
-        setTimeout(goToModule, 6000);
     </script>
 </body>
 </html>'''
