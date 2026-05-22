@@ -13,7 +13,7 @@ import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
 
-    private static final String APP_HOST = "superapp.refexone.com";
+    private static final String APP_HOST = "refexone.com";
     // Kissflow Android native app package (Google Play "Kissflow" app)
     private static final String KISSFLOW_PACKAGE = "com.orangescape.kfdw";
 

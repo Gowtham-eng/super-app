@@ -3,7 +3,7 @@
   "appName": "RefexOne",
   "webDir": "build",
   "server": {
-    "url": "https://superapp.refexone.com",
+    "url": "https://refexone.com",
     "cleartext": true
   },
   "android": {
