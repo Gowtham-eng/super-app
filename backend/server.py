@@ -77,7 +77,7 @@ async def scheduled_hr_sync():
             admin_emails = [a["email"] for a in admins if a.get("email")]
             if admin_emails and (result["created"] > 0 or result["disabled"] > 0 or result["errors"]):
                 html = build_sync_report_email(result["created"], result["disabled"], result["total"], result["errors"])
-                await send_email(admin_emails, "HR Sync Report - Refex Super App", html)
+                await send_email(admin_emails, "HR Sync Report - RefexOne", html)
             logger.info(f"Sync complete for org {org['id']}: {result}")
         except Exception as e:
             logger.error(f"Sync failed for org {org['id']}: {e}")
@@ -1606,7 +1606,7 @@ diag.innerHTML = lines.join("<br>");
                 # cookie was never persisted, so subsequent navigation to the module URL got bounced
                 # back to login. Top-level POST keeps the cookie context first-party for Kissflow.
                 #
-                # Then we tell our MainActivity (via window.SuperAppBridge) the target module URL.
+                # Then we tell our MainActivity (via window.RefexOneBridge) the target module URL.
                 # When Kissflow finishes processing SAML and lands the user on its home page,
                 # MainActivity sees the kissflow.com page and redirects the WebView to the
                 # specific module URL (which now has a valid session cookie).
@@ -1640,12 +1640,12 @@ diag.innerHTML = lines.join("<br>");
         // 1. Notify native Android bridge of the pending module URL.
         //    MainActivity will redirect the WebView to this URL after Kissflow lands post-SSO.
         try {{
-            if (window.SuperAppBridge && typeof window.SuperAppBridge.setPendingModule === 'function') {{
-                window.SuperAppBridge.setPendingModule(moduleUrl);
+            if (window.RefexOneBridge && typeof window.RefexOneBridge.setPendingModule === 'function') {{
+                window.RefexOneBridge.setPendingModule(moduleUrl);
             }}
         }} catch (e) {{}}
         // 2. Also persist to sessionStorage so any in-page web fallback can use it.
-        try {{ sessionStorage.setItem('superapp_pending_module', moduleUrl); }} catch (e) {{}}
+        try {{ sessionStorage.setItem('refexone_pending_module', moduleUrl); }} catch (e) {{}}
         // 3. Submit SAML top-level so Kissflow's session cookie is set first-party.
         document.getElementById('samlResponse').value = "{saml_response_b64}";
         document.getElementById('samlForm').submit();

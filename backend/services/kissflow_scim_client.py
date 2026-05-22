@@ -1,6 +1,6 @@
 """
 Kissflow SCIM Client
-Pushes users FROM Refex Super App TO Kissflow's SCIM Server.
+Pushes users FROM RefexOne TO Kissflow's SCIM Server.
 
 Key features:
 - Kissflow custom extension schema for Employee ID, L2 Manager, Department etc.

@@ -1,4 +1,4 @@
-package com.refex.superapp;
+package com.refex.refexone;
 
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
@@ -13,9 +13,9 @@ import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
 
-    private static final String APP_HOST = "superapp.refex.group";
+    private static final String APP_HOST = "superapp.refexone.com";
     // Kissflow Android native app package (Google Play "Kissflow" app)
-    private static final String KISSFLOW_PACKAGE = "com.kissflow.android";
+    private static final String KISSFLOW_PACKAGE = "com.orangescape.kfdw";
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -28,7 +28,7 @@ public class MainActivity extends BridgeActivity {
 
         WebView webView = getBridge().getWebView();
 
-        // Cookies for our Super App
+        // Cookies for our RefexOne app
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
         cookieManager.setAcceptThirdPartyCookies(webView, true);
@@ -76,7 +76,7 @@ public class MainActivity extends BridgeActivity {
             startActivity(intent);
             return true; // handled — don't load in WebView
         } catch (ActivityNotFoundException notFound) {
-            // Kissflow native app not installed → try generic Intent (Android will offer Chrome or app chooser)
+            // Kissflow native app not installed → try generic Intent (Android offers Chrome / chooser)
             try {
                 Intent generic = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
                 generic.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);

@@ -1,9 +1,9 @@
 {
-  "appId": "com.refex.superapp",
-  "appName": "Super App",
+  "appId": "com.refex.refexone",
+  "appName": "RefexOne",
   "webDir": "build",
   "server": {
-    "url": "https://superapp.refex.group",
+    "url": "https://superapp.refexone.com",
     "cleartext": true
   },
   "android": {
