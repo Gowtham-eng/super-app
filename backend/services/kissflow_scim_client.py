@@ -130,6 +130,19 @@ def _build_kissflow_user(user: dict) -> dict:
     # Kissflow custom extension - uses exact field IDs from Kissflow schema
     kf_ext = {}
 
+    # Mobile Numbers (Kissflow custom fields — standard SCIM phoneNumbers array is ignored by Kissflow UI)
+    # Send under multiple field-ID variants so whichever your Kissflow schema uses will pick up.
+    if work_digits:
+        kf_ext["Refex_Work_Mobile"] = work_digits
+        kf_ext["Work_Mobile"] = work_digits
+        kf_ext["Work_Mobile_Number"] = work_digits
+        kf_ext["Phone"] = work_digits  # legacy fallback
+    if personal_digits:
+        kf_ext["Employee_Mobile_Number"] = personal_digits
+        kf_ext["Personal_Mobile"] = personal_digits
+        kf_ext["Mobile"] = personal_digits
+        kf_ext["Mobile_Number"] = personal_digits
+
     # Employee ID
     emp_id = user.get("adrenalin_employee_id", "")
     if emp_id:
