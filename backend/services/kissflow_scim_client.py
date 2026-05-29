@@ -145,6 +145,18 @@ def _build_kissflow_user(user: dict) -> dict:
     if dept_code:
         kf_ext["Department_Code"] = dept_code
 
+    # Department (full name)
+    department = user.get("department", "")
+    if department:
+        kf_ext["Department"] = department
+
+    # Company / Legal Entity (Refex Holding Pvt Ltd, STPL, etc.)
+    company = user.get("company", "")
+    if company:
+        kf_ext["Company"] = company
+        kf_ext["Company_Name"] = company
+        kf_ext["Legal_Entity"] = company
+
     # Branch
     branch = user.get("branch_code") or user.get("business_line") or ""
     if branch:
@@ -200,6 +212,25 @@ def _build_kissflow_user(user: dict) -> dict:
         kf_ext["L2_Manager"] = l2_obj
 
     payload[KISSFLOW_EXTENSION_SCHEMA] = kf_ext
+
+    # Standard SCIM Enterprise extension — Kissflow/Azure/OneLogin all respect `organization`
+    enterprise_ext = {}
+    if user.get("company"):
+        enterprise_ext["organization"] = user.get("company")
+    if user.get("department"):
+        enterprise_ext["department"] = user.get("department")
+    if user.get("adrenalin_employee_id"):
+        enterprise_ext["employeeNumber"] = user.get("adrenalin_employee_id")
+    if user.get("supervisor_email"):
+        enterprise_ext["manager"] = {
+            "value": user.get("_supervisor_kf_id", ""),
+            "displayName": user.get("supervisor_name", ""),
+        }
+    if enterprise_ext:
+        payload[ENTERPRISE_EXTENSION_SCHEMA] = enterprise_ext
+        if ENTERPRISE_EXTENSION_SCHEMA not in schemas:
+            schemas.append(ENTERPRISE_EXTENSION_SCHEMA)
+
     payload["schemas"] = schemas
     return payload
 
