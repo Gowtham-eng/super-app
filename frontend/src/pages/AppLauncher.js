@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { toast } from 'sonner';
-import { Search, Lock, ExternalLink, MessageCircle, X, DollarSign, Zap, Building2, Headphones, LayoutGrid } from 'lucide-react';
+import { Search, Lock, MessageCircle, X, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight } from 'lucide-react';
 
 // Mobile palette (kept untouched)
 const APP_COLORS = [
@@ -16,19 +16,16 @@ const APP_COLORS = [
   { bg: 'bg-teal-50', text: 'text-teal-600', border: 'border-teal-100' },
 ];
 
-// Desktop palette — refined enterprise tints (tinted bg + matching icon color)
-// Inspired by Linear/Stripe/Notion: subtle, restrained, sophisticated.
-const DESKTOP_CIRCLE_COLORS = [
-  { bg: '#F0FDF4', fg: '#15803D', logoBg: '#DCFCE7' }, // Emerald
-  { bg: '#EFF6FF', fg: '#1D4ED8', logoBg: '#DBEAFE' }, // Blue
-  { bg: '#FFF7ED', fg: '#C2410C', logoBg: '#FFEDD5' }, // Orange
-  { bg: '#FAF5FF', fg: '#7E22CE', logoBg: '#F3E8FF' }, // Purple
-  { bg: '#FEF2F2', fg: '#B91C1C', logoBg: '#FEE2E2' }, // Rose
-  { bg: '#ECFEFF', fg: '#0E7490', logoBg: '#CFFAFE' }, // Cyan
-  { bg: '#FEFCE8', fg: '#A16207', logoBg: '#FEF3C7' }, // Amber
-  { bg: '#F5F3FF', fg: '#6D28D9', logoBg: '#EDE9FE' }, // Violet
-  { bg: '#FDF4FF', fg: '#A21CAF', logoBg: '#FAE8FF' }, // Fuchsia
-  { bg: '#F0FDFA', fg: '#0F766E', logoBg: '#CCFBF1' }, // Teal
+// Desktop tile palette — gradient top + tag color (matches mockup screenshots)
+const DESKTOP_TILE_PALETTE = [
+  { from: '#FCD34D', to: '#F59E0B', tagBg: '#FEF3C7', tagText: '#92400E', soft: 'from-amber-50 to-orange-50' },        // Amber/Orange
+  { from: '#FB923C', to: '#EF4444', tagBg: '#FFE4E6', tagText: '#9F1239', soft: 'from-orange-50 to-rose-50' },         // Orange/Red
+  { from: '#A78BFA', to: '#7C3AED', tagBg: '#EDE9FE', tagText: '#5B21B6', soft: 'from-violet-50 to-purple-50' },       // Violet
+  { from: '#60A5FA', to: '#3B82F6', tagBg: '#DBEAFE', tagText: '#1E40AF', soft: 'from-blue-50 to-sky-50' },            // Blue
+  { from: '#34D399', to: '#10B981', tagBg: '#D1FAE5', tagText: '#065F46', soft: 'from-emerald-50 to-teal-50' },        // Emerald
+  { from: '#F472B6', to: '#EC4899', tagBg: '#FCE7F3', tagText: '#9D174D', soft: 'from-pink-50 to-rose-50' },           // Pink
+  { from: '#22D3EE', to: '#0891B2', tagBg: '#CFFAFE', tagText: '#155E75', soft: 'from-cyan-50 to-sky-50' },            // Cyan
+  { from: '#FBBF24', to: '#D97706', tagBg: '#FEF3C7', tagText: '#78350F', soft: 'from-yellow-50 to-amber-50' },        // Yellow
 ];
 
 const hashString = (str = '') => {
@@ -37,21 +34,43 @@ const hashString = (str = '') => {
   return Math.abs(h);
 };
 
-const getDesktopColor = (app) => {
-  return DESKTOP_CIRCLE_COLORS[hashString(app.id || app.name) % DESKTOP_CIRCLE_COLORS.length];
+const getTilePalette = (app) => DESKTOP_TILE_PALETTE[hashString(app.id || app.name) % DESKTOP_TILE_PALETTE.length];
+
+// Pick a Lucide icon for each app based on name keywords
+const pickAppIcon = (name = '') => {
+  const n = name.toLowerCase();
+  if (/expense|reimburs/.test(n)) return FileText;
+  if (/travel|trip|flight/.test(n)) return Plane;
+  if (/procure|purchase|p2p/.test(n)) return ShoppingCart;
+  if (/budget|finance|fin/.test(n)) return DollarSign;
+  if (/task|todo|to-do|workflow/.test(n)) return ListChecks;
+  if (/lead|sales|crm|target/.test(n)) return Target;
+  if (/coal|ash|energy|flame/.test(n)) return Flame;
+  if (/project|gantt|plan/.test(n)) return GitBranch;
+  if (/adrenalin|hrms|hr|people|employee/.test(n)) return UsersIcon;
+  if (/space|book|desk|floor|building|office/.test(n)) return Building2;
+  if (/maint|repair|wrench|tool/.test(n)) return Wrench;
+  if (/canteen|food|meal/.test(n)) return Utensils;
+  if (/mobility|mobile|phone/.test(n)) return Smartphone;
+  return Briefcase;
 };
 
 const CATEGORY_META = {
-  Expense: { icon: DollarSign, color: 'text-emerald-600', bg: 'bg-emerald-50' },
-  Productivity: { icon: Zap, color: 'text-blue-600', bg: 'bg-blue-50' },
-  Facility: { icon: Building2, color: 'text-violet-600', bg: 'bg-violet-50' },
-  Support: { icon: Headphones, color: 'text-amber-600', bg: 'bg-amber-50' },
+  Expense: { icon: FileText, color: 'text-amber-600', bg: 'bg-amber-50', dot: '#F59E0B' },
+  Productivity: { icon: Zap, color: 'text-violet-600', bg: 'bg-violet-50', dot: '#8B5CF6' },
+  Facility: { icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', dot: '#3B82F6' },
+  Support: { icon: Heart, color: 'text-rose-600', bg: 'bg-rose-50', dot: '#F43F5E' },
+  HR: { icon: Heart, color: 'text-rose-600', bg: 'bg-rose-50', dot: '#F43F5E' },
 };
 
-const CATEGORY_ORDER = ['Expense', 'Productivity', 'Facility', 'Support'];
+const CATEGORY_ORDER = ['Expense', 'Productivity', 'Facility', 'Support', 'HR'];
 
-const getColor = () => {
-  return { bg: 'bg-white', text: 'text-slate-900', border: 'border-slate-200' };
+const CATEGORY_LABEL = {
+  Expense: 'Expense Management',
+  Productivity: 'Productivity',
+  Facility: 'Facility Management',
+  Support: 'HR & People',
+  HR: 'HR & People',
 };
 
 const AppLauncher = () => {
@@ -61,6 +80,7 @@ const AppLauncher = () => {
   const [search, setSearch] = useState('');
   const [chatOpen, setChatOpen] = useState(false);
   const [now, setNow] = useState(new Date());
+  const [activeFilter, setActiveFilter] = useState('All');
 
   useEffect(() => { fetchApps(); }, []);
   useEffect(() => {
@@ -143,11 +163,14 @@ const AppLauncher = () => {
     }
   };
 
-  const filtered = apps.filter(a =>
-    a.name.toLowerCase().includes(search.toLowerCase()) ||
-    (a.description || '').toLowerCase().includes(search.toLowerCase()) ||
-    (a.category || '').toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = apps.filter(a => {
+    const matchesSearch = a.name.toLowerCase().includes(search.toLowerCase()) ||
+      (a.description || '').toLowerCase().includes(search.toLowerCase()) ||
+      (a.category || '').toLowerCase().includes(search.toLowerCase());
+    if (!matchesSearch) return false;
+    if (activeFilter === 'All') return true;
+    return a.category === activeFilter;
+  });
 
   // Group by category
   const grouped = {};
@@ -171,60 +194,113 @@ const AppLauncher = () => {
         <p className="text-sm text-slate-400">{filtered.length} application{filtered.length !== 1 ? 's' : ''} available</p>
       </div>
 
-      {/* Desktop Hero Banner — refined enterprise gradient */}
-      <div className="hidden sm:block mb-8" data-testid="desktop-hero-banner">
-        <div className="relative overflow-hidden rounded-2xl border border-slate-200/60" style={{ background: 'linear-gradient(120deg, #064E3B 0%, #047857 55%, #059669 100%)' }}>
-          {/* subtle noise/dot pattern overlay */}
-          <div className="absolute inset-0 opacity-[0.06] pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 1px 1px, white 1px, transparent 0)', backgroundSize: '24px 24px' }} />
-          <div className="absolute -top-20 -right-10 w-80 h-80 rounded-full bg-white/5 blur-3xl pointer-events-none" />
-          <div className="absolute -bottom-24 -left-16 w-96 h-96 rounded-full bg-white/[0.03] blur-3xl pointer-events-none" />
-
-          <div className="relative px-8 py-9 flex items-center justify-between gap-6">
-            {/* Left: title */}
-            <div className="flex items-center gap-3.5">
-              <div className="w-11 h-11 rounded-xl bg-white/10 backdrop-blur-sm flex items-center justify-center ring-1 ring-white/20">
-                <LayoutGrid size={20} className="text-white" strokeWidth={1.75} />
-              </div>
-              <div>
-                <h1 className="font-heading text-2xl lg:text-[28px] font-semibold text-white tracking-tight leading-none">App Center</h1>
-                <p className="text-emerald-100/70 text-xs mt-1.5 tracking-wide uppercase">Unified workspace</p>
-              </div>
-            </div>
-
-            {/* Center: greeting */}
-            <div className="hidden lg:block text-center flex-1 px-6">
-              <p className="text-white text-lg font-medium tracking-tight">Hello {firstName}</p>
-              <p className="text-emerald-100/80 text-sm mt-1">{filtered.length} application{filtered.length !== 1 ? 's' : ''} available</p>
-            </div>
-
-            {/* Right: live date/time */}
-            <div className="text-right text-white">
-              <p className="text-xs font-medium text-emerald-100/80 tracking-wide" data-testid="hero-date">{formatDate(now)}</p>
-              <p className="text-xl font-semibold tabular-nums tracking-tight mt-1" data-testid="hero-time">{formatTime(now)}</p>
-            </div>
-          </div>
-
-          {/* Greeting on medium screens */}
-          <div className="lg:hidden relative px-8 pb-6 -mt-2">
-            <p className="text-white text-base font-medium">Hello {firstName}</p>
-            <p className="text-emerald-100/80 text-sm">{filtered.length} application{filtered.length !== 1 ? 's' : ''} available</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Search Bar */}
-      <div className="mb-8">
-        <div className="relative max-w-md" data-testid="app-search">
+      {/* Mobile search bar */}
+      <div className="sm:hidden mb-6">
+        <div className="relative" data-testid="app-search-mobile">
           <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
             placeholder="Search apps..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all"
-            data-testid="search-input"
+            className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all"
           />
         </div>
+      </div>
+
+      {/* Desktop Hero Banner — soft mint with large digital clock */}
+      <div className="hidden sm:block mb-6" data-testid="desktop-hero-banner">
+        <div className="relative overflow-hidden rounded-2xl border-2 border-emerald-200/70 bg-gradient-to-br from-emerald-50 via-white to-teal-50/40">
+          <div className="absolute -top-16 -right-16 w-72 h-72 rounded-full bg-emerald-100/40 blur-3xl pointer-events-none" />
+          <div className="absolute -bottom-16 -left-16 w-72 h-72 rounded-full bg-teal-100/30 blur-3xl pointer-events-none" />
+
+          <div className="relative px-8 py-7 flex items-center justify-between gap-6">
+            {/* Left: Icon + Title + Subtitle */}
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-2xl bg-white border-2 border-emerald-200 flex items-center justify-center shadow-sm">
+                <LayoutGrid size={24} className="text-emerald-600" strokeWidth={2} />
+              </div>
+              <div>
+                <h1 className="font-heading text-2xl lg:text-3xl font-bold text-slate-900 tracking-tight leading-none">App Center</h1>
+                <p className="text-slate-500 text-sm mt-1.5 font-medium">Enterprise Application Hub</p>
+              </div>
+            </div>
+
+            {/* Center: Greeting */}
+            <div className="hidden lg:flex flex-col items-center flex-1 px-6">
+              <p className="text-slate-900 text-xl font-semibold tracking-tight">Hello, {firstName} <span className="inline-block animate-pulse">👋</span></p>
+              <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100/70 border border-emerald-200/60">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <span className="text-emerald-800 text-xs font-medium">{filtered.length} application{filtered.length !== 1 ? 's' : ''} available</span>
+              </div>
+            </div>
+
+            {/* Right: Date + Big Digital Clock */}
+            <div className="text-right">
+              <p className="text-slate-500 text-xs font-medium tracking-wide" data-testid="hero-date">{formatDate(now)}</p>
+              <p className="text-3xl lg:text-[40px] font-bold text-slate-900 tabular-nums tracking-tight leading-none mt-1.5" data-testid="hero-time">{formatTime(now)}</p>
+              <p className="text-slate-400 text-[11px] tracking-wide mt-1">{now.toLocaleDateString(undefined, { weekday: 'long' })}</p>
+            </div>
+          </div>
+
+          {/* Greeting on medium screens */}
+          <div className="lg:hidden relative px-8 pb-5 -mt-2">
+            <p className="text-slate-900 text-base font-semibold">Hello, {firstName} 👋</p>
+            <div className="mt-1.5 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-100/70 border border-emerald-200/60">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              <span className="text-emerald-800 text-xs font-medium">{filtered.length} application{filtered.length !== 1 ? 's' : ''} available</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Search Bar + Filter Pills — desktop only */}
+      <div className="hidden sm:flex items-center gap-3 mb-7">
+        <div className="relative flex-1" data-testid="app-search">
+          <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search apps, categories, or features..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full pl-11 pr-14 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all shadow-sm"
+            data-testid="search-input"
+          />
+          <kbd className="absolute right-3 top-1/2 -translate-y-1/2 px-1.5 py-0.5 text-[10px] font-mono text-slate-400 bg-slate-100 border border-slate-200 rounded">⌘K</kbd>
+        </div>
+      </div>
+
+      {/* Category Filter Pills */}
+      <div className="hidden sm:flex items-center gap-2 mb-8 overflow-x-auto pb-1" data-testid="category-filters">
+        {[
+          { key: 'All', label: 'All', icon: LayoutGrid, dot: '#10B981' },
+          { key: 'Expense', label: 'Expense', icon: FileText, dot: '#F59E0B' },
+          { key: 'Productivity', label: 'Productivity', icon: Zap, dot: '#8B5CF6' },
+          { key: 'Facility', label: 'Facility', icon: Building2, dot: '#3B82F6' },
+          { key: 'Support', label: 'HR', icon: Heart, dot: '#F43F5E' },
+        ].map(f => {
+          const FilterIcon = f.icon;
+          const isActive = activeFilter === f.key;
+          return (
+            <button
+              key={f.key}
+              onClick={() => setActiveFilter(f.key)}
+              data-testid={`filter-${f.key.toLowerCase()}`}
+              className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all whitespace-nowrap ${
+                isActive
+                  ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-200'
+                  : 'bg-white text-slate-700 border border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              {isActive ? (
+                <FilterIcon size={14} strokeWidth={2.25} />
+              ) : (
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: f.dot }} />
+              )}
+              {f.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Grouped Apps */}
@@ -241,22 +317,25 @@ const AppLauncher = () => {
       ) : (
         <div className="space-y-8">
           {Object.entries(grouped).map(([category, catApps]) => {
-            const meta = CATEGORY_META[category] || { icon: Zap, color: 'text-slate-600', bg: 'bg-slate-50' };
+            const meta = CATEGORY_META[category] || { icon: Zap, color: 'text-slate-600', bg: 'bg-slate-50', dot: '#64748B' };
             const Icon = meta.icon;
+            const label = CATEGORY_LABEL[category] || category;
             return (
               <div key={category} data-testid={`category-${category.toLowerCase()}`}>
                 {/* Category Header — refined */}
-                <div className="flex items-center gap-2 mb-4 sm:mb-5">
-                  <Icon size={14} className={`${meta.color}`} strokeWidth={2} />
-                  <h2 className="font-heading text-[13px] font-semibold text-slate-700 uppercase tracking-wider">{category}</h2>
-                  <span className="text-[11px] text-slate-400 font-medium tabular-nums">{catApps.length}</span>
-                  <div className="flex-1 h-px bg-slate-100 ml-1.5 hidden sm:block" />
+                <div className="flex items-center gap-2.5 mb-4 sm:mb-5">
+                  <div className={`hidden sm:flex w-7 h-7 rounded-lg ${meta.bg} items-center justify-center`}>
+                    <Icon size={14} className={meta.color} strokeWidth={2.25} />
+                  </div>
+                  <Icon size={14} className={`sm:hidden ${meta.color}`} strokeWidth={2} />
+                  <h2 className="font-heading text-base sm:text-lg font-semibold text-slate-900 tracking-tight">{label}</h2>
+                  <span className="text-xs text-slate-400 font-medium tabular-nums">{catApps.length} app{catApps.length !== 1 ? 's' : ''}</span>
                 </div>
 
                 {/* Mobile: 4-col grid */}
                 <div className="sm:hidden grid grid-cols-4 gap-3">
                   {catApps.map((app) => {
-                    const c = getColor();
+                    const c = APP_COLORS[hashString(app.id || app.name) % APP_COLORS.length];
                     return (
                       <button
                         key={app.id}
@@ -287,50 +366,78 @@ const AppLauncher = () => {
                   })}
                 </div>
 
-                {/* Desktop: Refined enterprise tile grid */}
-                <div className="hidden sm:grid sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 3xl:grid-cols-9 4xl:grid-cols-12 gap-3">
+                {/* Desktop: Vibrant gradient tile grid (matches mockup) */}
+                <div className="hidden sm:grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 3xl:grid-cols-7 gap-4">
                   {catApps.map((app) => {
-                    const dc = getDesktopColor(app);
+                    const pal = getTilePalette(app);
+                    const AppIcon = pickAppIcon(app.name);
+                    const catMeta = CATEGORY_META[app.category] || meta;
+                    const blocked = app.policy_blocked && !app.is_placeholder;
                     return (
                       <button
                         key={app.id}
                         onClick={() => launchApp(app)}
-                        disabled={app.policy_blocked && !app.is_placeholder}
+                        disabled={blocked}
                         data-testid={`launch-app-desktop-${app.id}`}
-                        className={`group relative bg-white rounded-xl border transition-all duration-200 flex flex-col items-center justify-start py-5 px-3 min-h-[158px] ${
-                          app.is_placeholder ? 'border-dashed border-slate-200 bg-slate-50/40 cursor-pointer hover:bg-slate-50' :
-                          app.policy_blocked ? 'opacity-50 cursor-not-allowed border-slate-200' :
-                          'border-slate-200/70 hover:border-slate-300 hover:shadow-[0_8px_24px_-12px_rgba(15,23,42,0.12)] hover:-translate-y-0.5 cursor-pointer'
+                        className={`group relative overflow-hidden rounded-2xl border bg-white transition-all duration-300 text-left flex flex-col ${
+                          app.is_placeholder ? 'border-slate-200/70 opacity-75 hover:opacity-100 cursor-pointer hover:shadow-md' :
+                          blocked ? 'opacity-50 cursor-not-allowed border-slate-200' :
+                          'border-slate-200/60 hover:border-transparent hover:shadow-[0_14px_40px_-12px_rgba(15,23,42,0.18)] hover:-translate-y-1 cursor-pointer'
                         }`}
                       >
-                        {/* Soft tinted icon container */}
+                        {/* Top gradient section with white icon squircle */}
                         <div
-                          className="w-14 h-14 rounded-xl flex items-center justify-center mb-3 transition-transform group-hover:scale-[1.03]"
-                          style={{ backgroundColor: dc.bg }}
+                          className="relative h-[110px] flex items-center justify-center"
+                          style={{
+                            background: app.is_placeholder
+                              ? '#F1F5F9'
+                              : `linear-gradient(135deg, ${pal.from} 0%, ${pal.to} 100%)`
+                          }}
                         >
-                          {app.logo_url ? (
-                            <img src={app.logo_url} alt={app.name} className="w-9 h-9 object-contain" />
-                          ) : (
-                            <span className="font-heading font-semibold text-xl" style={{ color: dc.fg }}>
-                              {app.name.charAt(0).toUpperCase()}
+                          {/* Decorative ring */}
+                          {!app.is_placeholder && (
+                            <div className="absolute -top-6 -right-6 w-24 h-24 rounded-full bg-white/15 pointer-events-none" />
+                          )}
+                          {/* White icon squircle */}
+                          <div className={`relative w-14 h-14 rounded-2xl flex items-center justify-center transition-transform duration-300 ${
+                            app.is_placeholder ? 'bg-white/80 border border-slate-200' : 'bg-white shadow-md group-hover:scale-110'
+                          }`}>
+                            {app.logo_url ? (
+                              <img src={app.logo_url} alt={app.name} className="w-8 h-8 object-contain" />
+                            ) : (
+                              <AppIcon size={26} strokeWidth={2} style={{ color: app.is_placeholder ? '#94A3B8' : pal.to }} />
+                            )}
+                          </div>
+
+                          {/* SOON badge */}
+                          {app.is_placeholder && (
+                            <span className="absolute top-3 right-3 px-2 py-0.5 text-[10px] font-bold tracking-widest bg-slate-700 text-white rounded">
+                              SOON
+                            </span>
+                          )}
+                          {blocked && (
+                            <span className="absolute top-3 right-3 px-2 py-0.5 text-[10px] font-bold tracking-widest bg-red-600 text-white rounded flex items-center gap-1">
+                              <Lock size={9} strokeWidth={2.5} /> LOCKED
                             </span>
                           )}
                         </div>
 
-                        {/* App name */}
-                        <h3 className="text-[13px] font-medium text-slate-800 text-center leading-snug px-1 line-clamp-2 tracking-tight">
-                          {app.name}
-                        </h3>
-
-                        {app.is_placeholder && (
-                          <span className="mt-1.5 inline-block text-[10px] font-medium text-slate-400 bg-slate-100/80 px-2 py-0.5 rounded-full">Coming Soon</span>
-                        )}
-                        {app.policy_blocked && !app.is_placeholder && (
-                          <div className="absolute top-2.5 right-2.5"><Lock size={12} className="text-red-400" /></div>
-                        )}
-                        {!app.policy_blocked && !app.is_placeholder && (
-                          <ExternalLink size={12} className="absolute top-2.5 right-2.5 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
-                        )}
+                        {/* Bottom white section with name + category pill */}
+                        <div className="flex-1 px-4 py-4 flex flex-col items-center justify-between gap-2 min-h-[100px]">
+                          <h3 className="text-sm font-semibold text-slate-900 text-center leading-snug line-clamp-2 tracking-tight">
+                            {app.name}
+                          </h3>
+                          <span
+                            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold tracking-wide"
+                            style={{
+                              backgroundColor: app.is_placeholder ? '#F1F5F9' : pal.tagBg,
+                              color: app.is_placeholder ? '#64748B' : pal.tagText,
+                            }}
+                          >
+                            <span className="w-1 h-1 rounded-full" style={{ backgroundColor: app.is_placeholder ? '#64748B' : pal.tagText }} />
+                            {app.category || 'General'}
+                          </span>
+                        </div>
                       </button>
                     );
                   })}
