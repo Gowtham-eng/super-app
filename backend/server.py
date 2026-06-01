@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional, Dict, Any
 import uuid
+import re
 from datetime import datetime, timezone, timedelta
 import jwt
 import bcrypt
@@ -266,6 +267,10 @@ class AuditLog(BaseModel):
 
 # ===================== HELPERS =====================
 
+def normalize_email(email: str) -> str:
+    """Email addresses are case-insensitive per RFC 5321. Always store/lookup as lowercase."""
+    return (email or "").strip().lower()
+
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
@@ -510,22 +515,23 @@ async def seed_default_permissions():
 
 @api_router.post("/auth/register")
 async def register(user: UserCreate, request: Request):
-    existing = await db.users.find_one({"email": user.email})
+    email_lc = normalize_email(user.email)
+    existing = await db.users.find_one({"email": email_lc})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
+
     # Verify organization exists
     org = await db.organizations.find_one({"id": user.org_id}, {"_id": 0})
     if not org:
         raise HTTPException(status_code=400, detail="Organization not found")
-    
+
     user_id = str(uuid.uuid4())
     user_count = await db.users.count_documents({"org_id": user.org_id})
     role = "org_admin" if user_count == 0 else "user"
-    
+
     user_doc = {
         "id": user_id,
-        "email": user.email,
+        "email": email_lc,
         "password": hash_password(user.password),
         "name": user.name,
         "org_id": user.org_id,
@@ -535,28 +541,35 @@ async def register(user: UserCreate, request: Request):
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    
+
     await db.users.insert_one(user_doc)
-    await log_audit(user.org_id, "user_registered", "user", user_id, user.email, user_id, 
+    await log_audit(user.org_id, "user_registered", "user", user_id, email_lc, user_id,
                    {"name": user.name}, request.client.host if request.client else None)
-    
-    token = create_token(user_id, user.email, user.org_id, role)
-    return {"token": token, "user": {"id": user_id, "email": user.email, "name": user.name, "role": role, "org_id": user.org_id}}
+
+    token = create_token(user_id, email_lc, user.org_id, role)
+    return {"token": token, "user": {"id": user_id, "email": email_lc, "name": user.name, "role": role, "org_id": user.org_id}}
 
 @api_router.post("/auth/login")
 async def login(credentials: UserLogin, request: Request):
-    user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
+    email_lc = normalize_email(credentials.email)
+    user = await db.users.find_one({"email": email_lc}, {"_id": 0})
+    # Backward compatibility: if not found, try case-insensitive match (for legacy data)
+    if not user:
+        user = await db.users.find_one(
+            {"email": {"$regex": f"^{re.escape(email_lc)}$", "$options": "i"}},
+            {"_id": 0},
+        )
     if not user or not verify_password(credentials.password, user['password']):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+
     if user.get('status') != 'active':
         raise HTTPException(status_code=403, detail="Account is not active")
-    
+
     await log_audit(user['org_id'], "user_login", "user", user['id'], user['email'], user['id'],
                    {}, request.client.host if request.client else None)
-    
+
     token = create_token(user['id'], user['email'], user['org_id'], user['role'])
-    return {"token": token, "user": {"id": user['id'], "email": user['email'], "name": user['name'], 
+    return {"token": token, "user": {"id": user['id'], "email": user['email'], "name": user['name'],
                                       "role": user['role'], "org_id": user['org_id']}}
 
 @api_router.get("/auth/me")
@@ -942,15 +955,16 @@ async def export_users(format: str = "xlsx", user: dict = Depends(get_current_us
 async def create_user(new_user: UserCreate, request: Request, user: dict = Depends(get_current_user)):
     if new_user.org_id != user['org_id']:
         raise HTTPException(status_code=403, detail="Access denied")
-    
-    existing = await db.users.find_one({"email": new_user.email})
+
+    email_lc = normalize_email(new_user.email)
+    existing = await db.users.find_one({"email": email_lc})
     if existing:
         raise HTTPException(status_code=400, detail="Email already exists")
-    
+
     user_id = str(uuid.uuid4())
     user_doc = {
         "id": user_id,
-        "email": new_user.email,
+        "email": email_lc,
         "password": hash_password(new_user.password),
         "name": new_user.name,
         "org_id": new_user.org_id,
@@ -965,13 +979,13 @@ async def create_user(new_user: UserCreate, request: Request, user: dict = Depen
     }
     await db.users.insert_one(user_doc)
     await log_audit(user['org_id'], "user_created", "user", user['id'], user['email'], user_id,
-                   {"name": new_user.name, "email": new_user.email}, request.client.host if request.client else None)
+                   {"name": new_user.name, "email": email_lc}, request.client.host if request.client else None)
 
     # Push newly-created user to Kissflow SCIM in background (fire-and-forget)
     try:
-        await push_single_user_to_kissflow(db, user["org_id"], new_user.email)
+        await push_single_user_to_kissflow(db, user["org_id"], email_lc)
     except Exception as e:
-        logging.getLogger("kissflow_scim").warning(f"Kissflow push after user create failed for {new_user.email}: {e}")
+        logging.getLogger("kissflow_scim").warning(f"Kissflow push after user create failed for {email_lc}: {e}")
 
     return {k: v for k, v in user_doc.items() if k != 'password' and k != '_id'}
 

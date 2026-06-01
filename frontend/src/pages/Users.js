@@ -100,11 +100,11 @@ const AppAccessSelector = ({ samlApps, selectedIds, onToggle, onSelectAll, onCle
 };
 
 const Field = ({ label, value }) => {
-  if (!value) return null;
+  if (!value && value !== 0) return null;
   return (
-    <div>
+    <div className="min-w-0">
       <dt className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">{label}</dt>
-      <dd className="text-sm text-slate-800 mt-0.5">{value}</dd>
+      <dd className="text-sm text-slate-800 mt-0.5 break-words" title={String(value)}>{value}</dd>
     </div>
   );
 };
