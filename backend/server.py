@@ -792,7 +792,7 @@ async def remove_group_members(group_id: str, user_ids: List[str], request: Requ
 
 @api_router.get("/users")
 async def list_users(user: dict = Depends(get_current_user)):
-    users = await db.users.find({"org_id": user['org_id']}, {"_id": 0, "password": 0}).to_list(1000)
+    users = await db.users.find({"org_id": user['org_id']}, {"_id": 0, "password": 0}).sort("created_at", -1).to_list(10000)
     return users
 
 
@@ -804,7 +804,7 @@ async def export_users(format: str = "xlsx", user: dict = Depends(get_current_us
 
     users = await db.users.find(
         {"org_id": user["org_id"]}, {"_id": 0, "password": 0}
-    ).to_list(5000)
+    ).to_list(10000)
 
     # Get app assignments
     saml_apps = await db.saml_apps.find({"org_id": user["org_id"]}, {"_id": 0, "name": 1, "approved_user_ids": 1}).to_list(100)
@@ -957,7 +957,13 @@ async def create_user(new_user: UserCreate, request: Request, user: dict = Depen
     await db.users.insert_one(user_doc)
     await log_audit(user['org_id'], "user_created", "user", user['id'], user['email'], user_id,
                    {"name": new_user.name, "email": new_user.email}, request.client.host if request.client else None)
-    
+
+    # Push newly-created user to Kissflow SCIM in background (fire-and-forget)
+    try:
+        await push_single_user_to_kissflow(db, user["org_id"], new_user.email)
+    except Exception as e:
+        logging.getLogger("kissflow_scim").warning(f"Kissflow push after user create failed for {new_user.email}: {e}")
+
     return {k: v for k, v in user_doc.items() if k != 'password' and k != '_id'}
 
 @api_router.put("/users/{user_id}")
