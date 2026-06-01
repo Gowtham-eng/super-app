@@ -6,7 +6,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
-import { Users, UserPlus, Pencil, Trash2, Search, AppWindow, X, Building2, Phone, MapPin, CalendarDays, BadgeCheck, UserCog, Download, KeyRound, Check, CheckSquare, Square } from 'lucide-react';
+import { Users, UserPlus, Pencil, Trash2, Search, AppWindow, X, Building2, Phone, MapPin, CalendarDays, BadgeCheck, UserCog, Download, KeyRound, Check, CheckSquare, Square, UserCheck, UserX, RefreshCw, ChevronLeft, ChevronRight, Briefcase, Mail, Link2 } from 'lucide-react';
 
 // Reusable Application Access selector (used in both Create and Edit modals)
 const AppAccessSelector = ({ samlApps, selectedIds, onToggle, onSelectAll, onClear, testIdPrefix = 'assign-app' }) => {
@@ -124,6 +124,24 @@ const Section = ({ icon: Icon, title, children }) => {
   );
 };
 
+// Avatar gradient palette — deterministic by name (matches App Launcher tiles)
+const AVATAR_GRADIENTS = [
+  'from-blue-500 to-indigo-600',
+  'from-emerald-500 to-teal-600',
+  'from-violet-500 to-purple-600',
+  'from-amber-500 to-orange-600',
+  'from-rose-500 to-pink-600',
+  'from-cyan-500 to-sky-600',
+  'from-fuchsia-500 to-pink-600',
+  'from-lime-500 to-green-600',
+];
+const hashUser = (s = '') => {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h) + s.charCodeAt(i);
+  return Math.abs(h);
+};
+const userAvatarGradient = (u) => AVATAR_GRADIENTS[hashUser(u.email || u.name || '') % AVATAR_GRADIENTS.length];
+
 const UsersPage = () => {
   const { API, getAuthHeader, user: currentUser } = useAuth();
   const [users, setUsers] = useState([]);
@@ -139,10 +157,15 @@ const UsersPage = () => {
   const [exporting, setExporting] = useState(false);
   const [quickFilter, setQuickFilter] = useState('all');
 
-  const [form, setForm] = useState({ email: '', password: '', name: '', app_ids: [] });
-  const [editForm, setEditForm] = useState({ name: '', status: '', group_ids: [], role_ids: [], app_ids: [] });
+  const [form, setForm] = useState({ email: '', password: '', name: '', designation: '', department: '', company: '', app_ids: [] });
+  const [editForm, setEditForm] = useState({ name: '', status: '', designation: '', department: '', company: '', group_ids: [], role_ids: [], app_ids: [] });
   const [resetUser, setResetUser] = useState(null);
   const [resetPassword, setResetPassword] = useState('');
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 25;
+
+  // Reset to first page when filter/search changes
+  useEffect(() => { setPage(1); }, [searchTerm, quickFilter]);
 
   useEffect(() => { fetchData(); }, []);
 
@@ -241,7 +264,7 @@ const UsersPage = () => {
   const editUser = (user) => {
     setSelectedUser(user);
     const userAppIds = samlApps.filter(a => a.approved_user_ids?.includes(user.id)).map(a => a.id);
-    setEditForm({ name: user.name, status: user.status, group_ids: user.group_ids || [], role_ids: user.role_ids || [], app_ids: userAppIds });
+    setEditForm({ name: user.name, status: user.status, designation: user.designation || '', department: user.department || '', company: user.company || '', group_ids: user.group_ids || [], role_ids: user.role_ids || [], app_ids: userAppIds });
   };
 
   const toggleApp = (appId, formSetter, currentIds) => {
@@ -308,13 +331,27 @@ const UsersPage = () => {
 
   if (loading) return <div className="flex items-center justify-center h-64"><div className="spinner" /></div>;
 
+  // Stats for top cards
+  const stats = {
+    total: users.length,
+    active: users.filter(u => u.status === 'active').length,
+    disabled: users.filter(u => u.status === 'disabled').length,
+    synced: users.filter(u => !!u.kissflow_user_id).length,
+  };
+
+  // Pagination slice
+  const totalPages = Math.max(1, Math.ceil(filteredUsers.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageStart = (currentPage - 1) * PAGE_SIZE;
+  const paginatedUsers = filteredUsers.slice(pageStart, pageStart + PAGE_SIZE);
+
   return (
     <div className="animate-fadeIn" data-testid="users-page">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
-          <h1 className="font-heading text-2xl font-semibold text-slate-900">User Master</h1>
-          <p className="text-sm text-slate-500">{filteredUsers.length} of {users.length} users</p>
+          <h1 className="font-heading text-2xl font-semibold text-slate-900 tracking-tight">User Master</h1>
+          <p className="text-sm text-slate-500 mt-0.5">Manage workspace identities, access, and HR sync</p>
         </div>
         <div className="flex items-center gap-2">
           <div className="relative group">
@@ -339,6 +376,31 @@ const UsersPage = () => {
             <UserPlus size={16} className="mr-2" /> Add User
           </Button>
         </div>
+      </div>
+
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-5" data-testid="user-stats">
+        {[
+          { label: 'Total Users', value: stats.total, icon: Users, color: 'from-blue-500 to-indigo-600', dot: '#3B82F6' },
+          { label: 'Active', value: stats.active, icon: UserCheck, color: 'from-emerald-500 to-teal-600', dot: '#10B981' },
+          { label: 'Disabled', value: stats.disabled, icon: UserX, color: 'from-rose-500 to-red-500', dot: '#F43F5E' },
+          { label: 'Kissflow Synced', value: stats.synced, icon: RefreshCw, color: 'from-violet-500 to-purple-600', dot: '#8B5CF6' },
+        ].map((s) => {
+          const SIcon = s.icon;
+          return (
+            <div key={s.label} className="group relative overflow-hidden bg-white border border-slate-200/70 rounded-xl p-4 hover:shadow-[0_8px_24px_-12px_rgba(15,23,42,0.12)] hover:-translate-y-0.5 transition-all duration-200">
+              <div className={`absolute -top-8 -right-8 w-24 h-24 rounded-full bg-gradient-to-br ${s.color} opacity-10 group-hover:opacity-20 transition-opacity blur-xl`} />
+              <div className="relative flex items-center justify-between mb-2">
+                <div className={`w-9 h-9 rounded-lg bg-gradient-to-br ${s.color} flex items-center justify-center shadow-sm`}>
+                  <SIcon size={16} className="text-white" strokeWidth={2.25} />
+                </div>
+                <span className="text-[10px] font-semibold tracking-widest text-slate-400 uppercase">{s.label.split(' ')[0]}</span>
+              </div>
+              <p className="relative text-2xl font-bold text-slate-900 tabular-nums tracking-tight">{s.value.toLocaleString()}</p>
+              <p className="relative text-xs text-slate-500 mt-0.5">{s.label}</p>
+            </div>
+          );
+        })}
       </div>
 
       {/* Search + Quick Filters */}
@@ -369,7 +431,7 @@ const UsersPage = () => {
               data-testid={`filter-${f.key}`}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
                 quickFilter === f.key
-                  ? 'bg-emerald-600 text-white'
+                  ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-200'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
@@ -393,67 +455,138 @@ const UsersPage = () => {
                 <th className="hidden lg:table-cell">Department</th>
                 <th className="hidden xl:table-cell">Company</th>
                 <th>Status</th>
+                <th>Sync</th>
                 <th className="text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredUsers.map((user) => (
-                <tr
-                  key={user.id}
-                  data-testid={`user-${user.id}`}
-                  className="cursor-pointer hover:bg-slate-50 transition-colors"
-                  onClick={() => setDetailUser(detailUser?.id === user.id ? null : user)}
-                >
-                  <td>
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-800 font-semibold text-sm flex-shrink-0">
-                        {user.profile_pic ? (
-                          <img src={user.profile_pic} alt="" className="w-full h-full rounded-full object-cover" />
-                        ) : (user.name?.charAt(0)?.toUpperCase() || 'U')}
+              {paginatedUsers.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-16 text-center">
+                    <div className="inline-flex flex-col items-center">
+                      <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center mb-3">
+                        <Users size={22} className="text-slate-400" />
                       </div>
-                      <div className="min-w-0">
-                        <div className="font-semibold text-slate-800 text-sm truncate">{user.title ? `${user.title} ` : ''}{user.name}</div>
-                        <div className="text-xs text-slate-400 truncate">{user.email}</div>
-                        {user.adrenalin_employee_id && (
-                          <div className="text-[10px] text-slate-300">{user.adrenalin_employee_id}</div>
-                        )}
-                      </div>
-                    </div>
-                  </td>
-                  <td className="hidden md:table-cell">
-                    <span className="text-sm text-slate-600">{user.designation || '-'}</span>
-                  </td>
-                  <td className="hidden lg:table-cell">
-                    <span className="text-sm text-slate-600">{user.department || '-'}</span>
-                  </td>
-                  <td className="hidden xl:table-cell">
-                    <span className="text-xs text-slate-500">{user.company || '-'}</span>
-                  </td>
-                  <td>
-                    <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${statusStyles[user.status] || statusStyles.inactive}`}>
-                      {user.status}
-                    </span>
-                  </td>
-                  <td>
-                    <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-                      <button onClick={() => { setResetUser(user); setResetPassword(''); }} className="p-2 hover:bg-amber-50 rounded-lg" title="Reset Password" data-testid={`reset-pwd-${user.id}`}>
-                        <KeyRound size={15} className="text-amber-500" />
-                      </button>
-                      <button onClick={() => editUser(user)} className="p-2 hover:bg-slate-100 rounded-lg" data-testid={`edit-user-${user.id}`}>
-                        <Pencil size={15} className="text-slate-500" />
-                      </button>
-                      {user.id !== currentUser?.id && (
-                        <button onClick={() => deleteUser(user)} className="p-2 hover:bg-red-50 rounded-lg" data-testid={`delete-user-${user.id}`}>
-                          <Trash2 size={15} className="text-red-400" />
-                        </button>
-                      )}
+                      <p className="text-sm font-semibold text-slate-700 mb-1">No users found</p>
+                      <p className="text-xs text-slate-400">{searchTerm ? 'Try a different search term or clear filters' : 'Add your first user to get started'}</p>
                     </div>
                   </td>
                 </tr>
-              ))}
+              ) : paginatedUsers.map((user) => {
+                const gradient = userAvatarGradient(user);
+                const isSynced = !!user.kissflow_user_id;
+                return (
+                  <tr
+                    key={user.id}
+                    data-testid={`user-${user.id}`}
+                    className="cursor-pointer hover:bg-slate-50/70 transition-colors"
+                    onClick={() => setDetailUser(detailUser?.id === user.id ? null : user)}
+                  >
+                    <td>
+                      <div className="flex items-center gap-3">
+                        <div className={`relative w-10 h-10 rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center text-white font-semibold text-sm flex-shrink-0 shadow-sm`}>
+                          {user.profile_pic ? (
+                            <img src={user.profile_pic} alt="" className="w-full h-full rounded-full object-cover" />
+                          ) : (user.name?.charAt(0)?.toUpperCase() || 'U')}
+                          {user.status === 'active' && (
+                            <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-500 border-2 border-white" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold text-slate-900 text-sm truncate">{user.title ? `${user.title} ` : ''}{user.name}</span>
+                            {user.role === 'org_admin' && (
+                              <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">ADMIN</span>
+                            )}
+                          </div>
+                          <div className="text-xs text-slate-500 truncate flex items-center gap-1">
+                            <Mail size={11} className="text-slate-300" /> {user.email}
+                          </div>
+                          {user.adrenalin_employee_id && (
+                            <div className="text-[10px] text-slate-400 font-mono mt-0.5">{user.adrenalin_employee_id}</div>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="hidden md:table-cell">
+                      <span className="text-sm text-slate-700">{user.designation || <span className="text-slate-300">—</span>}</span>
+                    </td>
+                    <td className="hidden lg:table-cell">
+                      <span className="text-sm text-slate-700">{user.department || <span className="text-slate-300">—</span>}</span>
+                    </td>
+                    <td className="hidden xl:table-cell">
+                      <span className="text-xs text-slate-600">{user.company || <span className="text-slate-300">—</span>}</span>
+                    </td>
+                    <td>
+                      <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full ${statusStyles[user.status] || statusStyles.inactive}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${
+                          user.status === 'active' ? 'bg-emerald-500' :
+                          user.status === 'disabled' ? 'bg-red-500' :
+                          user.status === 'pending' ? 'bg-amber-500' : 'bg-slate-400'
+                        }`} />
+                        {user.status}
+                      </span>
+                    </td>
+                    <td>
+                      {isSynced ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-violet-700 bg-violet-50 border border-violet-200/60 px-2 py-0.5 rounded-md" title={`Kissflow ID: ${user.kissflow_user_id}`}>
+                          <Link2 size={10} strokeWidth={2.5} /> Kissflow
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-slate-300">—</span>
+                      )}
+                    </td>
+                    <td>
+                      <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                        <button onClick={() => { setResetUser(user); setResetPassword(''); }} className="p-2 hover:bg-amber-50 rounded-lg transition-colors" title="Reset Password" data-testid={`reset-pwd-${user.id}`}>
+                          <KeyRound size={15} className="text-amber-500" />
+                        </button>
+                        <button onClick={() => editUser(user)} className="p-2 hover:bg-slate-100 rounded-lg transition-colors" title="Edit" data-testid={`edit-user-${user.id}`}>
+                          <Pencil size={15} className="text-slate-500" />
+                        </button>
+                        {user.id !== currentUser?.id && (
+                          <button onClick={() => deleteUser(user)} className="p-2 hover:bg-red-50 rounded-lg transition-colors" title="Delete" data-testid={`delete-user-${user.id}`}>
+                            <Trash2 size={15} className="text-red-400" />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
+
+        {/* Pagination */}
+        {filteredUsers.length > 0 && (
+          <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 bg-slate-50/40">
+            <p className="text-xs text-slate-500" data-testid="pagination-info">
+              Showing <span className="font-semibold text-slate-700">{pageStart + 1}–{Math.min(pageStart + PAGE_SIZE, filteredUsers.length)}</span> of <span className="font-semibold text-slate-700">{filteredUsers.length}</span>
+            </p>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="p-2 rounded-lg hover:bg-white border border-transparent hover:border-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                data-testid="prev-page"
+              >
+                <ChevronLeft size={15} />
+              </button>
+              <span className="text-xs font-semibold text-slate-700 px-3 tabular-nums" data-testid="current-page">
+                Page {currentPage} <span className="text-slate-400 font-normal">of {totalPages}</span>
+              </span>
+              <button
+                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="p-2 rounded-lg hover:bg-white border border-transparent hover:border-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                data-testid="next-page"
+              >
+                <ChevronRight size={15} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* User Detail Panel (slide-in from right) */}
@@ -560,20 +693,49 @@ const UsersPage = () => {
           </DialogHeader>
           <form onSubmit={handleCreate} className="flex flex-col flex-1 min-h-0">
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
-              <div className="grid grid-cols-1 gap-4">
+              {/* Basic */}
+              <div className="space-y-4">
                 <div>
                   <Label className="label-uppercase text-xs">Full Name *</Label>
                   <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required className="input-brutalist w-full mt-1.5" placeholder="John Doe" />
                 </div>
-                <div>
-                  <Label className="label-uppercase text-xs">Email *</Label>
-                  <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required className="input-brutalist w-full mt-1.5" placeholder="john@refex.co.in" />
-                </div>
-                <div>
-                  <Label className="label-uppercase text-xs">Password *</Label>
-                  <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required className="input-brutalist w-full mt-1.5" placeholder="Min 8 characters" />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <Label className="label-uppercase text-xs">Email *</Label>
+                    <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required className="input-brutalist w-full mt-1.5" placeholder="john@refex.co.in" />
+                  </div>
+                  <div>
+                    <Label className="label-uppercase text-xs">Password *</Label>
+                    <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required className="input-brutalist w-full mt-1.5" placeholder="Min 8 characters" />
+                  </div>
                 </div>
               </div>
+
+              {/* Organization */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center">
+                    <Briefcase size={13} className="text-blue-700" strokeWidth={2.25} />
+                  </div>
+                  <h4 className="text-sm font-semibold text-slate-900">Organization Details</h4>
+                  <span className="text-[10px] text-slate-400 font-medium">Optional</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <Label className="label-uppercase text-xs">Designation</Label>
+                    <Input value={form.designation} onChange={(e) => setForm({ ...form, designation: e.target.value })} className="input-brutalist w-full mt-1.5" placeholder="e.g. Senior Manager" data-testid="create-designation" />
+                  </div>
+                  <div>
+                    <Label className="label-uppercase text-xs">Department</Label>
+                    <Input value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} className="input-brutalist w-full mt-1.5" placeholder="e.g. Information Technology" data-testid="create-department" />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <Label className="label-uppercase text-xs">Company</Label>
+                    <Input value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} className="input-brutalist w-full mt-1.5" placeholder="e.g. Refex Industries Limited" data-testid="create-company" />
+                  </div>
+                </div>
+              </div>
+
               {samlApps.length > 0 && (
                 <AppAccessSelector
                   samlApps={samlApps}
@@ -601,19 +763,46 @@ const UsersPage = () => {
           </DialogHeader>
           <form onSubmit={handleUpdate} className="flex flex-col flex-1 min-h-0">
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
-              <div>
-                <Label className="label-uppercase text-xs">Full Name *</Label>
-                <Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} required className="input-brutalist w-full mt-1.5" />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="sm:col-span-2">
+                  <Label className="label-uppercase text-xs">Full Name *</Label>
+                  <Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} required className="input-brutalist w-full mt-1.5" />
+                </div>
+                <div className="sm:col-span-2">
+                  <Label className="label-uppercase text-xs">Status</Label>
+                  <select value={editForm.status} onChange={(e) => setEditForm({ ...editForm, status: e.target.value })} className="input-brutalist w-full mt-1.5 py-2.5 rounded-lg border border-slate-200">
+                    <option value="active">Active</option>
+                    <option value="disabled">Disabled</option>
+                    <option value="pending">Pending</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                </div>
               </div>
+
+              {/* Organization */}
               <div>
-                <Label className="label-uppercase text-xs">Status</Label>
-                <select value={editForm.status} onChange={(e) => setEditForm({ ...editForm, status: e.target.value })} className="input-brutalist w-full mt-1.5 py-2.5 rounded-lg border border-slate-200">
-                  <option value="active">Active</option>
-                  <option value="disabled">Disabled</option>
-                  <option value="pending">Pending</option>
-                  <option value="inactive">Inactive</option>
-                </select>
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center">
+                    <Briefcase size={13} className="text-blue-700" strokeWidth={2.25} />
+                  </div>
+                  <h4 className="text-sm font-semibold text-slate-900">Organization Details</h4>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <Label className="label-uppercase text-xs">Designation</Label>
+                    <Input value={editForm.designation} onChange={(e) => setEditForm({ ...editForm, designation: e.target.value })} className="input-brutalist w-full mt-1.5" placeholder="e.g. Senior Manager" data-testid="edit-designation" />
+                  </div>
+                  <div>
+                    <Label className="label-uppercase text-xs">Department</Label>
+                    <Input value={editForm.department} onChange={(e) => setEditForm({ ...editForm, department: e.target.value })} className="input-brutalist w-full mt-1.5" placeholder="e.g. Information Technology" data-testid="edit-department" />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <Label className="label-uppercase text-xs">Company</Label>
+                    <Input value={editForm.company} onChange={(e) => setEditForm({ ...editForm, company: e.target.value })} className="input-brutalist w-full mt-1.5" placeholder="e.g. Refex Industries Limited" data-testid="edit-company" />
+                  </div>
+                </div>
               </div>
+
               {samlApps.length > 0 && (
                 <AppAccessSelector
                   samlApps={samlApps}

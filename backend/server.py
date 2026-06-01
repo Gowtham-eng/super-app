@@ -161,6 +161,9 @@ class UserCreate(BaseModel):
     password: str
     name: str
     org_id: str
+    designation: Optional[str] = None
+    department: Optional[str] = None
+    company: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -171,6 +174,9 @@ class UserUpdate(BaseModel):
     status: Optional[str] = None
     group_ids: Optional[List[str]] = None
     role_ids: Optional[List[str]] = None
+    designation: Optional[str] = None
+    department: Optional[str] = None
+    company: Optional[str] = None
 
 # Application Models (SAML & OIDC)
 class SAMLAppCreate(BaseModel):
@@ -952,6 +958,9 @@ async def create_user(new_user: UserCreate, request: Request, user: dict = Depen
         "group_ids": [],
         "role_ids": [],
         "status": "active",
+        "designation": new_user.designation or "",
+        "department": new_user.department or "",
+        "company": new_user.company or "",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.users.insert_one(user_doc)
