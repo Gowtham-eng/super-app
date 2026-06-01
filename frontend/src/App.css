@@ -235,6 +235,7 @@ button:not(.btn-primary):not(.btn-secondary):not(.btn-danger):not(.btn-ghost):no
 /* ===== Tables ===== */
 .data-table {
   @apply w-full text-sm text-left;
+  table-layout: fixed;
 }
 
 .data-table thead {
@@ -251,6 +252,14 @@ button:not(.btn-primary):not(.btn-secondary):not(.btn-danger):not(.btn-ghost):no
 
 .data-table td {
   @apply py-3 px-4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sticky cells must layer above non-sticky neighbours */
+.data-table th[class*="sticky"],
+.data-table td[class*="sticky"] {
+  z-index: 2;
 }
 
 /* ===== Code Display ===== */
