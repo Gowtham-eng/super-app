@@ -457,39 +457,43 @@ const UsersPage = () => {
 
       {/* Create User Modal */}
       <Dialog open={showModal} onOpenChange={setShowModal}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader><DialogTitle className="font-heading text-lg">Add User</DialogTitle></DialogHeader>
-          <form onSubmit={handleCreate} className="space-y-5">
-            <div className="grid grid-cols-1 gap-4">
-              <div>
-                <Label className="label-uppercase text-xs">Full Name *</Label>
-                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required className="input-brutalist w-full mt-1.5" placeholder="John Doe" />
-              </div>
-              <div>
-                <Label className="label-uppercase text-xs">Email *</Label>
-                <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required className="input-brutalist w-full mt-1.5" placeholder="john@refex.co.in" />
-              </div>
-              <div>
-                <Label className="label-uppercase text-xs">Password *</Label>
-                <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required className="input-brutalist w-full mt-1.5" placeholder="Min 8 characters" />
-              </div>
-            </div>
-            {samlApps.length > 0 && (
-              <div>
-                <Label className="label-uppercase text-xs flex items-center gap-1.5"><AppWindow size={14} /> Application Access</Label>
-                <p className="text-xs text-slate-400 mt-0.5 mb-2">Select apps this user should have access to</p>
-                <div className="space-y-2">
-                  {samlApps.map(app => (
-                    <label key={app.id} className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${form.app_ids.includes(app.id) ? 'bg-emerald-50 border-emerald-300' : 'border-slate-200 hover:bg-slate-50'}`}>
-                      <input type="checkbox" checked={form.app_ids.includes(app.id)} onChange={() => toggleApp(app.id, setForm, form.app_ids)} className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" data-testid={`create-assign-app-${app.id}`} />
-                      <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center"><span className="font-semibold text-blue-600 text-sm">{app.name.charAt(0)}</span></div>
-                      <div><span className="text-sm font-medium text-slate-800">{app.name}</span><span className="text-xs text-slate-400 ml-2">SAML</span></div>
-                    </label>
-                  ))}
+        <DialogContent className="sm:max-w-lg max-h-[90vh] flex flex-col p-0 gap-0">
+          <DialogHeader className="px-6 pt-6 pb-4 border-b border-slate-100 shrink-0">
+            <DialogTitle className="font-heading text-lg">Add User</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleCreate} className="flex flex-col flex-1 min-h-0">
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+              <div className="grid grid-cols-1 gap-4">
+                <div>
+                  <Label className="label-uppercase text-xs">Full Name *</Label>
+                  <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required className="input-brutalist w-full mt-1.5" placeholder="John Doe" />
+                </div>
+                <div>
+                  <Label className="label-uppercase text-xs">Email *</Label>
+                  <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required className="input-brutalist w-full mt-1.5" placeholder="john@refex.co.in" />
+                </div>
+                <div>
+                  <Label className="label-uppercase text-xs">Password *</Label>
+                  <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required className="input-brutalist w-full mt-1.5" placeholder="Min 8 characters" />
                 </div>
               </div>
-            )}
-            <DialogFooter>
+              {samlApps.length > 0 && (
+                <div>
+                  <Label className="label-uppercase text-xs flex items-center gap-1.5"><AppWindow size={14} /> Application Access</Label>
+                  <p className="text-xs text-slate-400 mt-0.5 mb-2">Select apps this user should have access to</p>
+                  <div className="space-y-2">
+                    {samlApps.map(app => (
+                      <label key={app.id} className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${form.app_ids.includes(app.id) ? 'bg-emerald-50 border-emerald-300' : 'border-slate-200 hover:bg-slate-50'}`}>
+                        <input type="checkbox" checked={form.app_ids.includes(app.id)} onChange={() => toggleApp(app.id, setForm, form.app_ids)} className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" data-testid={`create-assign-app-${app.id}`} />
+                        <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center"><span className="font-semibold text-blue-600 text-sm">{app.name.charAt(0)}</span></div>
+                        <div><span className="text-sm font-medium text-slate-800">{app.name}</span><span className="text-xs text-slate-400 ml-2">SAML</span></div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <DialogFooter className="px-6 py-4 border-t border-slate-100 bg-white shrink-0">
               <Button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</Button>
               <Button type="submit" disabled={saving} className="btn-primary">{saving ? 'Creating...' : 'Create User'}</Button>
             </DialogFooter>
@@ -499,37 +503,41 @@ const UsersPage = () => {
 
       {/* Edit User Modal */}
       <Dialog open={!!selectedUser} onOpenChange={() => setSelectedUser(null)}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader><DialogTitle className="font-heading text-lg">Edit User - {selectedUser?.name}</DialogTitle></DialogHeader>
-          <form onSubmit={handleUpdate} className="space-y-5">
-            <div>
-              <Label className="label-uppercase text-xs">Full Name *</Label>
-              <Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} required className="input-brutalist w-full mt-1.5" />
-            </div>
-            <div>
-              <Label className="label-uppercase text-xs">Status</Label>
-              <select value={editForm.status} onChange={(e) => setEditForm({ ...editForm, status: e.target.value })} className="input-brutalist w-full mt-1.5 py-2.5 rounded-lg border border-slate-200">
-                <option value="active">Active</option>
-                <option value="disabled">Disabled</option>
-                <option value="pending">Pending</option>
-                <option value="inactive">Inactive</option>
-              </select>
-            </div>
-            {samlApps.length > 0 && (
+        <DialogContent className="sm:max-w-lg max-h-[90vh] flex flex-col p-0 gap-0">
+          <DialogHeader className="px-6 pt-6 pb-4 border-b border-slate-100 shrink-0">
+            <DialogTitle className="font-heading text-lg">Edit User - {selectedUser?.name}</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleUpdate} className="flex flex-col flex-1 min-h-0">
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
               <div>
-                <Label className="label-uppercase text-xs flex items-center gap-1.5"><AppWindow size={14} /> Application Access</Label>
-                <div className="space-y-2 mt-2">
-                  {samlApps.map(app => (
-                    <label key={app.id} className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${editForm.app_ids.includes(app.id) ? 'bg-emerald-50 border-emerald-300' : 'border-slate-200 hover:bg-slate-50'}`}>
-                      <input type="checkbox" checked={editForm.app_ids.includes(app.id)} onChange={() => toggleApp(app.id, setEditForm, editForm.app_ids)} className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" data-testid={`edit-assign-app-${app.id}`} />
-                      <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center"><span className="font-semibold text-blue-600 text-sm">{app.name.charAt(0)}</span></div>
-                      <span className="text-sm font-medium text-slate-800">{app.name}</span>
-                    </label>
-                  ))}
-                </div>
+                <Label className="label-uppercase text-xs">Full Name *</Label>
+                <Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} required className="input-brutalist w-full mt-1.5" />
               </div>
-            )}
-            <DialogFooter>
+              <div>
+                <Label className="label-uppercase text-xs">Status</Label>
+                <select value={editForm.status} onChange={(e) => setEditForm({ ...editForm, status: e.target.value })} className="input-brutalist w-full mt-1.5 py-2.5 rounded-lg border border-slate-200">
+                  <option value="active">Active</option>
+                  <option value="disabled">Disabled</option>
+                  <option value="pending">Pending</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </div>
+              {samlApps.length > 0 && (
+                <div>
+                  <Label className="label-uppercase text-xs flex items-center gap-1.5"><AppWindow size={14} /> Application Access</Label>
+                  <div className="space-y-2 mt-2">
+                    {samlApps.map(app => (
+                      <label key={app.id} className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${editForm.app_ids.includes(app.id) ? 'bg-emerald-50 border-emerald-300' : 'border-slate-200 hover:bg-slate-50'}`}>
+                        <input type="checkbox" checked={editForm.app_ids.includes(app.id)} onChange={() => toggleApp(app.id, setEditForm, editForm.app_ids)} className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" data-testid={`edit-assign-app-${app.id}`} />
+                        <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center"><span className="font-semibold text-blue-600 text-sm">{app.name.charAt(0)}</span></div>
+                        <span className="text-sm font-medium text-slate-800">{app.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <DialogFooter className="px-6 py-4 border-t border-slate-100 bg-white shrink-0">
               <Button type="button" onClick={() => setSelectedUser(null)} className="btn-secondary">Cancel</Button>
               <Button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save Changes'}</Button>
             </DialogFooter>
