@@ -86,13 +86,39 @@ code, pre, .font-mono {
   font-family: 'Outfit', sans-serif;
 }
 
-/* ===== Inputs ===== */
+/* ===== Inputs — global rounded + animated ===== */
 .input-brutalist {
-  @apply border-slate-200 bg-white rounded-lg px-4 py-2.5 text-sm;
+  @apply border border-slate-200 bg-white rounded-xl px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400;
+  transition: border-color 0.18s ease,
+              box-shadow 0.22s ease,
+              background-color 0.2s ease,
+              transform 0.18s ease;
+}
+.input-brutalist:hover:not(:disabled):not(:focus) {
+  @apply border-slate-300;
+}
+.input-brutalist:focus {
+  @apply ring-2 ring-emerald-500/25 border-emerald-500 outline-none bg-white;
+  box-shadow: 0 4px 14px -8px rgba(16, 185, 129, 0.35);
+}
+.input-brutalist:disabled {
+  @apply bg-slate-50 text-slate-400 cursor-not-allowed;
 }
 
-.input-brutalist:focus {
-  @apply ring-2 ring-emerald-500/20 border-emerald-500 outline-none;
+/* Apply rounded + smooth transitions to ALL native text inputs, textareas, selects
+   that don't already use a custom class. This makes the app feel consistent. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(.input-brutalist),
+textarea:not(.input-brutalist),
+select:not(.input-brutalist) {
+  border-radius: 0.75rem; /* rounded-xl */
+  transition: border-color 0.18s ease,
+              box-shadow 0.22s ease,
+              background-color 0.2s ease;
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(.input-brutalist):focus,
+textarea:not(.input-brutalist):focus,
+select:not(.input-brutalist):focus {
+  box-shadow: 0 4px 14px -8px rgba(16, 185, 129, 0.30);
 }
 
 /* ===== Buttons — global rounded + animated ===== */

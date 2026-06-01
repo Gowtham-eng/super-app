@@ -6,7 +6,98 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
-import { Users, UserPlus, Pencil, Trash2, Search, AppWindow, X, Building2, Phone, MapPin, CalendarDays, BadgeCheck, UserCog, Download, KeyRound } from 'lucide-react';
+import { Users, UserPlus, Pencil, Trash2, Search, AppWindow, X, Building2, Phone, MapPin, CalendarDays, BadgeCheck, UserCog, Download, KeyRound, Check, CheckSquare, Square } from 'lucide-react';
+
+// Reusable Application Access selector (used in both Create and Edit modals)
+const AppAccessSelector = ({ samlApps, selectedIds, onToggle, onSelectAll, onClear, testIdPrefix = 'assign-app' }) => {
+  const [appSearch, setAppSearch] = useState('');
+  const filteredApps = samlApps.filter(a => a.name.toLowerCase().includes(appSearch.toLowerCase()));
+  const allSelected = samlApps.length > 0 && samlApps.every(a => selectedIds.includes(a.id));
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50/40 p-3">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-emerald-100 flex items-center justify-center">
+            <AppWindow size={14} className="text-emerald-700" strokeWidth={2.25} />
+          </div>
+          <div>
+            <h4 className="text-sm font-semibold text-slate-900 leading-none">Application Access</h4>
+            <p className="text-[11px] text-slate-500 mt-0.5">{selectedIds.length} of {samlApps.length} selected</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={allSelected ? onClear : onSelectAll}
+          className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:underline transition"
+        >
+          {allSelected ? 'Clear all' : 'Select all'}
+        </button>
+      </div>
+
+      <div className="relative mb-2.5">
+        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+        <input
+          type="text"
+          value={appSearch}
+          onChange={(e) => setAppSearch(e.target.value)}
+          placeholder="Filter apps..."
+          className="w-full pl-9 pr-3 py-2 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all"
+        />
+      </div>
+
+      <div className="space-y-1.5 max-h-[260px] overflow-y-auto pr-1 -mr-1">
+        {filteredApps.length === 0 ? (
+          <p className="text-center text-xs text-slate-400 py-6">No apps match "{appSearch}"</p>
+        ) : filteredApps.map(app => {
+          const isSelected = selectedIds.includes(app.id);
+          return (
+            <label
+              key={app.id}
+              className={`group relative flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer transition-all duration-150 ${
+                isSelected
+                  ? 'bg-emerald-50 border-emerald-300 shadow-sm'
+                  : 'bg-white border-slate-200 hover:border-emerald-200 hover:bg-emerald-50/30'
+              }`}
+              data-testid={`${testIdPrefix}-row-${app.id}`}
+            >
+              {/* Hidden native checkbox for accessibility */}
+              <input
+                type="checkbox"
+                checked={isSelected}
+                onChange={() => onToggle(app.id)}
+                className="sr-only"
+                data-testid={`${testIdPrefix}-${app.id}`}
+              />
+              {/* Custom checkbox visual */}
+              <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all flex-shrink-0 ${
+                isSelected ? 'bg-emerald-600 border-emerald-600' : 'bg-white border-slate-300 group-hover:border-emerald-400'
+              }`}>
+                {isSelected && <Check size={11} className="text-white" strokeWidth={3} />}
+              </div>
+              {/* App icon */}
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100 flex items-center justify-center flex-shrink-0">
+                {app.logo_url ? (
+                  <img src={app.logo_url} alt={app.name} className="w-5 h-5 object-contain" />
+                ) : (
+                  <span className="font-semibold text-blue-600 text-sm">{app.name.charAt(0).toUpperCase()}</span>
+                )}
+              </div>
+              {/* App name + type */}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-800 truncate">{app.name}</p>
+                <p className="text-[10px] text-slate-400 font-mono uppercase tracking-wide">SAML 2.0</p>
+              </div>
+              {isSelected && (
+                <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">Granted</span>
+              )}
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
 
 const Field = ({ label, value }) => {
   if (!value) return null;
@@ -253,8 +344,14 @@ const UsersPage = () => {
       {/* Search + Quick Filters */}
       <div className="bg-white border border-slate-200 rounded-xl p-4 mb-5">
         <div className="relative mb-3">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <Input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search by name, email, designation, department, company, or employee ID..." className="input-brutalist w-full pl-10" data-testid="search-users" />
+          <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none z-10" />
+          <Input
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search users by name, email, designation, department, or company..."
+            className="input-brutalist w-full !pl-11 pr-4 text-ellipsis"
+            data-testid="search-users"
+          />
         </div>
         <div className="flex flex-wrap gap-2">
           {[
@@ -478,19 +575,14 @@ const UsersPage = () => {
                 </div>
               </div>
               {samlApps.length > 0 && (
-                <div>
-                  <Label className="label-uppercase text-xs flex items-center gap-1.5"><AppWindow size={14} /> Application Access</Label>
-                  <p className="text-xs text-slate-400 mt-0.5 mb-2">Select apps this user should have access to</p>
-                  <div className="space-y-2">
-                    {samlApps.map(app => (
-                      <label key={app.id} className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${form.app_ids.includes(app.id) ? 'bg-emerald-50 border-emerald-300' : 'border-slate-200 hover:bg-slate-50'}`}>
-                        <input type="checkbox" checked={form.app_ids.includes(app.id)} onChange={() => toggleApp(app.id, setForm, form.app_ids)} className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" data-testid={`create-assign-app-${app.id}`} />
-                        <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center"><span className="font-semibold text-blue-600 text-sm">{app.name.charAt(0)}</span></div>
-                        <div><span className="text-sm font-medium text-slate-800">{app.name}</span><span className="text-xs text-slate-400 ml-2">SAML</span></div>
-                      </label>
-                    ))}
-                  </div>
-                </div>
+                <AppAccessSelector
+                  samlApps={samlApps}
+                  selectedIds={form.app_ids}
+                  onToggle={(id) => toggleApp(id, setForm, form.app_ids)}
+                  onSelectAll={() => setForm({ ...form, app_ids: samlApps.map(a => a.id) })}
+                  onClear={() => setForm({ ...form, app_ids: [] })}
+                  testIdPrefix="create-assign-app"
+                />
               )}
             </div>
             <DialogFooter className="px-6 py-4 border-t border-slate-100 bg-white shrink-0">
@@ -523,18 +615,14 @@ const UsersPage = () => {
                 </select>
               </div>
               {samlApps.length > 0 && (
-                <div>
-                  <Label className="label-uppercase text-xs flex items-center gap-1.5"><AppWindow size={14} /> Application Access</Label>
-                  <div className="space-y-2 mt-2">
-                    {samlApps.map(app => (
-                      <label key={app.id} className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${editForm.app_ids.includes(app.id) ? 'bg-emerald-50 border-emerald-300' : 'border-slate-200 hover:bg-slate-50'}`}>
-                        <input type="checkbox" checked={editForm.app_ids.includes(app.id)} onChange={() => toggleApp(app.id, setEditForm, editForm.app_ids)} className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" data-testid={`edit-assign-app-${app.id}`} />
-                        <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center"><span className="font-semibold text-blue-600 text-sm">{app.name.charAt(0)}</span></div>
-                        <span className="text-sm font-medium text-slate-800">{app.name}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
+                <AppAccessSelector
+                  samlApps={samlApps}
+                  selectedIds={editForm.app_ids}
+                  onToggle={(id) => toggleApp(id, setEditForm, editForm.app_ids)}
+                  onSelectAll={() => setEditForm({ ...editForm, app_ids: samlApps.map(a => a.id) })}
+                  onClear={() => setEditForm({ ...editForm, app_ids: [] })}
+                  testIdPrefix="edit-assign-app"
+                />
               )}
             </div>
             <DialogFooter className="px-6 py-4 border-t border-slate-100 bg-white shrink-0">
