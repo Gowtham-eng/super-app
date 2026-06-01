@@ -104,30 +104,10 @@ code, .font-mono {
   @apply border-[#0051FF] ring-1 ring-[#0051FF] outline-none;
 }
 
-/* Button styles */
-.btn-primary {
-  @apply bg-[#0051FF] text-white font-bold px-6 py-3;
-  border-radius: 0;
-  transition: all 0.2s ease;
-}
-
-.btn-primary:hover {
-  @apply bg-[#003ECC];
-}
-
-.btn-primary:focus {
-  @apply ring-2 ring-[#0051FF] ring-offset-2 outline-none;
-}
-
-.btn-secondary {
-  @apply bg-zinc-100 text-zinc-900 border border-zinc-200 font-medium px-6 py-3;
-  border-radius: 0;
-  transition: all 0.2s ease;
-}
-
-.btn-secondary:hover {
-  @apply bg-zinc-200;
-}
+/* Button styles — see App.css for the active rounded + animated styles.
+   Kept here as placeholders to avoid breaking any legacy imports. */
+.btn-primary,
+.btn-secondary { /* overridden by App.css */ }
 
 /* Tab styles */
 .tab-active {

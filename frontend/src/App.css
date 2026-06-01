@@ -95,13 +95,110 @@ code, pre, .font-mono {
   @apply ring-2 ring-emerald-500/20 border-emerald-500 outline-none;
 }
 
-/* ===== Buttons ===== */
+/* ===== Buttons — global rounded + animated ===== */
 .btn-primary {
-  @apply bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm font-medium rounded-lg px-4 py-2.5 transition-colors text-sm;
+  @apply inline-flex items-center justify-center gap-2 bg-emerald-600 text-white font-medium text-sm px-5 py-2.5 rounded-xl shadow-sm shadow-emerald-200;
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.25s ease,
+              background-color 0.2s ease;
+}
+.btn-primary:hover:not(:disabled) {
+  @apply bg-emerald-700;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px -8px rgba(16, 185, 129, 0.55);
+}
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+  transition-duration: 0.08s;
+}
+.btn-primary:focus-visible {
+  @apply outline-none ring-2 ring-emerald-500/35 ring-offset-2;
+}
+.btn-primary:disabled {
+  @apply opacity-60 cursor-not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+/* shimmer sweep on hover */
+.btn-primary::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 30%, rgba(255, 255, 255, 0.22) 50%, transparent 70%);
+  transform: translateX(-110%);
+  transition: transform 0.55s cubic-bezier(0.4, 0, 0.2, 1);
+  pointer-events: none;
+}
+.btn-primary:hover:not(:disabled)::after {
+  transform: translateX(110%);
 }
 
 .btn-secondary {
-  @apply bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 text-slate-700 font-medium rounded-lg px-4 py-2.5 transition-colors text-sm;
+  @apply inline-flex items-center justify-center gap-2 bg-white border border-slate-200 text-slate-700 font-medium text-sm px-5 py-2.5 rounded-xl;
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.25s ease,
+              background-color 0.2s ease,
+              border-color 0.2s ease;
+}
+.btn-secondary:hover:not(:disabled) {
+  @apply bg-slate-50 border-slate-300;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px -8px rgba(15, 23, 42, 0.18);
+}
+.btn-secondary:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+  transition-duration: 0.08s;
+}
+.btn-secondary:focus-visible {
+  @apply outline-none ring-2 ring-slate-300/60 ring-offset-2;
+}
+.btn-secondary:disabled {
+  @apply opacity-60 cursor-not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.btn-danger {
+  @apply inline-flex items-center justify-center gap-2 bg-red-600 text-white font-medium text-sm px-5 py-2.5 rounded-xl shadow-sm shadow-red-200;
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.25s ease,
+              background-color 0.2s ease;
+}
+.btn-danger:hover:not(:disabled) {
+  @apply bg-red-700;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px -8px rgba(220, 38, 38, 0.55);
+}
+.btn-danger:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+  transition-duration: 0.08s;
+}
+
+.btn-ghost {
+  @apply inline-flex items-center justify-center gap-2 text-slate-700 font-medium text-sm px-3 py-2 rounded-lg;
+  transition: background-color 0.18s ease, transform 0.18s ease;
+}
+.btn-ghost:hover:not(:disabled) {
+  @apply bg-slate-100;
+}
+.btn-ghost:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+/* Apply global rounded corners + smooth transitions to ALL native <button> and shadcn buttons
+   that don't already have a btn-* class. Keeps explicitly-styled buttons untouched. */
+button:not(.btn-primary):not(.btn-secondary):not(.btn-danger):not(.btn-ghost):not([data-radix-collection-item]):not([data-state]) {
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.22s ease,
+              background-color 0.2s ease,
+              border-color 0.2s ease,
+              opacity 0.2s ease;
+}
+button:not(.btn-primary):not(.btn-secondary):not(.btn-danger):not(.btn-ghost):not([data-radix-collection-item]):active:not(:disabled) {
+  transform: scale(0.97);
+  transition-duration: 0.08s;
 }
 
 /* ===== Labels ===== */
