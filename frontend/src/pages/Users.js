@@ -447,22 +447,20 @@ const UsersPage = () => {
       {/* Users Table */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="data-table" style={{ minWidth: '1140px' }}>
+          <table className="data-table" style={{ minWidth: '900px' }}>
             <thead>
               <tr>
-                <th style={{ width: '300px' }}>Employee</th>
+                <th style={{ width: '320px' }}>Employee</th>
                 <th className="hidden md:table-cell" style={{ width: '160px' }}>Designation</th>
                 <th className="hidden lg:table-cell" style={{ width: '160px' }}>Department</th>
                 <th className="hidden xl:table-cell" style={{ width: '180px' }}>Company</th>
-                <th style={{ width: '110px' }}>Status</th>
-                <th style={{ width: '110px' }}>Sync</th>
                 <th className="text-right sticky right-0 bg-white shadow-[-6px_0_8px_-8px_rgba(15,23,42,0.08)]" style={{ width: '120px' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {paginatedUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-16 text-center">
+                  <td colSpan={5} className="py-16 text-center">
                     <div className="inline-flex flex-col items-center">
                       <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center mb-3">
                         <Users size={22} className="text-slate-400" />
@@ -493,18 +491,36 @@ const UsersPage = () => {
                           )}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-semibold text-slate-900 text-sm truncate">{user.title ? `${user.title} ` : ''}{user.name}</span>
+                          {/* Name row */}
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-semibold text-slate-900 text-sm truncate max-w-[180px]">{user.title ? `${user.title} ` : ''}{user.name}</span>
                             {user.role === 'org_admin' && (
                               <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 flex-shrink-0">ADMIN</span>
                             )}
                           </div>
-                          <div className="text-xs text-slate-500 truncate flex items-center gap-1">
+                          {/* Email */}
+                          <div className="text-xs text-slate-500 truncate flex items-center gap-1 mt-0.5">
                             <Mail size={11} className="text-slate-300 flex-shrink-0" /> <span className="truncate">{user.email}</span>
                           </div>
-                          {user.adrenalin_employee_id && (
-                            <div className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">{user.adrenalin_employee_id}</div>
-                          )}
+                          {/* Status + Sync + Employee ID badges row */}
+                          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                            <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded ${statusStyles[user.status] || statusStyles.inactive}`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${
+                                user.status === 'active' ? 'bg-emerald-500' :
+                                user.status === 'disabled' ? 'bg-red-500' :
+                                user.status === 'pending' ? 'bg-amber-500' : 'bg-slate-400'
+                              }`} />
+                              {user.status}
+                            </span>
+                            {isSynced && (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-violet-700 bg-violet-50 border border-violet-200/60 px-1.5 py-0.5 rounded" title={`Kissflow ID: ${user.kissflow_user_id}`}>
+                                <Link2 size={9} strokeWidth={2.5} /> Kissflow
+                              </span>
+                            )}
+                            {user.adrenalin_employee_id && (
+                              <span className="text-[10px] text-slate-400 font-mono">{user.adrenalin_employee_id}</span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </td>
@@ -516,25 +532,6 @@ const UsersPage = () => {
                     </td>
                     <td className="hidden xl:table-cell">
                       <span className="text-xs text-slate-600 truncate block" title={user.company || ''}>{user.company || <span className="text-slate-300">—</span>}</span>
-                    </td>
-                    <td>
-                      <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${statusStyles[user.status] || statusStyles.inactive}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${
-                          user.status === 'active' ? 'bg-emerald-500' :
-                          user.status === 'disabled' ? 'bg-red-500' :
-                          user.status === 'pending' ? 'bg-amber-500' : 'bg-slate-400'
-                        }`} />
-                        {user.status}
-                      </span>
-                    </td>
-                    <td>
-                      {isSynced ? (
-                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-violet-700 bg-violet-50 border border-violet-200/60 px-2 py-0.5 rounded-md whitespace-nowrap" title={`Kissflow ID: ${user.kissflow_user_id}`}>
-                          <Link2 size={10} strokeWidth={2.5} /> Kissflow
-                        </span>
-                      ) : (
-                        <span className="text-[11px] text-slate-300">—</span>
-                      )}
                     </td>
                     <td className="sticky right-0 bg-white group-hover:bg-slate-50/70 shadow-[-6px_0_8px_-8px_rgba(15,23,42,0.08)] transition-colors">
                       <div className="flex justify-end gap-0.5" onClick={(e) => e.stopPropagation()}>
