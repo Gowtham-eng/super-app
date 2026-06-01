@@ -447,16 +447,16 @@ const UsersPage = () => {
       {/* Users Table */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="data-table">
+          <table className="data-table min-w-full">
             <thead>
               <tr>
-                <th>Employee</th>
-                <th className="hidden md:table-cell">Designation</th>
-                <th className="hidden lg:table-cell">Department</th>
-                <th className="hidden xl:table-cell">Company</th>
-                <th>Status</th>
-                <th>Sync</th>
-                <th className="text-right">Actions</th>
+                <th className="min-w-[280px]">Employee</th>
+                <th className="hidden md:table-cell w-[160px]">Designation</th>
+                <th className="hidden lg:table-cell w-[160px]">Department</th>
+                <th className="hidden xl:table-cell w-[180px]">Company</th>
+                <th className="w-[100px]">Status</th>
+                <th className="w-[110px]">Sync</th>
+                <th className="text-right w-[130px] sticky right-0 bg-white shadow-[-6px_0_8px_-8px_rgba(15,23,42,0.08)]">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -479,10 +479,10 @@ const UsersPage = () => {
                   <tr
                     key={user.id}
                     data-testid={`user-${user.id}`}
-                    className="cursor-pointer hover:bg-slate-50/70 transition-colors"
+                    className="group cursor-pointer hover:bg-slate-50/70 transition-colors"
                     onClick={() => setDetailUser(detailUser?.id === user.id ? null : user)}
                   >
-                    <td>
+                    <td className="min-w-[280px]">
                       <div className="flex items-center gap-3">
                         <div className={`relative w-10 h-10 rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center text-white font-semibold text-sm flex-shrink-0 shadow-sm`}>
                           {user.profile_pic ? (
@@ -492,15 +492,15 @@ const UsersPage = () => {
                             <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-500 border-2 border-white" />
                           )}
                         </div>
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5">
                             <span className="font-semibold text-slate-900 text-sm truncate">{user.title ? `${user.title} ` : ''}{user.name}</span>
                             {user.role === 'org_admin' && (
-                              <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">ADMIN</span>
+                              <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 flex-shrink-0">ADMIN</span>
                             )}
                           </div>
                           <div className="text-xs text-slate-500 truncate flex items-center gap-1">
-                            <Mail size={11} className="text-slate-300" /> {user.email}
+                            <Mail size={11} className="text-slate-300 flex-shrink-0" /> <span className="truncate">{user.email}</span>
                           </div>
                           {user.adrenalin_employee_id && (
                             <div className="text-[10px] text-slate-400 font-mono mt-0.5">{user.adrenalin_employee_id}</div>
@@ -508,17 +508,17 @@ const UsersPage = () => {
                         </div>
                       </div>
                     </td>
-                    <td className="hidden md:table-cell">
-                      <span className="text-sm text-slate-700">{user.designation || <span className="text-slate-300">—</span>}</span>
+                    <td className="hidden md:table-cell w-[160px]">
+                      <span className="text-sm text-slate-700 truncate block" title={user.designation || ''}>{user.designation || <span className="text-slate-300">—</span>}</span>
                     </td>
-                    <td className="hidden lg:table-cell">
-                      <span className="text-sm text-slate-700">{user.department || <span className="text-slate-300">—</span>}</span>
+                    <td className="hidden lg:table-cell w-[160px]">
+                      <span className="text-sm text-slate-700 truncate block" title={user.department || ''}>{user.department || <span className="text-slate-300">—</span>}</span>
                     </td>
-                    <td className="hidden xl:table-cell">
-                      <span className="text-xs text-slate-600">{user.company || <span className="text-slate-300">—</span>}</span>
+                    <td className="hidden xl:table-cell w-[180px]">
+                      <span className="text-xs text-slate-600 truncate block" title={user.company || ''}>{user.company || <span className="text-slate-300">—</span>}</span>
                     </td>
-                    <td>
-                      <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full ${statusStyles[user.status] || statusStyles.inactive}`}>
+                    <td className="w-[100px]">
+                      <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${statusStyles[user.status] || statusStyles.inactive}`}>
                         <span className={`w-1.5 h-1.5 rounded-full ${
                           user.status === 'active' ? 'bg-emerald-500' :
                           user.status === 'disabled' ? 'bg-red-500' :
@@ -527,25 +527,25 @@ const UsersPage = () => {
                         {user.status}
                       </span>
                     </td>
-                    <td>
+                    <td className="w-[110px]">
                       {isSynced ? (
-                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-violet-700 bg-violet-50 border border-violet-200/60 px-2 py-0.5 rounded-md" title={`Kissflow ID: ${user.kissflow_user_id}`}>
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-violet-700 bg-violet-50 border border-violet-200/60 px-2 py-0.5 rounded-md whitespace-nowrap" title={`Kissflow ID: ${user.kissflow_user_id}`}>
                           <Link2 size={10} strokeWidth={2.5} /> Kissflow
                         </span>
                       ) : (
                         <span className="text-[11px] text-slate-300">—</span>
                       )}
                     </td>
-                    <td>
-                      <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-                        <button onClick={() => { setResetUser(user); setResetPassword(''); }} className="p-2 hover:bg-amber-50 rounded-lg transition-colors" title="Reset Password" data-testid={`reset-pwd-${user.id}`}>
+                    <td className="w-[130px] sticky right-0 bg-white group-hover:bg-slate-50/70 shadow-[-6px_0_8px_-8px_rgba(15,23,42,0.08)] transition-colors">
+                      <div className="flex justify-end gap-0.5" onClick={(e) => e.stopPropagation()}>
+                        <button onClick={() => { setResetUser(user); setResetPassword(''); }} className="p-1.5 hover:bg-amber-100 rounded-lg transition-colors" title="Reset Password" data-testid={`reset-pwd-${user.id}`}>
                           <KeyRound size={15} className="text-amber-500" />
                         </button>
-                        <button onClick={() => editUser(user)} className="p-2 hover:bg-slate-100 rounded-lg transition-colors" title="Edit" data-testid={`edit-user-${user.id}`}>
+                        <button onClick={() => editUser(user)} className="p-1.5 hover:bg-slate-200 rounded-lg transition-colors" title="Edit" data-testid={`edit-user-${user.id}`}>
                           <Pencil size={15} className="text-slate-500" />
                         </button>
                         {user.id !== currentUser?.id && (
-                          <button onClick={() => deleteUser(user)} className="p-2 hover:bg-red-50 rounded-lg transition-colors" title="Delete" data-testid={`delete-user-${user.id}`}>
+                          <button onClick={() => deleteUser(user)} className="p-1.5 hover:bg-red-100 rounded-lg transition-colors" title="Delete" data-testid={`delete-user-${user.id}`}>
                             <Trash2 size={15} className="text-red-400" />
                           </button>
                         )}
