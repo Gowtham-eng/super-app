@@ -229,18 +229,18 @@ const UsersPage = () => {
           <div className="relative group">
             <button
               disabled={exporting}
-              className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50"
+              className="btn-secondary"
               data-testid="export-btn"
               onClick={() => exportUsers('xlsx')}
             >
               <Download size={16} /> {exporting ? 'Exporting...' : 'Export'}
             </button>
-            <div className="absolute right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg hidden group-hover:block z-20 min-w-[140px]">
-              <button onClick={() => exportUsers('xlsx')} className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 rounded-t-lg" data-testid="export-xlsx">
-                Export as Excel
+            <div className="absolute right-0 top-full mt-2 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden hidden group-hover:block z-20 min-w-[160px] animate-in fade-in slide-in-from-top-1 duration-150">
+              <button onClick={() => exportUsers('xlsx')} className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors flex items-center gap-2" data-testid="export-xlsx">
+                <Download size={14} className="text-emerald-600" /> Export as Excel
               </button>
-              <button onClick={() => exportUsers('csv')} className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 rounded-b-lg" data-testid="export-csv">
-                Export as CSV
+              <button onClick={() => exportUsers('csv')} className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors flex items-center gap-2 border-t border-slate-100" data-testid="export-csv">
+                <Download size={14} className="text-emerald-600" /> Export as CSV
               </button>
             </div>
           </div>
