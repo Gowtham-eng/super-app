@@ -389,9 +389,8 @@ const AppLauncher = () => {
                         <div
                           className="relative h-[110px] flex items-center justify-center"
                           style={{
-                            background: app.is_placeholder
-                              ? '#F1F5F9'
-                              : `linear-gradient(135deg, ${pal.from} 0%, ${pal.to} 100%)`
+                            background:  '#F1F5F9'
+                            
                           }}
                         >
                           {/* Decorative ring */}
