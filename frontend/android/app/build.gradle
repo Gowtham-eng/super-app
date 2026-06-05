@@ -1,10 +1,10 @@
 apply plugin: 'com.android.application'
 
 android {
-    namespace "com.refex.superapp"
+    namespace "com.refex.refexone"
     compileSdk rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.refex.superapp"
+        applicationId "com.refex.refexone"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

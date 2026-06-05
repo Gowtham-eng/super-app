@@ -25,7 +25,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 
-const REFEX_LOGO = 'https://customer-assets.emergentagent.com/job_kissflow-access-hub/artifacts/7t1td79v_refex-logo.png';
+const REFEX_LOGO = '/refexone-logo.png';
 
 const Layout = ({ children }) => {
   const { user, organization, logout, API, getAuthHeader, refreshUser } = useAuth();
@@ -147,7 +147,7 @@ const Layout = ({ children }) => {
           >
             {mobileMenuOpen ? <X size={22} /> : <Menu size={22} />}
           </button>
-          <img src={REFEX_LOGO} alt="Refex" className="h-8" />
+          <img src={REFEX_LOGO} alt="RefexOne" className="h-9" />
         </div>
         {/* Profile Avatar */}
         <div className="relative" ref={profileRef}>
@@ -229,7 +229,7 @@ const Layout = ({ children }) => {
       `}>
         {/* Logo */}
         <div className="hidden lg:flex items-center gap-3 px-6 py-5 border-b border-slate-100">
-          <img src={REFEX_LOGO} alt="Refex" className="h-9" data-testid="sidebar-logo" />
+          <img src={REFEX_LOGO} alt="RefexOne" className="h-11" data-testid="sidebar-logo" />
         </div>
 
         {/* Navigation */}
@@ -310,7 +310,7 @@ const Layout = ({ children }) => {
 
       {/* Main Content */}
       <main className="lg:ml-[260px] pt-14 lg:pt-0 min-h-screen">
-        <div className="p-3 sm:p-8 lg:p-10 max-w-[1400px]">
+        <div className="p-3 sm:p-8 lg:p-10 w-full">
           {children}
         </div>
       </main>

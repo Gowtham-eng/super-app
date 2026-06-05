@@ -197,6 +197,12 @@ async def sync_employees(db, org_id: str) -> dict:
             date_of_exit = hr["date_of_exit"]
 
             existing_user = await db.users.find_one({"email": email, "org_id": org_id})
+            # Defensive: legacy users may have mixed-case emails — try case-insensitive
+            if not existing_user:
+                import re as _re
+                existing_user = await db.users.find_one(
+                    {"email": {"$regex": f"^{_re.escape(email)}$", "$options": "i"}, "org_id": org_id}
+                )
 
             # Common HR fields to store on every user
             hr_update = {

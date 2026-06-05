@@ -1,0 +1,16 @@
+{
+  "appId": "com.refex.superapp",
+  "appName": "Super App",
+  "webDir": "build",
+  "server": {
+    "url": "https://superapp.refex.group",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "backgroundColor": "#ffffff"
+  },
+  "ios": {
+    "backgroundColor": "#ffffff"
+  }
+}

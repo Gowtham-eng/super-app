@@ -1,13 +1,16 @@
 {
-  "appId": "com.refex.superapp",
-  "appName": "Refex Super App",
+  "appId": "com.refex.refexone",
+  "appName": "RefexOne",
   "webDir": "build",
   "server": {
-    "url": "https://kissflow-access-hub.preview.emergentagent.com",
+    "url": "https://refexone.com",
     "cleartext": true
   },
   "android": {
     "allowMixedContent": true,
+    "backgroundColor": "#ffffff"
+  },
+  "ios": {
     "backgroundColor": "#ffffff"
   }
 }

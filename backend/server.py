@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional, Dict, Any
 import uuid
+import re
 from datetime import datetime, timezone, timedelta
 import jwt
 import bcrypt
@@ -77,7 +78,7 @@ async def scheduled_hr_sync():
             admin_emails = [a["email"] for a in admins if a.get("email")]
             if admin_emails and (result["created"] > 0 or result["disabled"] > 0 or result["errors"]):
                 html = build_sync_report_email(result["created"], result["disabled"], result["total"], result["errors"])
-                await send_email(admin_emails, "HR Sync Report - Refex Super App", html)
+                await send_email(admin_emails, "HR Sync Report - RefexOne", html)
             logger.info(f"Sync complete for org {org['id']}: {result}")
         except Exception as e:
             logger.error(f"Sync failed for org {org['id']}: {e}")
@@ -161,6 +162,9 @@ class UserCreate(BaseModel):
     password: str
     name: str
     org_id: str
+    designation: Optional[str] = None
+    department: Optional[str] = None
+    company: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -171,6 +175,9 @@ class UserUpdate(BaseModel):
     status: Optional[str] = None
     group_ids: Optional[List[str]] = None
     role_ids: Optional[List[str]] = None
+    designation: Optional[str] = None
+    department: Optional[str] = None
+    company: Optional[str] = None
 
 # Application Models (SAML & OIDC)
 class SAMLAppCreate(BaseModel):
@@ -259,6 +266,10 @@ class AuditLog(BaseModel):
     status: str = "success"  # success, failure
 
 # ===================== HELPERS =====================
+
+def normalize_email(email: str) -> str:
+    """Email addresses are case-insensitive per RFC 5321. Always store/lookup as lowercase."""
+    return (email or "").strip().lower()
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
@@ -504,22 +515,23 @@ async def seed_default_permissions():
 
 @api_router.post("/auth/register")
 async def register(user: UserCreate, request: Request):
-    existing = await db.users.find_one({"email": user.email})
+    email_lc = normalize_email(user.email)
+    existing = await db.users.find_one({"email": email_lc})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
+
     # Verify organization exists
     org = await db.organizations.find_one({"id": user.org_id}, {"_id": 0})
     if not org:
         raise HTTPException(status_code=400, detail="Organization not found")
-    
+
     user_id = str(uuid.uuid4())
     user_count = await db.users.count_documents({"org_id": user.org_id})
     role = "org_admin" if user_count == 0 else "user"
-    
+
     user_doc = {
         "id": user_id,
-        "email": user.email,
+        "email": email_lc,
         "password": hash_password(user.password),
         "name": user.name,
         "org_id": user.org_id,
@@ -529,28 +541,35 @@ async def register(user: UserCreate, request: Request):
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    
+
     await db.users.insert_one(user_doc)
-    await log_audit(user.org_id, "user_registered", "user", user_id, user.email, user_id, 
+    await log_audit(user.org_id, "user_registered", "user", user_id, email_lc, user_id,
                    {"name": user.name}, request.client.host if request.client else None)
-    
-    token = create_token(user_id, user.email, user.org_id, role)
-    return {"token": token, "user": {"id": user_id, "email": user.email, "name": user.name, "role": role, "org_id": user.org_id}}
+
+    token = create_token(user_id, email_lc, user.org_id, role)
+    return {"token": token, "user": {"id": user_id, "email": email_lc, "name": user.name, "role": role, "org_id": user.org_id}}
 
 @api_router.post("/auth/login")
 async def login(credentials: UserLogin, request: Request):
-    user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
+    email_lc = normalize_email(credentials.email)
+    user = await db.users.find_one({"email": email_lc}, {"_id": 0})
+    # Backward compatibility: if not found, try case-insensitive match (for legacy data)
+    if not user:
+        user = await db.users.find_one(
+            {"email": {"$regex": f"^{re.escape(email_lc)}$", "$options": "i"}},
+            {"_id": 0},
+        )
     if not user or not verify_password(credentials.password, user['password']):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+
     if user.get('status') != 'active':
         raise HTTPException(status_code=403, detail="Account is not active")
-    
+
     await log_audit(user['org_id'], "user_login", "user", user['id'], user['email'], user['id'],
                    {}, request.client.host if request.client else None)
-    
+
     token = create_token(user['id'], user['email'], user['org_id'], user['role'])
-    return {"token": token, "user": {"id": user['id'], "email": user['email'], "name": user['name'], 
+    return {"token": token, "user": {"id": user['id'], "email": user['email'], "name": user['name'],
                                       "role": user['role'], "org_id": user['org_id']}}
 
 @api_router.get("/auth/me")
@@ -792,7 +811,7 @@ async def remove_group_members(group_id: str, user_ids: List[str], request: Requ
 
 @api_router.get("/users")
 async def list_users(user: dict = Depends(get_current_user)):
-    users = await db.users.find({"org_id": user['org_id']}, {"_id": 0, "password": 0}).to_list(1000)
+    users = await db.users.find({"org_id": user['org_id']}, {"_id": 0, "password": 0}).sort("created_at", -1).to_list(10000)
     return users
 
 
@@ -804,7 +823,7 @@ async def export_users(format: str = "xlsx", user: dict = Depends(get_current_us
 
     users = await db.users.find(
         {"org_id": user["org_id"]}, {"_id": 0, "password": 0}
-    ).to_list(5000)
+    ).to_list(10000)
 
     # Get app assignments
     saml_apps = await db.saml_apps.find({"org_id": user["org_id"]}, {"_id": 0, "name": 1, "approved_user_ids": 1}).to_list(100)
@@ -936,15 +955,16 @@ async def export_users(format: str = "xlsx", user: dict = Depends(get_current_us
 async def create_user(new_user: UserCreate, request: Request, user: dict = Depends(get_current_user)):
     if new_user.org_id != user['org_id']:
         raise HTTPException(status_code=403, detail="Access denied")
-    
-    existing = await db.users.find_one({"email": new_user.email})
+
+    email_lc = normalize_email(new_user.email)
+    existing = await db.users.find_one({"email": email_lc})
     if existing:
         raise HTTPException(status_code=400, detail="Email already exists")
-    
+
     user_id = str(uuid.uuid4())
     user_doc = {
         "id": user_id,
-        "email": new_user.email,
+        "email": email_lc,
         "password": hash_password(new_user.password),
         "name": new_user.name,
         "org_id": new_user.org_id,
@@ -952,12 +972,21 @@ async def create_user(new_user: UserCreate, request: Request, user: dict = Depen
         "group_ids": [],
         "role_ids": [],
         "status": "active",
+        "designation": new_user.designation or "",
+        "department": new_user.department or "",
+        "company": new_user.company or "",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.users.insert_one(user_doc)
     await log_audit(user['org_id'], "user_created", "user", user['id'], user['email'], user_id,
-                   {"name": new_user.name, "email": new_user.email}, request.client.host if request.client else None)
-    
+                   {"name": new_user.name, "email": email_lc}, request.client.host if request.client else None)
+
+    # Push newly-created user to Kissflow SCIM in background (fire-and-forget)
+    try:
+        await push_single_user_to_kissflow(db, user["org_id"], email_lc)
+    except Exception as e:
+        logging.getLogger("kissflow_scim").warning(f"Kissflow push after user create failed for {email_lc}: {e}")
+
     return {k: v for k, v in user_doc.items() if k != 'password' and k != '_id'}
 
 @api_router.put("/users/{user_id}")
@@ -1293,7 +1322,7 @@ async def saml_slo(app_id: str, request: Request):
     return Response(content=html_content, media_type="text/html")
 
 @api_router.get("/saml/{app_id}/complete")
-async def saml_complete_sso(app_id: str, request: Request, token: str = None, relay_state: str = None, debug: int = 0):
+async def saml_complete_sso(app_id: str, request: Request, token: str = None, relay_state: str = None, debug: int = 0, mobile_module: str = None):
     """Complete SAML SSO - Generate signed SAML Response and POST to ACS URL"""
     import base64
     import uuid as uuid_module
@@ -1590,11 +1619,71 @@ diag.innerHTML = lines.join("<br>");
         # then redirect browser to the specific module URL.
         home_url = app.get('home_url', '')
         
-        if home_url:
-            # Iframe-based auth + redirect to specific module
-            # Include RelayState if present (critical for SP-initiated SSO, especially mobile)
-            relay_field = f'<input type="hidden" name="RelayState" value="{escape(relay_state)}"/>' if relay_state else ''
-            html_content = f'''<!DOCTYPE html>
+        if home_url or mobile_module:
+            module_target = mobile_module or home_url
+            # Module app (Expense, Travel, etc.)
+            # For SP-initiated flow: pass RelayState through directly
+            if relay_state:
+                relay_field = f'<input type="hidden" name="RelayState" value="{escape(relay_state)}"/>'
+            else:
+                relay_field = ''
+            
+            if mobile_module:
+                # MOBILE FIX: Top-level POST to Kissflow ACS (NOT iframe).
+                # Why: Modern Android WebView/Chrome 80+ blocks cookies set inside cross-site iframes
+                # (SameSite=Lax default). The iframe approach silently failed — Kissflow's session
+                # cookie was never persisted, so subsequent navigation to the module URL got bounced
+                # back to login. Top-level POST keeps the cookie context first-party for Kissflow.
+                #
+                # Then we tell our MainActivity (via window.RefexOneBridge) the target module URL.
+                # When Kissflow finishes processing SAML and lands the user on its home page,
+                # MainActivity sees the kissflow.com page and redirects the WebView to the
+                # specific module URL (which now has a valid session cookie).
+                module_target_js = module_target.replace('\\', '\\\\').replace('"', '\\"')
+                html_content = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Signing in to {escape(app.get('name', 'Application'))}...</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #f9fafb; }}
+        .loader {{ text-align: center; }}
+        .spinner {{ width: 36px; height: 36px; border: 3px solid #e2e8f0; border-top-color: #10b981; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }}
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+        p {{ color: #64748b; font-size: 14px; margin: 0; }}
+        .hint {{ color: #94a3b8; font-size: 12px; margin-top: 8px; }}
+    </style>
+</head>
+<body>
+    <div class="loader">
+        <div class="spinner"></div>
+        <p>Signing in to {escape(app.get('name', 'Application'))}...</p>
+        <p class="hint">Establishing secure session</p>
+    </div>
+    <form id="samlForm" method="POST" action="{escape(acs_url)}">
+        <input type="hidden" name="SAMLResponse" id="samlResponse"/>
+    </form>
+    <script>
+        var moduleUrl = "{module_target_js}";
+        // 1. Notify native Android bridge of the pending module URL.
+        //    MainActivity will redirect the WebView to this URL after Kissflow lands post-SSO.
+        try {{
+            if (window.RefexOneBridge && typeof window.RefexOneBridge.setPendingModule === 'function') {{
+                window.RefexOneBridge.setPendingModule(moduleUrl);
+            }}
+        }} catch (e) {{}}
+        // 2. Also persist to sessionStorage so any in-page web fallback can use it.
+        try {{ sessionStorage.setItem('refexone_pending_module', moduleUrl); }} catch (e) {{}}
+        // 3. Submit SAML top-level so Kissflow's session cookie is set first-party.
+        document.getElementById('samlResponse').value = "{saml_response_b64}";
+        document.getElementById('samlForm').submit();
+    </script>
+</body>
+</html>'''
+            else:
+                # DESKTOP: Direct SAML POST (frontend handles two-step named window redirect)
+                html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1612,33 +1701,16 @@ diag.innerHTML = lines.join("<br>");
         <div class="spinner"></div>
         <p>Signing in to {escape(app.get('name', 'Application'))}...</p>
     </div>
-    <iframe name="authFrame" style="display:none"></iframe>
-    <form id="samlForm" method="POST" action="{escape(acs_url)}" target="authFrame">
+    <form id="samlForm" method="POST" action="{escape(acs_url)}">
         <input type="hidden" name="SAMLResponse" id="samlResponse"/>
         {relay_field}
+        <noscript>
+            <input type="submit" value="Continue to {escape(app.get('name', 'Application'))}"/>
+        </noscript>
     </form>
     <script>
-        var samlData = "{saml_response_b64}";
-        var moduleUrl = "{escape(home_url)}";
-        var hasRelayState = {"true" if relay_state else "false"};
-        document.getElementById('samlResponse').value = samlData;
-        if (hasRelayState) {{
-            // SP-initiated flow (e.g., from Kissflow native app): submit directly
-            // so Kissflow can process RelayState and redirect back to native app
-            document.getElementById('samlForm').removeAttribute('target');
-            document.getElementById('samlForm').submit();
-        }} else {{
-            // IdP-initiated flow: use iframe auth + redirect to module
-            document.getElementById('samlForm').submit();
-            setTimeout(function() {{
-                window.location.href = moduleUrl;
-            }}, 2500);
-            // If the module URL opens a native app via deep link,
-            // the browser stays on this page. Redirect back to launcher.
-            setTimeout(function() {{
-                window.location.href = "/launcher";
-            }}, 4000);
-        }}
+        document.getElementById('samlResponse').value = "{saml_response_b64}";
+        document.getElementById('samlForm').submit();
     </script>
 </body>
 </html>'''
@@ -2391,17 +2463,28 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
     """Get all apps the user has access to"""
     org_id = user['org_id']
     
-    # Get all SAML apps
-    saml_apps = await db.saml_apps.find({"org_id": org_id, "status": "active"}, {"_id": 0, "private_key": 0, "certificate": 0}).to_list(100)
+    # Get all SAML apps (exclude hidden ones)
+    saml_apps = await db.saml_apps.find({"org_id": org_id, "status": "active", "show_in_launcher": {"$ne": False}}, {"_id": 0, "private_key": 0, "certificate": 0}).to_list(100)
     # Get all OIDC apps  
     oidc_apps = await db.oidc_apps.find({"org_id": org_id, "status": "active"}, {"_id": 0, "client_secret": 0}).to_list(100)
     
     accessible_apps = []
     
+    # Get usage counts per app for this user (from audit logs)
+    usage_pipeline = [
+        {"$match": {"org_id": org_id, "user_id": user["id"], "action": {"$in": ["saml_sso_initiated", "oidc_auth_started"]}}},
+        {"$group": {"_id": "$resource_id", "count": {"$sum": 1}, "last_used": {"$max": "$timestamp"}}},
+    ]
+    usage_cursor = db.audit_logs.aggregate(usage_pipeline)
+    usage_map = {}
+    async for doc in usage_cursor:
+        usage_map[doc["_id"]] = {"count": doc["count"], "last_used": doc.get("last_used", "")}
+
     for app in saml_apps:
         has_access = await check_user_app_access(user, app)
         if has_access:
             allowed, reason = await check_access_policies(user, app, request)
+            usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
             accessible_apps.append({
                 "id": app['id'],
                 "name": app['name'],
@@ -2411,13 +2494,19 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
                 "type": "saml",
                 "launch_url": f"/api/saml/{app['id']}/sso",
                 "policy_blocked": not allowed,
-                "policy_reason": reason
+                "policy_reason": reason,
+                "usage_count": usage["count"],
+                "last_used": usage["last_used"],
+                "category": app.get("category", ""),
+                "sort_order": app.get("sort_order", 99),
+                "is_placeholder": app.get("is_placeholder", False),
             })
     
     for app in oidc_apps:
         has_access = await check_user_app_access(user, app)
         if has_access:
             allowed, reason = await check_access_policies(user, app, request)
+            usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
             accessible_apps.append({
                 "id": app['id'],
                 "name": app['name'],
@@ -2427,8 +2516,17 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
                 "type": "oidc",
                 "launch_url": f"/api/oidc/{app['id']}/authorize",
                 "policy_blocked": not allowed,
-                "policy_reason": reason
+                "policy_reason": reason,
+                "usage_count": usage["count"],
+                "last_used": usage["last_used"],
+                "category": app.get("category", ""),
+                "sort_order": app.get("sort_order", 99),
+                "is_placeholder": app.get("is_placeholder", False),
             })
+    
+    # Sort by category order, then sort_order within category
+    category_order = {"Expense": 0, "Productivity": 1, "Facility": 2, "Support": 3}
+    accessible_apps.sort(key=lambda a: (category_order.get(a.get("category", ""), 99), a.get("sort_order", 99)))
     
     return accessible_apps
 

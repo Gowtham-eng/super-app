@@ -1,6 +1,6 @@
 """
 Kissflow SCIM Client
-Pushes users FROM Refex Super App TO Kissflow's SCIM Server.
+Pushes users FROM RefexOne TO Kissflow's SCIM Server.
 
 Key features:
 - Kissflow custom extension schema for Employee ID, L2 Manager, Department etc.
@@ -130,6 +130,17 @@ def _build_kissflow_user(user: dict) -> dict:
     # Kissflow custom extension - uses exact field IDs from Kissflow schema
     kf_ext = {}
 
+    # Mobile Numbers — EXACT Kissflow field IDs (from User Management columns):
+    #   EMPLOYEE_MOBILE_NUMBER   = personal mobile
+    #   REFEX_WORK_MOBILE_NUMBER = work mobile
+    # We also send a couple of safe aliases in case any other workflow references them.
+    if work_digits:
+        kf_ext["REFEX_WORK_MOBILE_NUMBER"] = work_digits
+        kf_ext["Refex_Work_Mobile_Number"] = work_digits
+    if personal_digits:
+        kf_ext["EMPLOYEE_MOBILE_NUMBER"] = personal_digits
+        kf_ext["Employee_Mobile_Number"] = personal_digits
+
     # Employee ID
     emp_id = user.get("adrenalin_employee_id", "")
     if emp_id:
@@ -144,6 +155,18 @@ def _build_kissflow_user(user: dict) -> dict:
     dept_code = user.get("department_code", "")
     if dept_code:
         kf_ext["Department_Code"] = dept_code
+
+    # Department (full name)
+    department = user.get("department", "")
+    if department:
+        kf_ext["Department"] = department
+
+    # Company / Legal Entity (Refex Holding Pvt Ltd, STPL, etc.)
+    company = user.get("company", "")
+    if company:
+        kf_ext["Company"] = company
+        kf_ext["Company_Name"] = company
+        kf_ext["Legal_Entity"] = company
 
     # Branch
     branch = user.get("branch_code") or user.get("business_line") or ""
@@ -200,6 +223,25 @@ def _build_kissflow_user(user: dict) -> dict:
         kf_ext["L2_Manager"] = l2_obj
 
     payload[KISSFLOW_EXTENSION_SCHEMA] = kf_ext
+
+    # Standard SCIM Enterprise extension — Kissflow/Azure/OneLogin all respect `organization`
+    enterprise_ext = {}
+    if user.get("company"):
+        enterprise_ext["organization"] = user.get("company")
+    if user.get("department"):
+        enterprise_ext["department"] = user.get("department")
+    if user.get("adrenalin_employee_id"):
+        enterprise_ext["employeeNumber"] = user.get("adrenalin_employee_id")
+    if user.get("supervisor_email"):
+        enterprise_ext["manager"] = {
+            "value": user.get("_supervisor_kf_id", ""),
+            "displayName": user.get("supervisor_name", ""),
+        }
+    if enterprise_ext:
+        payload[ENTERPRISE_EXTENSION_SCHEMA] = enterprise_ext
+        if ENTERPRISE_EXTENSION_SCHEMA not in schemas:
+            schemas.append(ENTERPRISE_EXTENSION_SCHEMA)
+
     payload["schemas"] = schemas
     return payload
 

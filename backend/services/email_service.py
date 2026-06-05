@@ -25,7 +25,7 @@ async def send_email(to_emails: list, subject: str, html_body: str):
         return False
 
     msg = MIMEMultipart("alternative")
-    msg["From"] = f"Refex Super App <{cfg['from_addr']}>"
+    msg["From"] = f"RefexOne <{cfg['from_addr']}>"
     msg["To"] = ", ".join(to_emails)
     msg["Subject"] = subject
     msg.attach(MIMEText(html_body, "html"))
@@ -50,7 +50,7 @@ def build_access_request_email(requester_name: str, requester_email: str, app_na
     return f"""
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto;">
       <div style="background: #10b981; padding: 24px 32px; border-radius: 12px 12px 0 0;">
-        <h1 style="color: white; margin: 0; font-size: 20px;">Refex Super App</h1>
+        <h1 style="color: white; margin: 0; font-size: 20px;">RefexOne</h1>
         <p style="color: rgba(255,255,255,0.85); margin: 4px 0 0; font-size: 14px;">Application Access Request</p>
       </div>
       <div style="background: white; padding: 32px; border: 1px solid #e2e8f0; border-top: none;">
@@ -69,7 +69,7 @@ def build_access_request_email(requester_name: str, requester_email: str, app_na
         </a>
       </div>
       <div style="padding: 16px 32px; text-align: center;">
-        <p style="color: #94a3b8; font-size: 12px; margin: 0;">Sent from Refex Super App IAM System</p>
+        <p style="color: #94a3b8; font-size: 12px; margin: 0;">Sent from RefexOne IAM System</p>
       </div>
     </div>
     """
@@ -81,7 +81,7 @@ def build_request_status_email(user_name: str, app_name: str, status: str, admin
     return f"""
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto;">
       <div style="background: {color}; padding: 24px 32px; border-radius: 12px 12px 0 0;">
-        <h1 style="color: white; margin: 0; font-size: 20px;">Refex Super App</h1>
+        <h1 style="color: white; margin: 0; font-size: 20px;">RefexOne</h1>
         <p style="color: rgba(255,255,255,0.85); margin: 4px 0 0; font-size: 14px;">Access Request {status_text}</p>
       </div>
       <div style="background: white; padding: 32px; border: 1px solid #e2e8f0; border-top: none;">
@@ -94,7 +94,7 @@ def build_request_status_email(user_name: str, app_name: str, status: str, admin
         {'<p style="color: #64748b; font-size: 13px;">You can now access the application from the App Launcher.</p>' if status == "approved" else ''}
       </div>
       <div style="padding: 16px 32px; text-align: center;">
-        <p style="color: #94a3b8; font-size: 12px; margin: 0;">Sent from Refex Super App IAM System</p>
+        <p style="color: #94a3b8; font-size: 12px; margin: 0;">Sent from RefexOne IAM System</p>
       </div>
     </div>
     """
@@ -108,7 +108,7 @@ def build_sync_report_email(created: int, disabled: int, total: int, errors: lis
     return f"""
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto;">
       <div style="background: #3b82f6; padding: 24px 32px; border-radius: 12px 12px 0 0;">
-        <h1 style="color: white; margin: 0; font-size: 20px;">Refex Super App</h1>
+        <h1 style="color: white; margin: 0; font-size: 20px;">RefexOne</h1>
         <p style="color: rgba(255,255,255,0.85); margin: 4px 0 0; font-size: 14px;">HR Sync Report</p>
       </div>
       <div style="background: white; padding: 32px; border: 1px solid #e2e8f0; border-top: none;">

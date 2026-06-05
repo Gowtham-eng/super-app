@@ -1,16 +1,16 @@
 {
-  "short_name": "Refex Super App",
-  "name": "Refex Super App - Workplace Portal",
+  "short_name": "RefexOne",
+  "name": "RefexOne - Workplace Portal",
   "description": "Enterprise workplace portal by Refex Industries Limited",
   "icons": [
     {
-      "src": "https://customer-assets.emergentagent.com/job_kissflow-access-hub/artifacts/7t1td79v_refex-logo.png",
+      "src": "/refexone-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "https://customer-assets.emergentagent.com/job_kissflow-access-hub/artifacts/7t1td79v_refex-logo.png",
+      "src": "/refexone-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
