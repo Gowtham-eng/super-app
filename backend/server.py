@@ -581,25 +581,45 @@ async def get_me(user: dict = Depends(get_current_user)):
 # ===================== FILE UPLOAD =====================
 
 @api_router.post("/upload/logo")
-async def upload_logo(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+async def upload_logo(file: UploadFile = File(...), request: Request = None, user: dict = Depends(get_current_user)):
     """Upload a logo image and return URL"""
-    if not file.content_type or not file.content_type.startswith('image/'):
-        raise HTTPException(status_code=400, detail="Only image files are allowed")
-    
-    ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'png'
-    filename = f"{uuid.uuid4().hex}.{ext}"
-    filepath = UPLOAD_DIR / filename
-    
-    contents = await file.read()
-    if len(contents) > 5 * 1024 * 1024:  # 5MB limit
-        raise HTTPException(status_code=400, detail="File too large (max 5MB)")
-    
-    with open(filepath, 'wb') as f:
-        f.write(contents)
-    
-    base_url = get_public_base_url()
-    logo_url = f"{base_url}/api/uploads/{filename}"
-    return {"logo_url": logo_url, "filename": filename}
+    try:
+        if not file.content_type or not file.content_type.startswith('image/'):
+            raise HTTPException(status_code=400, detail="Only image files are allowed")
+
+        # Make sure the uploads directory exists (handles fresh deployments)
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+        ext = (file.filename.rsplit('.', 1)[-1] if file.filename and '.' in file.filename else 'png').lower()
+        if ext not in {'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'}:
+            ext = 'png'
+        filename = f"{uuid.uuid4().hex}.{ext}"
+        filepath = UPLOAD_DIR / filename
+
+        contents = await file.read()
+        if len(contents) > 5 * 1024 * 1024:  # 5MB limit
+            raise HTTPException(status_code=400, detail="File too large (max 5MB)")
+        if len(contents) == 0:
+            raise HTTPException(status_code=400, detail="Empty file")
+
+        with open(filepath, 'wb') as f:
+            f.write(contents)
+
+        # Build absolute URL — pass request so we fall back to its Host header
+        # when PUBLIC_URL env var is missing or wrong.
+        base_url = get_public_base_url(request) or ""
+        base_url = base_url.rstrip("/")
+        if not base_url:
+            # As a last resort, return a relative URL — browser resolves against current origin
+            logo_url = f"/api/uploads/{filename}"
+        else:
+            logo_url = f"{base_url}/api/uploads/{filename}"
+        return {"logo_url": logo_url, "filename": filename}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.getLogger("upload").exception("Logo upload failed")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
 @api_router.put("/users/me/profile-pic")
