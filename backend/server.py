@@ -195,6 +195,8 @@ class SAMLAppCreate(BaseModel):
     logo_url: Optional[str] = None
     allowed_group_ids: List[str] = []
     allowed_role_ids: List[str] = []
+    category: Optional[str] = ""
+    sort_order: Optional[int] = 99
 
 class OIDCAppCreate(BaseModel):
     name: str
@@ -208,6 +210,8 @@ class OIDCAppCreate(BaseModel):
     home_url: Optional[str] = None
     allowed_group_ids: List[str] = []
     allowed_role_ids: List[str] = []
+    category: Optional[str] = ""
+    sort_order: Optional[int] = 99
 
 # Access Policy Models
 class AccessPolicyCreate(BaseModel):
@@ -1100,6 +1104,8 @@ async def create_saml_app(app: SAMLAppCreate, request: Request, user: dict = Dep
         "logo_url": app.logo_url,
         "allowed_group_ids": app.allowed_group_ids,
         "allowed_role_ids": app.allowed_role_ids,
+        "category": app.category or "",
+        "sort_order": app.sort_order if app.sort_order is not None else 99,
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -2002,6 +2008,8 @@ async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Dep
         "home_url": app.home_url,
         "allowed_group_ids": app.allowed_group_ids,
         "allowed_role_ids": app.allowed_role_ids,
+        "category": app.category or "",
+        "sort_order": app.sort_order if app.sort_order is not None else 99,
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }

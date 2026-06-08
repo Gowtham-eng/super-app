@@ -36,7 +36,8 @@ const SAMLApps = () => {
     name: '', description: '', entity_id: '', acs_url: '', slo_url: '',
     name_id_format: 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
     sign_assertions: true, sign_response: true, logo_url: '',
-    allowed_group_ids: [], allowed_role_ids: []
+    allowed_group_ids: [], allowed_role_ids: [],
+    category: '', sort_order: 99
   });
 
   useEffect(() => {
@@ -230,7 +231,8 @@ const SAMLApps = () => {
       acs_url: app.acs_url, slo_url: app.slo_url || '', home_url: app.home_url || '',
       name_id_format: app.name_id_format, sign_assertions: app.sign_assertions,
       sign_response: app.sign_response, logo_url: app.logo_url || '',
-      allowed_group_ids: app.allowed_group_ids || [], allowed_role_ids: app.allowed_role_ids || []
+      allowed_group_ids: app.allowed_group_ids || [], allowed_role_ids: app.allowed_role_ids || [],
+      category: app.category || '', sort_order: app.sort_order ?? 99
     });
     setShowModal(true);
   };
@@ -241,7 +243,8 @@ const SAMLApps = () => {
       name: '', description: '', entity_id: '', acs_url: '', slo_url: '', home_url: '',
       name_id_format: 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
       sign_assertions: true, sign_response: true, logo_url: '',
-      allowed_group_ids: [], allowed_role_ids: []
+      allowed_group_ids: [], allowed_role_ids: [],
+      category: '', sort_order: 99
     });
   };
 
@@ -344,6 +347,35 @@ const SAMLApps = () => {
                 <div>
                   <Label className="label-uppercase text-xs">Description</Label>
                   <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="input-brutalist w-full mt-1.5" placeholder="Brief description" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="label-uppercase text-xs">Category (App Launcher)</Label>
+                  <select
+                    value={form.category}
+                    onChange={(e) => setForm({ ...form, category: e.target.value })}
+                    className="input-brutalist w-full mt-1.5 py-2.5 rounded-lg border border-slate-200"
+                    data-testid="saml-category-select"
+                  >
+                    <option value="">None (hidden from launcher)</option>
+                    <option value="Expense">Expense</option>
+                    <option value="Productivity">Productivity</option>
+                    <option value="Facility">Facility</option>
+                    <option value="Support">HR / Support</option>
+                    <option value="HR">HR</option>
+                  </select>
+                </div>
+                <div>
+                  <Label className="label-uppercase text-xs">Sort Order</Label>
+                  <Input
+                    type="number"
+                    value={form.sort_order}
+                    onChange={(e) => setForm({ ...form, sort_order: parseInt(e.target.value || '99', 10) })}
+                    className="input-brutalist w-full mt-1.5"
+                    placeholder="99"
+                    data-testid="saml-sort-order-input"
+                  />
                 </div>
               </div>
             </div>

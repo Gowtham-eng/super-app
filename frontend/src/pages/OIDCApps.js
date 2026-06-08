@@ -25,7 +25,8 @@ const OIDCApps = () => {
   const [form, setForm] = useState({
     name: '', description: '', redirect_uris: [], logout_uris: [],
     scopes: ['openid', 'profile', 'email'], grant_types: ['authorization_code'],
-    logo_url: '', home_url: '', allowed_group_ids: [], allowed_role_ids: []
+    logo_url: '', home_url: '', allowed_group_ids: [], allowed_role_ids: [],
+    category: '', sort_order: 99
   });
 
   useEffect(() => { fetchData(); }, []);
@@ -110,7 +111,8 @@ const OIDCApps = () => {
       logout_uris: app.logout_uris || [], scopes: app.scopes || ['openid', 'profile', 'email'],
       grant_types: app.grant_types || ['authorization_code'], logo_url: app.logo_url || '',
       home_url: app.home_url || '',
-      allowed_group_ids: app.allowed_group_ids || [], allowed_role_ids: app.allowed_role_ids || []
+      allowed_group_ids: app.allowed_group_ids || [], allowed_role_ids: app.allowed_role_ids || [],
+      category: app.category || '', sort_order: app.sort_order ?? 99
     });
     setLogoPreview(app.logo_url || null);
     setShowModal(true);
@@ -121,7 +123,8 @@ const OIDCApps = () => {
     setForm({
       name: '', description: '', redirect_uris: [], logout_uris: [],
       scopes: ['openid', 'profile', 'email'], grant_types: ['authorization_code'],
-      logo_url: '', home_url: '', allowed_group_ids: [], allowed_role_ids: []
+      logo_url: '', home_url: '', allowed_group_ids: [], allowed_role_ids: [],
+      category: '', sort_order: 99
     });
     setNewRedirectUri('');
     setLogoPreview(null);
@@ -307,6 +310,37 @@ const OIDCApps = () => {
               <Label className="label-uppercase">Home URL</Label>
               <p className="text-xs text-zinc-400 mt-0.5 mb-1">The URL users will be redirected to after login</p>
               <Input value={form.home_url} onChange={(e) => setForm({ ...form, home_url: e.target.value })} placeholder="https://canteen.example.com" className="input-brutalist w-full" data-testid="oidc-home-url-input" />
+            </div>
+
+            {/* Category & Sort */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label className="label-uppercase">Category (App Launcher)</Label>
+                <select
+                  value={form.category}
+                  onChange={(e) => setForm({ ...form, category: e.target.value })}
+                  className="input-brutalist w-full mt-1 py-2.5 rounded-lg border border-zinc-200"
+                  data-testid="oidc-category-select"
+                >
+                  <option value="">None (hidden from launcher)</option>
+                  <option value="Expense">Expense</option>
+                  <option value="Productivity">Productivity</option>
+                  <option value="Facility">Facility</option>
+                  <option value="Support">HR / Support</option>
+                  <option value="HR">HR</option>
+                </select>
+              </div>
+              <div>
+                <Label className="label-uppercase">Sort Order</Label>
+                <Input
+                  type="number"
+                  value={form.sort_order}
+                  onChange={(e) => setForm({ ...form, sort_order: parseInt(e.target.value || '99', 10) })}
+                  className="input-brutalist w-full mt-1"
+                  placeholder="99"
+                  data-testid="oidc-sort-order-input"
+                />
+              </div>
             </div>
 
             {/* Redirect URIs */}
