@@ -37,7 +37,7 @@ const SAMLApps = () => {
     name_id_format: 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
     sign_assertions: true, sign_response: true, logo_url: '',
     allowed_group_ids: [], allowed_role_ids: [],
-    category: '', sort_order: 99
+    category: '', sort_order: 99, is_placeholder: false
   });
 
   useEffect(() => {
@@ -232,7 +232,8 @@ const SAMLApps = () => {
       name_id_format: app.name_id_format, sign_assertions: app.sign_assertions,
       sign_response: app.sign_response, logo_url: app.logo_url || '',
       allowed_group_ids: app.allowed_group_ids || [], allowed_role_ids: app.allowed_role_ids || [],
-      category: app.category || '', sort_order: app.sort_order ?? 99
+      category: app.category || '', sort_order: app.sort_order ?? 99,
+      is_placeholder: !!app.is_placeholder
     });
     setShowModal(true);
   };
@@ -244,7 +245,7 @@ const SAMLApps = () => {
       name_id_format: 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
       sign_assertions: true, sign_response: true, logo_url: '',
       allowed_group_ids: [], allowed_role_ids: [],
-      category: '', sort_order: 99
+      category: '', sort_order: 99, is_placeholder: false
     });
   };
 
@@ -377,6 +378,17 @@ const SAMLApps = () => {
                     data-testid="saml-sort-order-input"
                   />
                 </div>
+              </div>
+              <div className="flex items-center justify-between p-3 bg-white rounded-lg border border-slate-200">
+                <div>
+                  <Label className="text-sm font-semibold text-slate-700">Coming Soon</Label>
+                  <p className="text-xs text-slate-400 mt-0.5">Show as placeholder tile (dashed, "Soon" badge) — non-clickable launch</p>
+                </div>
+                <Switch
+                  checked={!!form.is_placeholder}
+                  onCheckedChange={(c) => setForm({ ...form, is_placeholder: c })}
+                  data-testid="saml-coming-soon-switch"
+                />
               </div>
             </div>
 

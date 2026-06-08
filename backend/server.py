@@ -197,6 +197,7 @@ class SAMLAppCreate(BaseModel):
     allowed_role_ids: List[str] = []
     category: Optional[str] = ""
     sort_order: Optional[int] = 99
+    is_placeholder: Optional[bool] = False
 
 class OIDCAppCreate(BaseModel):
     name: str
@@ -212,6 +213,7 @@ class OIDCAppCreate(BaseModel):
     allowed_role_ids: List[str] = []
     category: Optional[str] = ""
     sort_order: Optional[int] = 99
+    is_placeholder: Optional[bool] = False
 
 # Access Policy Models
 class AccessPolicyCreate(BaseModel):
@@ -1106,6 +1108,7 @@ async def create_saml_app(app: SAMLAppCreate, request: Request, user: dict = Dep
         "allowed_role_ids": app.allowed_role_ids,
         "category": app.category or "",
         "sort_order": app.sort_order if app.sort_order is not None else 99,
+        "is_placeholder": bool(app.is_placeholder),
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -2010,6 +2013,7 @@ async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Dep
         "allowed_role_ids": app.allowed_role_ids,
         "category": app.category or "",
         "sort_order": app.sort_order if app.sort_order is not None else 99,
+        "is_placeholder": bool(app.is_placeholder),
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }

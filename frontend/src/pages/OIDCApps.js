@@ -6,6 +6,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
+import { Switch } from '../components/ui/switch';
 import { Key, Plus, PencilSimple, Trash, Copy, Eye, X, Upload, Globe } from '@phosphor-icons/react';
 
 const OIDCApps = () => {
@@ -26,7 +27,7 @@ const OIDCApps = () => {
     name: '', description: '', redirect_uris: [], logout_uris: [],
     scopes: ['openid', 'profile', 'email'], grant_types: ['authorization_code'],
     logo_url: '', home_url: '', allowed_group_ids: [], allowed_role_ids: [],
-    category: '', sort_order: 99
+    category: '', sort_order: 99, is_placeholder: false
   });
 
   useEffect(() => { fetchData(); }, []);
@@ -112,7 +113,8 @@ const OIDCApps = () => {
       grant_types: app.grant_types || ['authorization_code'], logo_url: app.logo_url || '',
       home_url: app.home_url || '',
       allowed_group_ids: app.allowed_group_ids || [], allowed_role_ids: app.allowed_role_ids || [],
-      category: app.category || '', sort_order: app.sort_order ?? 99
+      category: app.category || '', sort_order: app.sort_order ?? 99,
+      is_placeholder: !!app.is_placeholder
     });
     setLogoPreview(app.logo_url || null);
     setShowModal(true);
@@ -124,7 +126,7 @@ const OIDCApps = () => {
       name: '', description: '', redirect_uris: [], logout_uris: [],
       scopes: ['openid', 'profile', 'email'], grant_types: ['authorization_code'],
       logo_url: '', home_url: '', allowed_group_ids: [], allowed_role_ids: [],
-      category: '', sort_order: 99
+      category: '', sort_order: 99, is_placeholder: false
     });
     setNewRedirectUri('');
     setLogoPreview(null);
@@ -341,6 +343,19 @@ const OIDCApps = () => {
                   data-testid="oidc-sort-order-input"
                 />
               </div>
+            </div>
+
+            {/* Coming Soon */}
+            <div className="flex items-center justify-between p-3 bg-zinc-50 rounded-lg border border-zinc-200">
+              <div>
+                <Label className="text-sm font-semibold text-zinc-700">Coming Soon</Label>
+                <p className="text-xs text-zinc-400 mt-0.5">Show as placeholder tile (dashed, "Soon" badge) — non-clickable launch</p>
+              </div>
+              <Switch
+                checked={!!form.is_placeholder}
+                onCheckedChange={(c) => setForm({ ...form, is_placeholder: c })}
+                data-testid="oidc-coming-soon-switch"
+              />
             </div>
 
             {/* Redirect URIs */}
