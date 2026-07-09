@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
+import { clearKissflowNativeSession, clearNativeAppSession } from '../utils/nativeSession';
 
 const AuthContext = createContext(null);
 
@@ -32,6 +33,7 @@ export const AuthProvider = ({ children }) => {
   }, [token]);
 
   const login = async (email, password) => {
+    clearKissflowNativeSession();
     const response = await axios.post(`${API}/auth/login`, { email, password });
     const { token: newToken, user: userData } = response.data;
     localStorage.setItem('iam_token', newToken);
@@ -60,6 +62,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = () => {
+    clearNativeAppSession();
     localStorage.removeItem('iam_token');
     setToken(null);
     setUser(null);

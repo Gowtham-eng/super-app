@@ -286,6 +286,29 @@ const SCIMSetup = () => {
               </button>
             </div>
 
+            {/* Resolve Managers button */}
+            <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
+              <div>
+                <p className="text-xs text-slate-500">After sync completes, resolve Manager/L2 Manager lookups (links managers by Kissflow ID).</p>
+              </div>
+              <button
+                onClick={async () => {
+                  try {
+                    await axios.post(`${API}/kissflow-scim/resolve-managers`, {}, getAuthHeader());
+                    toast.success('Manager resolution started in background');
+                    setTimeout(fetchSyncLogs, 5000);
+                  } catch (err) {
+                    toast.error('Failed: ' + (err.response?.data?.detail || err.message));
+                  }
+                }}
+                disabled={syncing || !kfConfig?.configured}
+                data-testid="resolve-managers-btn"
+                className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 text-xs font-medium rounded-lg hover:bg-blue-100 transition-colors disabled:opacity-50 border border-blue-200"
+              >
+                Link Managers
+              </button>
+            </div>
+
             {!kfConfig?.configured && (
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-700">
                 Configure the Kissflow SCIM endpoint above before syncing.
@@ -388,7 +411,7 @@ const SCIMSetup = () => {
                             {isRunning ? 'Syncing...' : r.error ? 'Failed' : `${r.created || 0} created, ${r.updated || 0} updated`}
                           </span>
                           <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
-                            {log.trigger_type === 'scheduled_hr_sync' ? 'Auto (HR Sync)' : log.trigger_type === 'manual_single' ? `Manual (${log.email})` : 'Manual (Full)'}
+                            {log.trigger_type === 'scheduled_hr_sync' ? 'Auto (HR Sync)' : log.trigger_type === 'manual_single' ? `Manual (${log.email})` : log.trigger_type === 'resolve_managers' ? 'Resolve Managers' : 'Manual (Full)'}
                           </span>
                         </div>
                         <p className="text-xs text-slate-400 mt-0.5">

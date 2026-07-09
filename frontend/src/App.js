@@ -8,6 +8,7 @@ import AppLauncher from "./pages/AppLauncher";
 import AppCatalog from "./pages/AppCatalog";
 import SAMLApps from "./pages/SAMLApps";
 import OIDCApps from "./pages/OIDCApps";
+import MobileApps from "./pages/MobileApps";
 import Users from "./pages/Users";
 import Groups from "./pages/Groups";
 import Roles from "./pages/Roles";
@@ -93,6 +94,7 @@ function App() {
           {/* Admin-only routes */}
           <Route path="/apps/saml" element={<AdminRoute><SAMLApps /></AdminRoute>} />
           <Route path="/apps/oidc" element={<AdminRoute><OIDCApps /></AdminRoute>} />
+          <Route path="/apps/mobile" element={<AdminRoute><MobileApps /></AdminRoute>} />
           <Route path="/users" element={<AdminRoute><Users /></AdminRoute>} />
           <Route path="/groups" element={<AdminRoute><Groups /></AdminRoute>} />
           <Route path="/roles" element={<AdminRoute><Roles /></AdminRoute>} />

@@ -1,7 +1,11 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Refex Super App</string>
-    <string name="title_activity_main">Refex Super App</string>
-    <string name="package_name">com.refex.superapp</string>
-    <string name="custom_url_scheme">com.refex.superapp</string>
+    <string name="app_name">RefexOne</string>
+    <string name="title_activity_main">RefexOne</string>
+    <string name="package_name">com.refex.refexone</string>
+    <string name="custom_url_scheme">com.refex.refexone</string>
+    <string name="back_to_launcher">Back to App Launcher</string>
+    <string name="in_app_loading">Opening application…</string>
+    <string name="in_app_signing_in">Signing in securely…</string>
+    <string name="in_app_application">Application</string>
 </resources>

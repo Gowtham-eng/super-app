@@ -9,6 +9,7 @@ import {
   Store,
   ShieldCheck,
   KeyRound,
+  Smartphone,
   Users,
   UsersRound,
   UserCog,
@@ -22,10 +23,13 @@ import {
   ChevronDown,
   ChevronRight,
   Camera,
-  RefreshCw
+  RefreshCw,
+  Lock,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 
-const REFEX_LOGO = 'https://customer-assets.emergentagent.com/job_kissflow-access-hub/artifacts/7t1td79v_refex-logo.png';
+const REFEX_LOGO = '/refexone-logo.png';
 
 const Layout = ({ children }) => {
   const { user, organization, logout, API, getAuthHeader, refreshUser } = useAuth();
@@ -35,6 +39,10 @@ const Layout = ({ children }) => {
   const [iamExpanded, setIamExpanded] = useState(true);
   const [profileOpen, setProfileOpen] = useState(false);
   const [uploadingPic, setUploadingPic] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' });
+  const [pwShow, setPwShow] = useState({ current: false, next: false, confirm: false });
+  const [pwSaving, setPwSaving] = useState(false);
   const profileRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -57,6 +65,7 @@ const Layout = ({ children }) => {
       items: [
         { path: '/apps/saml', label: 'SAML Apps', icon: ShieldCheck },
         { path: '/apps/oidc', label: 'OIDC Apps', icon: KeyRound },
+        { path: '/apps/mobile', label: 'Mobile Apps', icon: Smartphone },
       ]
     },
     {
@@ -135,6 +144,41 @@ const Layout = ({ children }) => {
     }
   };
 
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    if (!pwForm.current || !pwForm.next || !pwForm.confirm) {
+      toast.error('Please fill in all fields');
+      return;
+    }
+    if (pwForm.next.length < 8) {
+      toast.error('New password must be at least 8 characters');
+      return;
+    }
+    if (pwForm.next !== pwForm.confirm) {
+      toast.error('New password and confirmation do not match');
+      return;
+    }
+    if (pwForm.current === pwForm.next) {
+      toast.error('New password must be different from current');
+      return;
+    }
+    setPwSaving(true);
+    try {
+      await axios.post(`${API}/auth/change-password`,
+        { current_password: pwForm.current, new_password: pwForm.next },
+        getAuthHeader()
+      );
+      toast.success('Password changed successfully');
+      setShowChangePassword(false);
+      setPwForm({ current: '', next: '', confirm: '' });
+      setPwShow({ current: false, next: false, confirm: false });
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to change password');
+    } finally {
+      setPwSaving(false);
+    }
+  };
+
   return (
     <div className="min-h-screen" style={{ background: '#F9FAFB' }}>
       {/* Mobile Header */}
@@ -147,7 +191,7 @@ const Layout = ({ children }) => {
           >
             {mobileMenuOpen ? <X size={22} /> : <Menu size={22} />}
           </button>
-          <img src={REFEX_LOGO} alt="Refex" className="h-8" />
+          <img src={REFEX_LOGO} alt="RefexOne" className="h-9" />
         </div>
         {/* Profile Avatar */}
         <div className="relative" ref={profileRef}>
@@ -205,6 +249,14 @@ const Layout = ({ children }) => {
                 {uploadingPic ? 'Uploading...' : 'Change Profile Photo'}
               </button>
               <button
+                onClick={() => { setProfileOpen(false); setShowChangePassword(true); }}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-600 hover:bg-slate-50 transition-colors"
+                data-testid="open-change-password-btn"
+              >
+                <Lock size={16} />
+                Change Password
+              </button>
+              <button
                 onClick={() => { setProfileOpen(false); logout(); }}
                 data-testid="profile-logout-btn"
                 className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-red-500 hover:bg-red-50 transition-colors"
@@ -229,7 +281,7 @@ const Layout = ({ children }) => {
       `}>
         {/* Logo */}
         <div className="hidden lg:flex items-center gap-3 px-6 py-5 border-b border-slate-100">
-          <img src={REFEX_LOGO} alt="Refex" className="h-9" data-testid="sidebar-logo" />
+          <img src={REFEX_LOGO} alt="RefexOne" className="h-11" data-testid="sidebar-logo" />
         </div>
 
         {/* Navigation */}
@@ -295,7 +347,15 @@ const Layout = ({ children }) => {
             </div>
           </div>
           {/* Desktop sign out */}
-          <div className="hidden lg:block mt-3">
+          <div className="hidden lg:block mt-3 space-y-1">
+            <button
+              onClick={() => setShowChangePassword(true)}
+              data-testid="sidebar-change-password-btn"
+              className="w-full flex items-center justify-center gap-2 py-2 text-sm text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors"
+            >
+              <Lock size={16} />
+              Change Password
+            </button>
             <button
               onClick={logout}
               data-testid="logout-button"
@@ -310,10 +370,140 @@ const Layout = ({ children }) => {
 
       {/* Main Content */}
       <main className="lg:ml-[260px] pt-14 lg:pt-0 min-h-screen">
-        <div className="p-3 sm:p-8 lg:p-10 max-w-[1400px]">
+        <div className="p-3 sm:p-8 lg:p-10 w-full">
           {children}
         </div>
       </main>
+
+      {/* Change Password Modal */}
+      {showChangePassword && (
+        <div
+          className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn"
+          onClick={() => !pwSaving && setShowChangePassword(false)}
+          data-testid="change-password-modal"
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center">
+                  <Lock size={18} className="text-emerald-600" />
+                </div>
+                <div>
+                  <h2 className="font-heading font-semibold text-lg text-slate-900">Change Password</h2>
+                  <p className="text-xs text-slate-500">Update your account password</p>
+                </div>
+              </div>
+              <button
+                onClick={() => !pwSaving && setShowChangePassword(false)}
+                className="p-2 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors"
+                data-testid="close-change-password-btn"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleChangePassword} className="p-6 space-y-4">
+              {/* Current */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Current Password</label>
+                <div className="relative">
+                  <input
+                    type={pwShow.current ? 'text' : 'password'}
+                    value={pwForm.current}
+                    onChange={(e) => setPwForm({ ...pwForm, current: e.target.value })}
+                    className="w-full h-11 px-3 pr-10 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300"
+                    placeholder="Enter current password"
+                    autoFocus
+                    data-testid="current-password-input"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setPwShow({ ...pwShow, current: !pwShow.current })}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                    tabIndex={-1}
+                  >
+                    {pwShow.current ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+              </div>
+
+              {/* New */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">New Password</label>
+                <div className="relative">
+                  <input
+                    type={pwShow.next ? 'text' : 'password'}
+                    value={pwForm.next}
+                    onChange={(e) => setPwForm({ ...pwForm, next: e.target.value })}
+                    className="w-full h-11 px-3 pr-10 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300"
+                    placeholder="At least 8 characters"
+                    data-testid="new-password-input"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setPwShow({ ...pwShow, next: !pwShow.next })}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                    tabIndex={-1}
+                  >
+                    {pwShow.next ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+                {pwForm.next && pwForm.next.length < 8 && (
+                  <p className="text-xs text-amber-600 mt-1">Password must be at least 8 characters</p>
+                )}
+              </div>
+
+              {/* Confirm */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Confirm New Password</label>
+                <div className="relative">
+                  <input
+                    type={pwShow.confirm ? 'text' : 'password'}
+                    value={pwForm.confirm}
+                    onChange={(e) => setPwForm({ ...pwForm, confirm: e.target.value })}
+                    className="w-full h-11 px-3 pr-10 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300"
+                    placeholder="Re-type new password"
+                    data-testid="confirm-password-input"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setPwShow({ ...pwShow, confirm: !pwShow.confirm })}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                    tabIndex={-1}
+                  >
+                    {pwShow.confirm ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+                {pwForm.confirm && pwForm.next !== pwForm.confirm && (
+                  <p className="text-xs text-red-500 mt-1">Passwords don&apos;t match</p>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowChangePassword(false)}
+                  disabled={pwSaving}
+                  className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={pwSaving}
+                  className="px-5 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-all disabled:opacity-50"
+                  data-testid="submit-change-password-btn"
+                >
+                  {pwSaving ? 'Updating...' : 'Update Password'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

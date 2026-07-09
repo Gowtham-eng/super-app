@@ -5,7 +5,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Eye, EyeSlash, ArrowRight } from '@phosphor-icons/react';
 
-const REFEX_LOGO = 'https://customer-assets.emergentagent.com/job_kissflow-access-hub/artifacts/7t1td79v_refex-logo.png';
+const REFEX_LOGO = '/refexone-logo.png';
 
 const CAROUSEL_SLIDES = [
   {
@@ -174,16 +174,7 @@ const Login = () => {
         <div className="w-full max-w-md">
           {/* Logo top-right, aligned with form */}
           <div className="flex justify-start mb-10">
-            <img src={REFEX_LOGO} alt="Refex" className="h-9 object-contain" />
-          </div>
-
-          <div className="mb-10">
-            <h1 className="text-3xl font-black text-zinc-900 tracking-tight">
-              Super App
-            </h1>
-            <p className="text-zinc-500 mt-2">
-              Sign in to your workplace
-            </p>
+            <img src={REFEX_LOGO} alt="RefexOne" className="h-12 object-contain" />
           </div>
 
           {/* SSO Banner */}

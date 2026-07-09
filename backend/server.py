@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional, Dict, Any
 import uuid
+import re
 from datetime import datetime, timezone, timedelta
 import jwt
 import bcrypt
@@ -16,7 +17,7 @@ import ipaddress
 
 from services.email_service import send_email, build_access_request_email, build_request_status_email, build_sync_report_email
 from services.adrenalin_sync import sync_employees
-from services.kissflow_scim_client import sync_to_kissflow, push_single_user_to_kissflow, get_kissflow_scim_config, save_kissflow_scim_config
+from services.kissflow_scim_client import sync_to_kissflow, push_single_user_to_kissflow, get_kissflow_scim_config, save_kissflow_scim_config, resolve_managers_in_kissflow
 from routes import scim as scim_router_module
 
 ROOT_DIR = Path(__file__).parent
@@ -77,7 +78,7 @@ async def scheduled_hr_sync():
             admin_emails = [a["email"] for a in admins if a.get("email")]
             if admin_emails and (result["created"] > 0 or result["disabled"] > 0 or result["errors"]):
                 html = build_sync_report_email(result["created"], result["disabled"], result["total"], result["errors"])
-                await send_email(admin_emails, "HR Sync Report - Refex Super App", html)
+                await send_email(admin_emails, "HR Sync Report - RefexOne", html)
             logger.info(f"Sync complete for org {org['id']}: {result}")
         except Exception as e:
             logger.error(f"Sync failed for org {org['id']}: {e}")
@@ -161,6 +162,9 @@ class UserCreate(BaseModel):
     password: str
     name: str
     org_id: str
+    designation: Optional[str] = None
+    department: Optional[str] = None
+    company: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -168,9 +172,13 @@ class UserLogin(BaseModel):
 
 class UserUpdate(BaseModel):
     name: Optional[str] = None
+    email: Optional[str] = None
     status: Optional[str] = None
     group_ids: Optional[List[str]] = None
     role_ids: Optional[List[str]] = None
+    designation: Optional[str] = None
+    department: Optional[str] = None
+    company: Optional[str] = None
 
 # Application Models (SAML & OIDC)
 class SAMLAppCreate(BaseModel):
@@ -188,6 +196,10 @@ class SAMLAppCreate(BaseModel):
     logo_url: Optional[str] = None
     allowed_group_ids: List[str] = []
     allowed_role_ids: List[str] = []
+    category: Optional[str] = ""
+    sort_order: Optional[int] = 99
+    is_placeholder: Optional[bool] = False
+    restricted: Optional[bool] = False
 
 class OIDCAppCreate(BaseModel):
     name: str
@@ -201,6 +213,24 @@ class OIDCAppCreate(BaseModel):
     home_url: Optional[str] = None
     allowed_group_ids: List[str] = []
     allowed_role_ids: List[str] = []
+    category: Optional[str] = ""
+    sort_order: Optional[int] = 99
+    is_placeholder: Optional[bool] = False
+    restricted: Optional[bool] = False
+
+class MobileAppCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    org_id: str
+    app_store_url: Optional[str] = ""
+    play_store_url: Optional[str] = ""
+    logo_url: Optional[str] = None
+    allowed_group_ids: List[str] = []
+    allowed_role_ids: List[str] = []
+    category: Optional[str] = ""
+    sort_order: Optional[int] = 99
+    is_placeholder: Optional[bool] = False
+    restricted: Optional[bool] = False
 
 # Access Policy Models
 class AccessPolicyCreate(BaseModel):
@@ -259,6 +289,10 @@ class AuditLog(BaseModel):
     status: str = "success"  # success, failure
 
 # ===================== HELPERS =====================
+
+def normalize_email(email: str) -> str:
+    """Email addresses are case-insensitive per RFC 5321. Always store/lookup as lowercase."""
+    return (email or "").strip().lower()
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
@@ -376,43 +410,48 @@ def generate_saml_metadata(app: dict, base_url: str) -> str:
     </md:Organization>
 </md:EntityDescriptor>'''
 
+#async def check_user_app_access(user: dict, app: dict) -> bool:
+#    """Check if user has access to an application based on direct approval, groups, or roles.
+#    Access must be explicitly granted - no implicit access for unrestricted apps."""
+#    user_id = user.get('id')
+#    user_groups = set(user.get('group_ids', []))
+#    user_roles = set(user.get('role_ids', []))
+#    
+#    allowed_groups = set(app.get('allowed_group_ids', []))
+#    allowed_roles = set(app.get('allowed_role_ids', []))
+#    approved_users = set(app.get('approved_user_ids', []))
+#    
+#    # Org admins always have access
+#    if user.get('role') == 'org_admin':
+#        return True
+#    
+#    # Check if user was directly approved for this app
+#    if user_id in approved_users:
+#        return True
+#    
+#    # Check group membership
+#    if allowed_groups and user_groups.intersection(allowed_groups):
+#        return True
+#    
+#    # Check role assignment
+#    if allowed_roles and user_roles.intersection(allowed_roles):
+#        return True
+#    
+#    # Check if user is in a group that has an allowed role
+#    for group_id in user_groups:
+#        group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+#        if group:
+#            group_roles = set(group.get('role_ids', []))
+#            if group_roles.intersection(allowed_roles):
+#                return True
+#    
+#    return False
 async def check_user_app_access(user: dict, app: dict) -> bool:
-    """Check if user has access to an application based on direct approval, groups, or roles.
-    Access must be explicitly granted - no implicit access for unrestricted apps."""
-    user_id = user.get('id')
-    user_groups = set(user.get('group_ids', []))
-    user_roles = set(user.get('role_ids', []))
-    
-    allowed_groups = set(app.get('allowed_group_ids', []))
-    allowed_roles = set(app.get('allowed_role_ids', []))
-    approved_users = set(app.get('approved_user_ids', []))
-    
-    # Org admins always have access
-    if user.get('role') == 'org_admin':
-        return True
-    
-    # Check if user was directly approved for this app
-    if user_id in approved_users:
-        return True
-    
-    # Check group membership
-    if allowed_groups and user_groups.intersection(allowed_groups):
-        return True
-    
-    # Check role assignment
-    if allowed_roles and user_roles.intersection(allowed_roles):
-        return True
-    
-    # Check if user is in a group that has an allowed role
-    for group_id in user_groups:
-        group = await db.groups.find_one({"id": group_id}, {"_id": 0})
-        if group:
-            group_roles = set(group.get('role_ids', []))
-            if group_roles.intersection(allowed_roles):
-                return True
-    
-    return False
-
+    """Check if user has access to an application (aligned with launcher resolve_access)."""
+    is_admin_role = user.get('role') in ('org_admin', 'owner', 'admin')
+    if app.get('restricted'):
+        return is_admin_role
+    return True
 async def check_access_policies(user: dict, app: dict, request: Request) -> tuple:
     """Check access policies and return (allowed, reason)"""
     org_id = user.get('org_id')
@@ -504,22 +543,23 @@ async def seed_default_permissions():
 
 @api_router.post("/auth/register")
 async def register(user: UserCreate, request: Request):
-    existing = await db.users.find_one({"email": user.email})
+    email_lc = normalize_email(user.email)
+    existing = await db.users.find_one({"email": email_lc})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
+
     # Verify organization exists
     org = await db.organizations.find_one({"id": user.org_id}, {"_id": 0})
     if not org:
         raise HTTPException(status_code=400, detail="Organization not found")
-    
+
     user_id = str(uuid.uuid4())
     user_count = await db.users.count_documents({"org_id": user.org_id})
     role = "org_admin" if user_count == 0 else "user"
-    
+
     user_doc = {
         "id": user_id,
-        "email": user.email,
+        "email": email_lc,
         "password": hash_password(user.password),
         "name": user.name,
         "org_id": user.org_id,
@@ -529,28 +569,35 @@ async def register(user: UserCreate, request: Request):
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    
+
     await db.users.insert_one(user_doc)
-    await log_audit(user.org_id, "user_registered", "user", user_id, user.email, user_id, 
+    await log_audit(user.org_id, "user_registered", "user", user_id, email_lc, user_id,
                    {"name": user.name}, request.client.host if request.client else None)
-    
-    token = create_token(user_id, user.email, user.org_id, role)
-    return {"token": token, "user": {"id": user_id, "email": user.email, "name": user.name, "role": role, "org_id": user.org_id}}
+
+    token = create_token(user_id, email_lc, user.org_id, role)
+    return {"token": token, "user": {"id": user_id, "email": email_lc, "name": user.name, "role": role, "org_id": user.org_id}}
 
 @api_router.post("/auth/login")
 async def login(credentials: UserLogin, request: Request):
-    user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
+    email_lc = normalize_email(credentials.email)
+    user = await db.users.find_one({"email": email_lc}, {"_id": 0})
+    # Backward compatibility: if not found, try case-insensitive match (for legacy data)
+    if not user:
+        user = await db.users.find_one(
+            {"email": {"$regex": f"^{re.escape(email_lc)}$", "$options": "i"}},
+            {"_id": 0},
+        )
     if not user or not verify_password(credentials.password, user['password']):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+
     if user.get('status') != 'active':
         raise HTTPException(status_code=403, detail="Account is not active")
-    
+
     await log_audit(user['org_id'], "user_login", "user", user['id'], user['email'], user['id'],
                    {}, request.client.host if request.client else None)
-    
+
     token = create_token(user['id'], user['email'], user['org_id'], user['role'])
-    return {"token": token, "user": {"id": user['id'], "email": user['email'], "name": user['name'], 
+    return {"token": token, "user": {"id": user['id'], "email": user['email'], "name": user['name'],
                                       "role": user['role'], "org_id": user['org_id']}}
 
 @api_router.get("/auth/me")
@@ -558,29 +605,72 @@ async def get_me(user: dict = Depends(get_current_user)):
     org = await db.organizations.find_one({"id": user['org_id']}, {"_id": 0})
     return {**user, "organization": org}
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+@api_router.post("/auth/change-password")
+async def change_own_password(payload: ChangePasswordRequest, request: Request, user: dict = Depends(get_current_user)):
+    """Allow an authenticated user to change their own password."""
+    full = await db.users.find_one({"id": user['id']}, {"_id": 0})
+    if not full:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not verify_password(payload.current_password, full['password']):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    new_pw = (payload.new_password or "").strip()
+    if len(new_pw) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters long")
+    if verify_password(new_pw, full['password']):
+        raise HTTPException(status_code=400, detail="New password must be different from current password")
+    new_hash = hash_password(new_pw)
+    await db.users.update_one({"id": user['id']}, {"$set": {"password": new_hash, "password_changed_at": datetime.now(timezone.utc).isoformat()}})
+    await log_audit(user['org_id'], "password_changed_self", "user", user['id'], user['email'], user['id'],
+                   {}, request.client.host if request.client else None)
+    return {"message": "Password changed successfully"}
+
 
 # ===================== FILE UPLOAD =====================
 
 @api_router.post("/upload/logo")
-async def upload_logo(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+async def upload_logo(file: UploadFile = File(...), request: Request = None, user: dict = Depends(get_current_user)):
     """Upload a logo image and return URL"""
-    if not file.content_type or not file.content_type.startswith('image/'):
-        raise HTTPException(status_code=400, detail="Only image files are allowed")
-    
-    ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'png'
-    filename = f"{uuid.uuid4().hex}.{ext}"
-    filepath = UPLOAD_DIR / filename
-    
-    contents = await file.read()
-    if len(contents) > 5 * 1024 * 1024:  # 5MB limit
-        raise HTTPException(status_code=400, detail="File too large (max 5MB)")
-    
-    with open(filepath, 'wb') as f:
-        f.write(contents)
-    
-    base_url = get_public_base_url()
-    logo_url = f"{base_url}/api/uploads/{filename}"
-    return {"logo_url": logo_url, "filename": filename}
+    try:
+        if not file.content_type or not file.content_type.startswith('image/'):
+            raise HTTPException(status_code=400, detail="Only image files are allowed")
+
+        # Make sure the uploads directory exists (handles fresh deployments)
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+        ext = (file.filename.rsplit('.', 1)[-1] if file.filename and '.' in file.filename else 'png').lower()
+        if ext not in {'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'}:
+            ext = 'png'
+        filename = f"{uuid.uuid4().hex}.{ext}"
+        filepath = UPLOAD_DIR / filename
+
+        contents = await file.read()
+        if len(contents) > 5 * 1024 * 1024:  # 5MB limit
+            raise HTTPException(status_code=400, detail="File too large (max 5MB)")
+        if len(contents) == 0:
+            raise HTTPException(status_code=400, detail="Empty file")
+
+        with open(filepath, 'wb') as f:
+            f.write(contents)
+
+        # Build absolute URL — pass request so we fall back to its Host header
+        # when PUBLIC_URL env var is missing or wrong.
+        base_url = get_public_base_url(request) or ""
+        base_url = base_url.rstrip("/")
+        if not base_url:
+            # As a last resort, return a relative URL — browser resolves against current origin
+            logo_url = f"/api/uploads/{filename}"
+        else:
+            logo_url = f"{base_url}/api/uploads/{filename}"
+        return {"logo_url": logo_url, "filename": filename}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.getLogger("upload").exception("Logo upload failed")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
 @api_router.put("/users/me/profile-pic")
@@ -792,7 +882,7 @@ async def remove_group_members(group_id: str, user_ids: List[str], request: Requ
 
 @api_router.get("/users")
 async def list_users(user: dict = Depends(get_current_user)):
-    users = await db.users.find({"org_id": user['org_id']}, {"_id": 0, "password": 0}).to_list(1000)
+    users = await db.users.find({"org_id": user['org_id']}, {"_id": 0, "password": 0}).sort("created_at", -1).to_list(10000)
     return users
 
 
@@ -804,7 +894,7 @@ async def export_users(format: str = "xlsx", user: dict = Depends(get_current_us
 
     users = await db.users.find(
         {"org_id": user["org_id"]}, {"_id": 0, "password": 0}
-    ).to_list(5000)
+    ).to_list(10000)
 
     # Get app assignments
     saml_apps = await db.saml_apps.find({"org_id": user["org_id"]}, {"_id": 0, "name": 1, "approved_user_ids": 1}).to_list(100)
@@ -936,15 +1026,16 @@ async def export_users(format: str = "xlsx", user: dict = Depends(get_current_us
 async def create_user(new_user: UserCreate, request: Request, user: dict = Depends(get_current_user)):
     if new_user.org_id != user['org_id']:
         raise HTTPException(status_code=403, detail="Access denied")
-    
-    existing = await db.users.find_one({"email": new_user.email})
+
+    email_lc = normalize_email(new_user.email)
+    existing = await db.users.find_one({"email": email_lc})
     if existing:
         raise HTTPException(status_code=400, detail="Email already exists")
-    
+
     user_id = str(uuid.uuid4())
     user_doc = {
         "id": user_id,
-        "email": new_user.email,
+        "email": email_lc,
         "password": hash_password(new_user.password),
         "name": new_user.name,
         "org_id": new_user.org_id,
@@ -952,12 +1043,21 @@ async def create_user(new_user: UserCreate, request: Request, user: dict = Depen
         "group_ids": [],
         "role_ids": [],
         "status": "active",
+        "designation": new_user.designation or "",
+        "department": new_user.department or "",
+        "company": new_user.company or "",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.users.insert_one(user_doc)
     await log_audit(user['org_id'], "user_created", "user", user['id'], user['email'], user_id,
-                   {"name": new_user.name, "email": new_user.email}, request.client.host if request.client else None)
-    
+                   {"name": new_user.name, "email": email_lc}, request.client.host if request.client else None)
+
+    # Push newly-created user to Kissflow SCIM in background (fire-and-forget)
+    try:
+        await push_single_user_to_kissflow(db, user["org_id"], email_lc)
+    except Exception as e:
+        logging.getLogger("kissflow_scim").warning(f"Kissflow push after user create failed for {email_lc}: {e}")
+
     return {k: v for k, v in user_doc.items() if k != 'password' and k != '_id'}
 
 @api_router.put("/users/{user_id}")
@@ -967,13 +1067,28 @@ async def update_user(user_id: str, update: UserUpdate, request: Request, user: 
         raise HTTPException(status_code=404, detail="User not found")
     
     update_data = {k: v for k, v in update.model_dump().items() if v is not None}
+
+    # If email is being changed, normalize and validate uniqueness across the org
+    if 'email' in update_data:
+        new_email = (update_data['email'] or '').strip().lower()
+        if not new_email or '@' not in new_email:
+            raise HTTPException(status_code=400, detail="Invalid email address")
+        if new_email != (target_user.get('email') or '').strip().lower():
+            conflict = await db.users.find_one(
+                {"email": new_email, "org_id": user['org_id'], "id": {"$ne": user_id}},
+                {"_id": 0, "id": 1}
+            )
+            if conflict:
+                raise HTTPException(status_code=409, detail="Email already in use by another user")
+        update_data['email'] = new_email
+
     if update_data:
         await db.users.update_one({"id": user_id}, {"$set": update_data})
         await log_audit(user['org_id'], "user_updated", "user", user['id'], user['email'], user_id,
                        update_data, request.client.host if request.client else None)
-        # Push updated user to Kissflow in background
+        # Push updated user to Kissflow in background (use new email if it changed)
         try:
-            email = target_user.get("email", "")
+            email = update_data.get('email') or target_user.get("email", "")
             if email:
                 await push_single_user_to_kissflow(db, user["org_id"], email)
         except Exception as e:
@@ -1051,6 +1166,10 @@ async def create_saml_app(app: SAMLAppCreate, request: Request, user: dict = Dep
         "logo_url": app.logo_url,
         "allowed_group_ids": app.allowed_group_ids,
         "allowed_role_ids": app.allowed_role_ids,
+        "category": app.category or "",
+        "sort_order": app.sort_order if app.sort_order is not None else 99,
+        "is_placeholder": bool(app.is_placeholder),
+        "restricted": bool(app.restricted),
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1293,7 +1412,7 @@ async def saml_slo(app_id: str, request: Request):
     return Response(content=html_content, media_type="text/html")
 
 @api_router.get("/saml/{app_id}/complete")
-async def saml_complete_sso(app_id: str, request: Request, token: str = None, relay_state: str = None, debug: int = 0):
+async def saml_complete_sso(app_id: str, request: Request, token: str = None, relay_state: str = None, debug: int = 0, mobile_module: str = None):
     """Complete SAML SSO - Generate signed SAML Response and POST to ACS URL"""
     import base64
     import uuid as uuid_module
@@ -1590,11 +1709,71 @@ diag.innerHTML = lines.join("<br>");
         # then redirect browser to the specific module URL.
         home_url = app.get('home_url', '')
         
-        if home_url:
-            # Iframe-based auth + redirect to specific module
-            # Include RelayState if present (critical for SP-initiated SSO, especially mobile)
-            relay_field = f'<input type="hidden" name="RelayState" value="{escape(relay_state)}"/>' if relay_state else ''
-            html_content = f'''<!DOCTYPE html>
+        if home_url or mobile_module:
+            module_target = mobile_module or home_url
+            # Module app (Expense, Travel, etc.)
+            # For SP-initiated flow: pass RelayState through directly
+            if relay_state:
+                relay_field = f'<input type="hidden" name="RelayState" value="{escape(relay_state)}"/>'
+            else:
+                relay_field = ''
+            
+            if mobile_module:
+                # MOBILE FIX: Top-level POST to Kissflow ACS (NOT iframe).
+                # Why: Modern Android WebView/Chrome 80+ blocks cookies set inside cross-site iframes
+                # (SameSite=Lax default). The iframe approach silently failed — Kissflow's session
+                # cookie was never persisted, so subsequent navigation to the module URL got bounced
+                # back to login. Top-level POST keeps the cookie context first-party for Kissflow.
+                #
+                # Then we tell our MainActivity (via window.RefexOneBridge) the target module URL.
+                # When Kissflow finishes processing SAML and lands the user on its home page,
+                # MainActivity sees the kissflow.com page and redirects the WebView to the
+                # specific module URL (which now has a valid session cookie).
+                module_target_js = module_target.replace('\\', '\\\\').replace('"', '\\"')
+                html_content = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Signing in to {escape(app.get('name', 'Application'))}...</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #f9fafb; }}
+        .loader {{ text-align: center; }}
+        .spinner {{ width: 36px; height: 36px; border: 3px solid #e2e8f0; border-top-color: #10b981; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }}
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+        p {{ color: #64748b; font-size: 14px; margin: 0; }}
+        .hint {{ color: #94a3b8; font-size: 12px; margin-top: 8px; }}
+    </style>
+</head>
+<body>
+    <div class="loader">
+        <div class="spinner"></div>
+        <p>Signing in to {escape(app.get('name', 'Application'))}...</p>
+        <p class="hint">Establishing secure session</p>
+    </div>
+    <form id="samlForm" method="POST" action="{escape(acs_url)}">
+        <input type="hidden" name="SAMLResponse" id="samlResponse"/>
+    </form>
+    <script>
+        var moduleUrl = "{module_target_js}";
+        // 1. Notify native Android bridge of the pending module URL.
+        //    MainActivity will redirect the WebView to this URL after Kissflow lands post-SSO.
+        try {{
+            if (window.RefexOneBridge && typeof window.RefexOneBridge.setPendingModule === 'function') {{
+                window.RefexOneBridge.setPendingModule(moduleUrl);
+            }}
+        }} catch (e) {{}}
+        // 2. Also persist to sessionStorage so any in-page web fallback can use it.
+        try {{ sessionStorage.setItem('refexone_pending_module', moduleUrl); }} catch (e) {{}}
+        // 3. Submit SAML top-level so Kissflow's session cookie is set first-party.
+        document.getElementById('samlResponse').value = "{saml_response_b64}";
+        document.getElementById('samlForm').submit();
+    </script>
+</body>
+</html>'''
+            else:
+                # DESKTOP: Direct SAML POST (frontend handles two-step named window redirect)
+                html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1612,33 +1791,16 @@ diag.innerHTML = lines.join("<br>");
         <div class="spinner"></div>
         <p>Signing in to {escape(app.get('name', 'Application'))}...</p>
     </div>
-    <iframe name="authFrame" style="display:none"></iframe>
-    <form id="samlForm" method="POST" action="{escape(acs_url)}" target="authFrame">
+    <form id="samlForm" method="POST" action="{escape(acs_url)}">
         <input type="hidden" name="SAMLResponse" id="samlResponse"/>
         {relay_field}
+        <noscript>
+            <input type="submit" value="Continue to {escape(app.get('name', 'Application'))}"/>
+        </noscript>
     </form>
     <script>
-        var samlData = "{saml_response_b64}";
-        var moduleUrl = "{escape(home_url)}";
-        var hasRelayState = {"true" if relay_state else "false"};
-        document.getElementById('samlResponse').value = samlData;
-        if (hasRelayState) {{
-            // SP-initiated flow (e.g., from Kissflow native app): submit directly
-            // so Kissflow can process RelayState and redirect back to native app
-            document.getElementById('samlForm').removeAttribute('target');
-            document.getElementById('samlForm').submit();
-        }} else {{
-            // IdP-initiated flow: use iframe auth + redirect to module
-            document.getElementById('samlForm').submit();
-            setTimeout(function() {{
-                window.location.href = moduleUrl;
-            }}, 2500);
-            // If the module URL opens a native app via deep link,
-            // the browser stays on this page. Redirect back to launcher.
-            setTimeout(function() {{
-                window.location.href = "/launcher";
-            }}, 4000);
-        }}
+        document.getElementById('samlResponse').value = "{saml_response_b64}";
+        document.getElementById('samlForm').submit();
     </script>
 </body>
 </html>'''
@@ -1905,11 +2067,16 @@ async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Dep
         "grant_types": app.grant_types,
         "authorization_endpoint": f"{base_url}/api/oidc/{app_id}/authorize",
         "token_endpoint": f"{base_url}/api/oidc/{app_id}/token",
-        "userinfo_endpoint": f"{base_url}/api/oidc/{app_id}/userinfo",
+        "userinfo_endpoint": f"{base_url}/api/oidc/userinfo",
+        "discovery_endpoint": f"{base_url}/api/apps/oidc/{app_id}/.well-known/openid-configuration",
         "logo_url": app.logo_url,
         "home_url": app.home_url,
         "allowed_group_ids": app.allowed_group_ids,
         "allowed_role_ids": app.allowed_role_ids,
+        "category": app.category or "",
+        "sort_order": app.sort_order if app.sort_order is not None else 99,
+        "is_placeholder": bool(app.is_placeholder),
+        "restricted": bool(app.restricted),
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1933,16 +2100,39 @@ async def update_oidc_app(app_id: str, update: dict, request: Request, user: dic
     app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
-    
+
     update.pop('id', None)
     update.pop('org_id', None)
-    update.pop('client_id', None)
-    update.pop('client_secret', None)
-    
+    update.pop('client_secret', None)  # secrets are only changed via regenerate endpoint
+
+    # If client_id is being changed, validate uniqueness across the org
+    new_client_id = update.get('client_id')
+    if new_client_id is not None:
+        new_client_id = str(new_client_id).strip()
+        if not new_client_id:
+            raise HTTPException(status_code=400, detail="client_id cannot be empty")
+        if new_client_id != app.get('client_id'):
+            conflict = await db.oidc_apps.find_one({"client_id": new_client_id, "id": {"$ne": app_id}}, {"_id": 0, "id": 1})
+            if conflict:
+                raise HTTPException(status_code=409, detail="client_id already in use by another app")
+            update['client_id'] = new_client_id
+
     await db.oidc_apps.update_one({"id": app_id}, {"$set": update})
     await log_audit(user['org_id'], "oidc_app_updated", "app", user['id'], user['email'], app_id,
                    update, request.client.host if request.client else None)
     return await db.oidc_apps.find_one({"id": app_id}, {"_id": 0, "client_secret": 0})
+
+@api_router.post("/apps/oidc/{app_id}/regenerate-secret")
+async def regenerate_oidc_secret(app_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Generate a new client_secret for an OIDC app and return it once."""
+    app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    new_secret = str(uuid.uuid4()).replace('-', '') + str(uuid.uuid4()).replace('-', '')
+    await db.oidc_apps.update_one({"id": app_id}, {"$set": {"client_secret": new_secret}})
+    await log_audit(user['org_id'], "oidc_secret_regenerated", "app", user['id'], user['email'], app_id,
+                   {"name": app.get('name')}, request.client.host if request.client else None)
+    return {"client_secret": new_secret}
 
 @api_router.delete("/apps/oidc/{app_id}")
 async def delete_oidc_app(app_id: str, request: Request, user: dict = Depends(get_current_user)):
@@ -1952,6 +2142,70 @@ async def delete_oidc_app(app_id: str, request: Request, user: dict = Depends(ge
     
     await db.oidc_apps.delete_one({"id": app_id})
     await log_audit(user['org_id'], "oidc_app_deleted", "app", user['id'], user['email'], app_id,
+                   {"name": app['name']}, request.client.host if request.client else None)
+    return {"message": "App deleted"}
+
+# ===================== MOBILE APP ROUTES =====================
+
+@api_router.get("/apps/mobile")
+async def list_mobile_apps(user: dict = Depends(get_current_user)):
+    apps = await db.mobile_apps.find({"org_id": user['org_id']}, {"_id": 0}).to_list(200)
+    return apps
+
+@api_router.post("/apps/mobile")
+async def create_mobile_app(app: MobileAppCreate, request: Request, user: dict = Depends(get_current_user)):
+    if app.org_id != user['org_id']:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    app_id = str(uuid.uuid4())
+    app_doc = {
+        "id": app_id,
+        "name": app.name,
+        "description": app.description,
+        "org_id": app.org_id,
+        "app_store_url": app.app_store_url or "",
+        "play_store_url": app.play_store_url or "",
+        "logo_url": app.logo_url,
+        "allowed_group_ids": app.allowed_group_ids,
+        "allowed_role_ids": app.allowed_role_ids,
+        "category": app.category or "",
+        "sort_order": app.sort_order if app.sort_order is not None else 99,
+        "is_placeholder": bool(app.is_placeholder),
+        "restricted": bool(app.restricted),
+        "status": "active",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.mobile_apps.insert_one(app_doc)
+    await log_audit(user['org_id'], "mobile_app_created", "app", user['id'], user['email'], app_id,
+                   {"name": app.name}, request.client.host if request.client else None)
+    return {k: v for k, v in app_doc.items() if k != "_id"}
+
+@api_router.get("/apps/mobile/{app_id}")
+async def get_mobile_app(app_id: str, user: dict = Depends(get_current_user)):
+    app = await db.mobile_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    return app
+
+@api_router.put("/apps/mobile/{app_id}")
+async def update_mobile_app(app_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+    app = await db.mobile_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    update.pop('id', None)
+    update.pop('org_id', None)
+    await db.mobile_apps.update_one({"id": app_id}, {"$set": update})
+    await log_audit(user['org_id'], "mobile_app_updated", "app", user['id'], user['email'], app_id,
+                   update, request.client.host if request.client else None)
+    return await db.mobile_apps.find_one({"id": app_id}, {"_id": 0})
+
+@api_router.delete("/apps/mobile/{app_id}")
+async def delete_mobile_app(app_id: str, request: Request, user: dict = Depends(get_current_user)):
+    app = await db.mobile_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    await db.mobile_apps.delete_one({"id": app_id})
+    await log_audit(user['org_id'], "mobile_app_deleted", "app", user['id'], user['email'], app_id,
                    {"name": app['name']}, request.client.host if request.client else None)
     return {"message": "App deleted"}
 
@@ -2391,44 +2645,107 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
     """Get all apps the user has access to"""
     org_id = user['org_id']
     
-    # Get all SAML apps
-    saml_apps = await db.saml_apps.find({"org_id": org_id, "status": "active"}, {"_id": 0, "private_key": 0, "certificate": 0}).to_list(100)
+    # Get all SAML apps (exclude hidden ones)
+    saml_apps = await db.saml_apps.find({"org_id": org_id, "status": "active", "show_in_launcher": {"$ne": False}}, {"_id": 0, "private_key": 0, "certificate": 0}).to_list(100)
     # Get all OIDC apps  
     oidc_apps = await db.oidc_apps.find({"org_id": org_id, "status": "active"}, {"_id": 0, "client_secret": 0}).to_list(100)
+    # Get all Mobile apps
+    mobile_apps = await db.mobile_apps.find({"org_id": org_id, "status": "active"}, {"_id": 0}).to_list(100)
     
     accessible_apps = []
     
+    # Get usage counts per app for this user (from audit logs)
+    usage_pipeline = [
+        {"$match": {"org_id": org_id, "user_id": user["id"], "action": {"$in": ["saml_sso_initiated", "oidc_auth_started"]}}},
+        {"$group": {"_id": "$resource_id", "count": {"$sum": 1}, "last_used": {"$max": "$timestamp"}}},
+    ]
+    usage_cursor = db.audit_logs.aggregate(usage_pipeline)
+    usage_map = {}
+    async for doc in usage_cursor:
+        usage_map[doc["_id"]] = {"count": doc["count"], "last_used": doc.get("last_used", "")}
+
+    # Admin/owner bypass the per-app restricted toggle; everyone else is blocked when restricted=True.
+    # When restricted=False, everyone has access (group/role assignments are no longer required).
+    is_admin_role = user.get('role') in ('org_admin', 'owner', 'admin')
+
+    def resolve_access(app_doc):
+        if app_doc.get('restricted'):
+            return is_admin_role  # only admins can launch restricted apps
+        return True  # restricted OFF → everyone allowed
+
     for app in saml_apps:
-        has_access = await check_user_app_access(user, app)
-        if has_access:
-            allowed, reason = await check_access_policies(user, app, request)
-            accessible_apps.append({
-                "id": app['id'],
-                "name": app['name'],
-                "description": app.get('description'),
-                "logo_url": app.get('logo_url'),
-                "home_url": app.get('home_url'),
-                "type": "saml",
-                "launch_url": f"/api/saml/{app['id']}/sso",
-                "policy_blocked": not allowed,
-                "policy_reason": reason
-            })
+        has_access = resolve_access(app)
+        allowed, reason = await check_access_policies(user, app, request)
+        usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
+        accessible_apps.append({
+            "id": app['id'],
+            "name": app['name'],
+            "description": app.get('description'),
+            "logo_url": app.get('logo_url'),
+            "home_url": app.get('home_url'),
+            "type": "saml",
+            "launch_url": f"/api/saml/{app['id']}/sso",
+            "has_access": has_access,
+            "restricted": bool(app.get('restricted')),
+            "policy_blocked": not allowed,
+            "policy_reason": reason,
+            "usage_count": usage["count"],
+            "last_used": usage["last_used"],
+            "category": app.get("category", ""),
+            "sort_order": app.get("sort_order", 99),
+            "is_placeholder": app.get("is_placeholder", False),
+        })
     
     for app in oidc_apps:
-        has_access = await check_user_app_access(user, app)
-        if has_access:
-            allowed, reason = await check_access_policies(user, app, request)
-            accessible_apps.append({
-                "id": app['id'],
-                "name": app['name'],
-                "description": app.get('description'),
-                "logo_url": app.get('logo_url'),
-                "home_url": app.get('home_url'),
-                "type": "oidc",
-                "launch_url": f"/api/oidc/{app['id']}/authorize",
-                "policy_blocked": not allowed,
-                "policy_reason": reason
-            })
+        has_access = resolve_access(app)
+        allowed, reason = await check_access_policies(user, app, request)
+        usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
+        accessible_apps.append({
+            "id": app['id'],
+            "name": app['name'],
+            "description": app.get('description'),
+            "logo_url": app.get('logo_url'),
+            "home_url": app.get('home_url'),
+            "type": "oidc",
+            "launch_url": f"/api/oidc/{app['id']}/authorize",
+            "has_access": has_access,
+            "restricted": bool(app.get('restricted')),
+            "policy_blocked": not allowed,
+            "policy_reason": reason,
+            "usage_count": usage["count"],
+            "last_used": usage["last_used"],
+            "category": app.get("category", ""),
+            "sort_order": app.get("sort_order", 99),
+            "is_placeholder": app.get("is_placeholder", False),
+        })
+
+    for app in mobile_apps:
+        has_access = resolve_access(app)
+        allowed, reason = await check_access_policies(user, app, request)
+        usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
+        accessible_apps.append({
+            "id": app['id'],
+            "name": app['name'],
+            "description": app.get('description'),
+            "logo_url": app.get('logo_url'),
+            "type": "mobile",
+            "app_store_url": app.get("app_store_url", ""),
+            "play_store_url": app.get("play_store_url", ""),
+            "launch_url": app.get("play_store_url") or app.get("app_store_url") or "",
+            "has_access": has_access,
+            "restricted": bool(app.get('restricted')),
+            "policy_blocked": not allowed,
+            "policy_reason": reason,
+            "usage_count": usage["count"],
+            "last_used": usage["last_used"],
+            "category": app.get("category", ""),
+            "sort_order": app.get("sort_order", 99),
+            "is_placeholder": app.get("is_placeholder", False),
+        })
+    
+    # Sort by category order, then sort_order within category
+    category_order = {"Expense": 0, "Productivity": 1, "Facility": 2, "Support": 3}
+    accessible_apps.sort(key=lambda a: (category_order.get(a.get("category", ""), 99), a.get("sort_order", 99)))
     
     return accessible_apps
 
@@ -2833,6 +3150,44 @@ async def get_kissflow_sync_logs(user: dict = Depends(get_current_user)):
         {"org_id": user["org_id"]}, {"_id": 0}
     ).sort("timestamp", -1).to_list(50)
     return logs
+
+
+@api_router.post("/kissflow-scim/resolve-managers")
+async def trigger_manager_resolution(background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+    """Second pass: resolve Manager/L2_Manager lookup fields with Kissflow User IDs"""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Only admins can trigger manager resolution")
+
+    org_id = user["org_id"]
+
+    log_doc = {
+        "org_id": org_id,
+        "triggered_by": user["id"],
+        "trigger_type": "resolve_managers",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": "running",
+        "result": {"message": "Resolving manager lookups..."},
+    }
+    await db.kissflow_sync_logs.insert_one(log_doc)
+    log_id = log_doc.get("_id")
+
+    async def _run_resolve():
+        try:
+            result = await resolve_managers_in_kissflow(db, org_id)
+            await db.kissflow_sync_logs.update_one(
+                {"_id": log_id},
+                {"$set": {"result": result, "status": "completed"}}
+            )
+        except Exception as e:
+            await db.kissflow_sync_logs.update_one(
+                {"_id": log_id},
+                {"$set": {"result": {"error": str(e)}, "status": "failed"}}
+            )
+
+    background_tasks.add_task(_run_resolve)
+    return {"message": "Manager resolution started in background.", "status": "running"}
+
+
 
 
 @api_router.get("/health")

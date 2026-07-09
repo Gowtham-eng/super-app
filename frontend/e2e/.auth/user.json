@@ -1,0 +1,29 @@
+{
+  "cookies": [
+    {
+      "name": "ph_phc_xAvL2Iq4tFmANRE7kzbKwaSqp1HJjN7x48s3vr0CMjs_posthog",
+      "value": "%7B%22%24device_id%22%3A%22019f1d8c-08ce-70f1-91cb-e75efcfbf30c%22%2C%22distinct_id%22%3A%22019f1d8c-08ce-70f1-91cb-e75efcfbf30c%22%2C%22%24sesid%22%3A%5B1782907144965%2C%22019f1d8c-0965-75a8-af81-2ce500bfe326%22%2C1782907144549%5D%2C%22%24session_is_sampled%22%3A%22!019f1d8c-0965-75a8-af81-2ce500bfe326%22%2C%22%24user_state%22%3A%22anonymous%22%7D",
+      "domain": ".refexone.com",
+      "path": "/",
+      "expires": 1814443145,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "https://refexone.com",
+      "localStorage": [
+        {
+          "name": "iam_token",
+          "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiYWYyYzViOTEtMmIyYy00MjljLTg0NWQtN2EyMjlkODNhYjZiIiwiZW1haWwiOiJhZG1pbkBhY21lLmNvbSIsIm9yZ19pZCI6IjIxNDFmOTNlLTdjYmUtNDQxYS1hYjJhLWNmMjJhMzJjMjJiNSIsInJvbGUiOiJvcmdfYWRtaW4iLCJleHAiOjE3ODU0OTkxNDMsImlhdCI6MTc4MjkwNzE0M30.fyKZMF7Mf6aUu753H2qQyps_MSSlmvn2UFgmTvAuOsU"
+        },
+        {
+          "name": "ph_phc_xAvL2Iq4tFmANRE7kzbKwaSqp1HJjN7x48s3vr0CMjs_posthog",
+          "value": "{\"$device_id\":\"019f1d8c-08ce-70f1-91cb-e75efcfbf30c\",\"distinct_id\":\"019f1d8c-08ce-70f1-91cb-e75efcfbf30c\",\"$sesid\":[1782907144965,\"019f1d8c-0965-75a8-af81-2ce500bfe326\",1782907144549],\"$session_is_sampled\":\"!019f1d8c-0965-75a8-af81-2ce500bfe326\",\"$user_state\":\"anonymous\",\"$initialization_time\":\"2026-07-01T11:59:04.842Z\",\"$configured_session_timeout_ms\":1800000,\"$error_tracking_suppression_rules\":[],\"$session_recording_remote_config\":{\"cache_timestamp\":1782907144947,\"enabled\":true,\"canvasFps\":3,\"canvasQuality\":\"0.4\",\"consoleLogRecordingEnabled\":true,\"endpoint\":\"/s/\",\"eventTriggers\":[\"subscription_payment_success\",\"deployment_recording_started\",\"deployment_confirmation_deploy_clicked\",\"buy_subscription_clicked\",\"buy_credits_button_clicked\",\"chat_screen_buy_credits_button_clicked\",\"plan_upgrade_button_clicked\",\"job_created\"],\"linkedFlag\":null,\"masking\":{\"maskAllInputs\":false},\"minimumDurationMilliseconds\":5000,\"networkPayloadCapture\":{\"capturePerformance\":{\"network_timing\":true,\"web_vitals\":true,\"web_vitals_allowed_metrics\":null},\"recordBody\":true,\"recordHeaders\":true},\"recordCanvas\":true,\"recorderVersion\":\"v2\",\"sampleRate\":0.05,\"scriptConfig\":{\"script\":\"posthog-recorder\"},\"triggerMatchType\":\"any\",\"urlBlocklist\":[{\"matching\":\"regex\",\"url\":\"^https://mx-online-sre-cita-express.com(/.*)$\"}],\"urlTriggers\":[],\"version\":1,\"canvasRecording\":{\"enabled\":true,\"fps\":3,\"quality\":\"0.4\"}},\"$autocapture_disabled_server_side\":true,\"$product_tours_enabled_server_side\":false,\"$heatmaps_enabled_server_side\":true,\"$web_vitals_enabled_server_side\":true,\"$web_vitals_allowed_metrics\":null,\"$exception_capture_enabled_server_side\":false,\"$dead_clicks_enabled_server_side\":true,\"$client_session_props\":{\"sessionId\":\"019f1d8c-0965-75a8-af81-2ce500bfe326\",\"props\":{\"r\":\"$direct\",\"u\":\"https://refexone.com/login\"}},\"$replay_sample_rate\":0.05,\"$feature_flag_errors\":[\"connection_error\"]}"
+        }
+      ]
+    }
+  ]
+}

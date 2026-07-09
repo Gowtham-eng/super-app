@@ -1,6 +1,6 @@
 """
 Kissflow SCIM Client
-Pushes users FROM Refex Super App TO Kissflow's SCIM Server.
+Pushes users FROM RefexOne TO Kissflow's SCIM Server.
 
 Key features:
 - Kissflow custom extension schema for Employee ID, L2 Manager, Department etc.
@@ -23,7 +23,7 @@ KISSFLOW_EXTENSION_SCHEMA = f"urn:kissflow:scim:schemas:extension:{KISSFLOW_ACCO
 ENTERPRISE_EXTENSION_SCHEMA = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"
 
 # Rate limiting: delay between requests in seconds
-REQUEST_DELAY = 0.5
+REQUEST_DELAY = 0.25
 # Retry config for 429 responses
 MAX_RETRIES = 3
 RETRY_DELAY = 5  # seconds to wait on 429
@@ -76,14 +76,22 @@ def _build_kissflow_user(user: dict) -> dict:
     - L1_Manager_Name: string
     - L1_Manager_Email: string
     """
-    phone = (user.get("work_mobile") or user.get("mobile") or "").strip()
-    # Clean phone: remove non-digits, add 91 prefix if needed
-    phone_digits = "".join(c for c in phone if c.isdigit())
-    if phone_digits and phone_digits != "0":
-        if not phone_digits.startswith("91") and len(phone_digits) == 10:
-            phone_digits = f"91{phone_digits}"
-    else:
-        phone_digits = ""
+    work_mobile = (user.get("work_mobile") or "").strip()
+    personal_mobile = (user.get("employee_mobile") or user.get("mobile") or "").strip()
+
+    def _clean_phone(phone):
+        digits = "".join(c for c in phone if c.isdigit())
+        if digits and digits != "0":
+            if not digits.startswith("91") and len(digits) == 10:
+                digits = f"91{digits}"
+            return digits
+        return ""
+
+    work_digits = _clean_phone(work_mobile)
+    personal_digits = _clean_phone(personal_mobile)
+    # Avoid duplicates
+    if personal_digits == work_digits:
+        personal_digits = ""
 
     first_name = user.get("first_name") or (user.get("name", "").split(" ", 1)[0] if user.get("name") else "")
     last_name = user.get("last_name") or ""
@@ -110,11 +118,28 @@ def _build_kissflow_user(user: dict) -> dict:
         "title": user.get("designation") or "",
     }
 
-    if phone_digits:
-        payload["phoneNumbers"] = [{"value": phone_digits, "type": "work"}]
+    # Phone numbers - include both work and personal if available
+    phone_numbers = []
+    if work_digits:
+        phone_numbers.append({"value": work_digits, "type": "work"})
+    if personal_digits:
+        phone_numbers.append({"value": personal_digits, "type": "mobile"})
+    if phone_numbers:
+        payload["phoneNumbers"] = phone_numbers
 
     # Kissflow custom extension - uses exact field IDs from Kissflow schema
     kf_ext = {}
+
+    # Mobile Numbers — EXACT Kissflow field IDs (from User Management columns):
+    #   EMPLOYEE_MOBILE_NUMBER   = personal mobile
+    #   REFEX_WORK_MOBILE_NUMBER = work mobile
+    # We also send a couple of safe aliases in case any other workflow references them.
+    if work_digits:
+        kf_ext["REFEX_WORK_MOBILE_NUMBER"] = work_digits
+        kf_ext["Refex_Work_Mobile_Number"] = work_digits
+    if personal_digits:
+        kf_ext["EMPLOYEE_MOBILE_NUMBER"] = personal_digits
+        kf_ext["Employee_Mobile_Number"] = personal_digits
 
     # Employee ID
     emp_id = user.get("adrenalin_employee_id", "")
@@ -130,6 +155,18 @@ def _build_kissflow_user(user: dict) -> dict:
     dept_code = user.get("department_code", "")
     if dept_code:
         kf_ext["Department_Code"] = dept_code
+
+    # Department (full name)
+    department = user.get("department", "")
+    if department:
+        kf_ext["Department"] = department
+
+    # Company / Legal Entity (Refex Holding Pvt Ltd, STPL, etc.)
+    company = user.get("company", "")
+    if company:
+        kf_ext["Company"] = company
+        kf_ext["Company_Name"] = company
+        kf_ext["Legal_Entity"] = company
 
     # Branch
     branch = user.get("branch_code") or user.get("business_line") or ""
@@ -156,27 +193,55 @@ def _build_kissflow_user(user: dict) -> dict:
     if date_exit:
         kf_ext["Date_of_Exit"] = date_exit
 
-    # Manager (L1) - complex type with Email and Name sub-attributes
+    # Manager (L1) - complex type: needs Kissflow user ID in 'value' for lookup to work
     supervisor_email = user.get("supervisor_email", "")
     supervisor_name = user.get("supervisor_name", "")
     if supervisor_email:
-        kf_ext["Manager"] = {
+        manager_obj = {
             "Email": supervisor_email,
             "Name": supervisor_name,
         }
+        # If we have the manager's Kissflow ID, include it for proper lookup resolution
+        supervisor_kf_id = user.get("_supervisor_kf_id", "")
+        if supervisor_kf_id:
+            manager_obj["value"] = supervisor_kf_id
+        kf_ext["Manager"] = manager_obj
         kf_ext["L1_Manager_Email"] = supervisor_email
         kf_ext["L1_Manager_Name"] = supervisor_name
 
-    # L2 Manager - complex type with Email and Name sub-attributes
+    # L2 Manager - complex type: needs Kissflow user ID in 'value' for lookup to work
     l2_email = user.get("l2_manager_email", "")
     l2_name = user.get("l2_manager_name", "")
     if l2_email:
-        kf_ext["L2_Manager"] = {
+        l2_obj = {
             "Email": l2_email,
             "Name": l2_name,
         }
+        l2_kf_id = user.get("_l2_manager_kf_id", "")
+        if l2_kf_id:
+            l2_obj["value"] = l2_kf_id
+        kf_ext["L2_Manager"] = l2_obj
 
     payload[KISSFLOW_EXTENSION_SCHEMA] = kf_ext
+
+    # Standard SCIM Enterprise extension — Kissflow/Azure/OneLogin all respect `organization`
+    enterprise_ext = {}
+    if user.get("company"):
+        enterprise_ext["organization"] = user.get("company")
+    if user.get("department"):
+        enterprise_ext["department"] = user.get("department")
+    if user.get("adrenalin_employee_id"):
+        enterprise_ext["employeeNumber"] = user.get("adrenalin_employee_id")
+    if user.get("supervisor_email"):
+        enterprise_ext["manager"] = {
+            "value": user.get("_supervisor_kf_id", ""),
+            "displayName": user.get("supervisor_name", ""),
+        }
+    if enterprise_ext:
+        payload[ENTERPRISE_EXTENSION_SCHEMA] = enterprise_ext
+        if ENTERPRISE_EXTENSION_SCHEMA not in schemas:
+            schemas.append(ENTERPRISE_EXTENSION_SCHEMA)
+
     payload["schemas"] = schemas
     return payload
 
@@ -206,8 +271,11 @@ async def _request_with_retry(client: httpx.AsyncClient, method: str, url: str, 
     return resp
 
 
-async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token: str, user: dict) -> dict:
-    """Push a single user to Kissflow via SCIM. Creates if not exists, updates if exists."""
+async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token: str, user: dict, create_only: bool = False) -> dict:
+    """Push a single user to Kissflow via SCIM. 
+    If create_only=True, skip search and POST directly (faster for fresh sync).
+    Otherwise, search first then create or update.
+    """
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/scim+json",
@@ -216,6 +284,18 @@ async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token:
     email = user.get("email", "")
 
     try:
+        # Fast path: direct create (skip search) for fresh sync
+        if create_only:
+            resp = await _request_with_retry(client, "POST", f"{base_url}Users", headers, payload)
+            if resp.status_code in (200, 201):
+                kf_id = resp.json().get("id", "")
+                return {"action": "created", "email": email, "kf_id": kf_id}
+            elif resp.status_code == 409:
+                # Already exists - fall through to search+update
+                pass
+            else:
+                return {"action": "create_error", "email": email, "status": resp.status_code, "detail": resp.text[:300]}
+
         # Search for existing user
         filter_url = f"{base_url}Users?filter=userName eq \"{email}\""
         search_resp = await _request_with_retry(client, "GET", filter_url, headers)
@@ -364,7 +444,9 @@ async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
                     result["errors"].append(f"{email}: {res.get('detail', res['action'])}")
                     consecutive_auth_errors = 0
             else:
-                res = await push_user_to_kissflow(client, base_url, token, user)
+                # Use create_only mode if user has no kissflow_user_id (faster - skips search)
+                is_fresh = not user.get("kissflow_user_id")
+                res = await push_user_to_kissflow(client, base_url, token, user, create_only=is_fresh)
                 if res["action"] == "created":
                     result["created"] += 1
                     consecutive_auth_errors = 0
@@ -424,3 +506,114 @@ async def push_single_user_to_kissflow(db, org_id: str, email: str) -> dict:
         )
 
     return res
+
+
+
+async def resolve_managers_in_kissflow(db, org_id: str) -> dict:
+    """
+    Second pass: Update Manager and L2_Manager lookup fields with Kissflow User IDs.
+    This must run AFTER all users are created in Kissflow, because the Manager lookup
+    requires the manager's Kissflow internal user ID.
+    """
+    config = await get_kissflow_scim_config(db, org_id)
+    if not config:
+        return {"error": "Kissflow SCIM not configured"}
+
+    base_url = config["base_url"].rstrip("/") + "/"
+    token = config["token"]
+
+    # Build email -> kissflow_user_id mapping from our DB
+    all_users = await db.users.find(
+        {"org_id": org_id, "kissflow_user_id": {"$exists": True, "$ne": ""}},
+        {"_id": 0, "email": 1, "kissflow_user_id": 1}
+    ).to_list(5000)
+
+    email_to_kf_id = {u["email"]: u["kissflow_user_id"] for u in all_users}
+    logger.info(f"Manager resolution: {len(email_to_kf_id)} users with Kissflow IDs")
+
+    # Get users who have managers that we can now resolve
+    users_with_managers = await db.users.find(
+        {
+            "org_id": org_id,
+            "kissflow_user_id": {"$exists": True, "$ne": ""},
+            "$or": [
+                {"supervisor_email": {"$exists": True, "$ne": ""}},
+                {"l2_manager_email": {"$exists": True, "$ne": ""}},
+            ]
+        },
+        {"_id": 0, "password": 0}
+    ).to_list(5000)
+
+    result = {"total": len(users_with_managers), "updated": 0, "skipped": 0, "errors": [], "auth_errors": 0}
+    consecutive_auth_errors = 0
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/scim+json",
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        for i, user in enumerate(users_with_managers):
+            email = user.get("email", "")
+            kf_user_id = user.get("kissflow_user_id", "")
+            if not kf_user_id:
+                result["skipped"] += 1
+                continue
+
+            if consecutive_auth_errors >= 5:
+                result["errors"].append(f"Stopped: auth errors. Check token.")
+                break
+
+            supervisor_email = user.get("supervisor_email", "")
+            l2_email = user.get("l2_manager_email", "")
+
+            supervisor_kf_id = email_to_kf_id.get(supervisor_email, "")
+            l2_kf_id = email_to_kf_id.get(l2_email, "")
+
+            # Skip if no manager IDs to resolve
+            if not supervisor_kf_id and not l2_kf_id:
+                result["skipped"] += 1
+                continue
+
+            # Build PATCH payload for manager fields only
+            kf_ext = {}
+            if supervisor_kf_id:
+                kf_ext["Manager"] = {
+                    "value": supervisor_kf_id,
+                    "Email": supervisor_email,
+                    "Name": user.get("supervisor_name", ""),
+                }
+            if l2_kf_id:
+                kf_ext["L2_Manager"] = {
+                    "value": l2_kf_id,
+                    "Email": l2_email,
+                    "Name": user.get("l2_manager_name", ""),
+                }
+
+            # Use PUT to update the user with resolved manager IDs
+            user["_supervisor_kf_id"] = supervisor_kf_id
+            user["_l2_manager_kf_id"] = l2_kf_id
+            payload = _build_kissflow_user(user)
+
+            if i > 0:
+                await asyncio.sleep(REQUEST_DELAY)
+
+            try:
+                resp = await _request_with_retry(client, "PUT", f"{base_url}Users/{kf_user_id}", headers, payload)
+                if resp.status_code in (200, 201):
+                    result["updated"] += 1
+                    consecutive_auth_errors = 0
+                elif resp.status_code in (401, 403):
+                    result["auth_errors"] += 1
+                    consecutive_auth_errors += 1
+                else:
+                    result["errors"].append(f"{email}: {resp.status_code} {resp.text[:100]}")
+                    consecutive_auth_errors = 0
+            except Exception as e:
+                result["errors"].append(f"{email}: {str(e)[:100]}")
+
+            if (i + 1) % 100 == 0:
+                logger.info(f"Manager resolution progress: {i+1}/{len(users_with_managers)} (updated={result['updated']})")
+
+    result["completed_at"] = datetime.now(timezone.utc).isoformat()
+    return result
