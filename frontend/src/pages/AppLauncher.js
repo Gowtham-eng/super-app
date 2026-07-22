@@ -379,7 +379,7 @@ const AppLauncher = () => {
                             </span>
                           )}
                         </div>
-                        <span className={`text-[11px] font-medium text-center leading-tight line-clamp-2 w-full ${mRestricted ? 'text-slate-500' : 'text-slate-700'}`}>
+                        <span className={`text-[10px] font-medium text-center leading-tight line-clamp-2 break-words w-full ${mRestricted ? 'text-slate-500' : 'text-slate-700'}`}>
                           {app.name}
                         </span>
                         {mNoAccess && <Lock size={10} className="absolute top-1 right-1 text-slate-500" />}

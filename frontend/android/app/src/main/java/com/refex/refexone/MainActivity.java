@@ -1,5 +1,6 @@
 package com.refex.refexone;
 
+import android.content.pm.ApplicationInfo;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -18,6 +19,10 @@ import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import androidx.coordinatorlayout.widget.CoordinatorLayout;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
 import com.getcapacitor.BridgeActivity;
 
 /**
@@ -49,7 +54,21 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        boolean isDebuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        WebView.setWebContentsDebuggingEnabled(isDebuggable);
         closeBarHeightPx = Math.round(64 * getResources().getDisplayMetrics().density);
+
+        // Android 15+ (targetSdk 35) enforces edge-to-edge, drawing the WebView under the
+        // status/nav bars. Pad the WebView's container by the system bar insets on both
+        // edges so app content (header avatar, floating chat button, etc.) is never
+        // hidden behind the status bar or the 3-button/gesture nav bar.
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        View contentRoot = (View) getBridge().getWebView().getParent();
+        ViewCompat.setOnApplyWindowInsetsListener(contentRoot, (v, insets) -> {
+            Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            v.setPadding(0, systemBars.top, 0, systemBars.bottom);
+            return insets;
+        });
     }
 
     @Override
@@ -81,6 +100,7 @@ public class MainActivity extends BridgeActivity {
                 } else if (isRefexOneLoginUrl(url)) {
                     clearAppSession(view);
                 }
+                hideKissflowOwnHeader(view, url);
             }
 
             @Override
@@ -112,8 +132,27 @@ public class MainActivity extends BridgeActivity {
                     maybeRedirectToPendingModule(view, url);
                     updateCloseBar(view, url);
                 });
+                hideKissflowOwnHeader(view, url);
             }
         });
+    }
+
+    private void hideKissflowOwnHeader(WebView view, String url) {
+        if (url == null || !url.contains(KISSFLOW_DOMAIN)) return;
+        // Kissflow's in-page app bar (back/hamburger/title) duplicates our native close
+        // bar. Its class names are CSS-module hashed per build (e.g.
+        // "navBarParentContainer--b8b7c85a1d9560dc"), so match on the stable name prefix
+        // rather than the hash suffix, which can change on Kissflow's end.
+        view.evaluateJavascript(
+            "(function(){try{" +
+            "if(document.getElementById('refexone-hide-kf-header'))return;" +
+            "var style=document.createElement('style');" +
+            "style.id='refexone-hide-kf-header';" +
+            "style.textContent='[class*=\"navBarParentContainer\"]{display:none !important;}';" +
+            "(document.head||document.documentElement).appendChild(style);" +
+            "}catch(e){}})()",
+            null
+        );
     }
 
     private void captureModuleFromUrl(String url) {

@@ -82,7 +82,7 @@ const AppLauncher = () => {
         // Step 2: After session is established, redirect same tab to module URL
         setTimeout(() => {
           window.open(app.home_url, windowName);
-        }, 3500);
+        }, 500);
       } else {
         // Desktop + primary app: direct SSO
         window.open(completeUrl, '_blank');
