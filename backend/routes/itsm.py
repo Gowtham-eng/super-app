@@ -138,6 +138,33 @@ def register_itsm_routes(api_router: APIRouter, get_current_user):
             "processId": KISSFLOW_PROCESS_ID,
         }
 
+    @api_router.get("/itsm/kissflow-status")
+    async def kissflow_status(user: dict = Depends(get_current_user)):
+        """Lightweight Kissflow reachability check for ITSM card launch routing."""
+        path = (
+            f"/form/2/{KISSFLOW_ACCOUNT_ID}/{KISSFLOW_APPROVAL_MATRIX_ID}/list"
+            f"?page_number=1&page_size=1"
+            f"&_application_id={KISSFLOW_APPLICATION_ID}"
+        )
+        url = f"{KISSFLOW_BASE_URL}{path}"
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(url, headers=_kissflow_headers())
+            ok = 200 <= response.status_code < 300
+            return {
+                "ok": ok,
+                "status_code": response.status_code,
+                "base_url": KISSFLOW_BASE_URL,
+            }
+        except Exception as exc:
+            logger.warning("Kissflow status check failed: %s", exc)
+            return {
+                "ok": False,
+                "status_code": 0,
+                "base_url": KISSFLOW_BASE_URL,
+                "error": str(exc),
+            }
+
     @api_router.get("/itsm/approval-matrix")
     async def get_approval_matrix(user: dict = Depends(get_current_user)):
         path = (
@@ -201,8 +228,10 @@ def register_itsm_routes(api_router: APIRouter, get_current_user):
         criticality = body.criticality.strip()
         description = body.description.strip()
 
-        if entity not in ENTITY_OPTIONS:
-            raise HTTPException(status_code=400, detail="Invalid entity")
+        if not entity:
+            raise HTTPException(status_code=400, detail="Entity is required")
+        if not location:
+            raise HTTPException(status_code=400, detail="Location is required")
         if criticality not in CRITICALITY_OPTIONS:
             raise HTTPException(status_code=400, detail="Invalid criticality")
         if not description:

@@ -1,9 +1,33 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { launchUrlAfterKissflowClear } from '../utils/nativeSession';
 import { toast } from 'sonner';
-import { Search, Lock, MessageCircle, X, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight } from 'lucide-react';
+import { Search, Lock, MessageCircle, X, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight, Headphones, Loader2 } from 'lucide-react';
+
+const isItsmApp = (app = {}) => {
+  const name = (app.name || '').toLowerCase();
+  const desc = (app.description || '').toLowerCase();
+  const id = (app.id || '').toLowerCase();
+  return (
+    id === 'itsm-inapp' ||
+    /itsm|tech support|it support|helpdesk|it helpdesk|it service/.test(name) ||
+    /itsm|tech support|it helpdesk|helpdesk/.test(desc)
+  );
+};
+
+const ITSM_VIRTUAL_APP = {
+  id: 'itsm-inapp',
+  name: 'ITSM',
+  description: 'Raise an IT support ticket',
+  category: 'Support',
+  type: 'internal',
+  has_access: true,
+  is_placeholder: false,
+  sort_order: 1,
+  logo_url: '',
+};
 
 // Mobile palette (kept untouched)
 const APP_COLORS = [
@@ -53,6 +77,7 @@ const pickAppIcon = (name = '') => {
   if (/maint|repair|wrench|tool/.test(n)) return Wrench;
   if (/canteen|food|meal/.test(n)) return Utensils;
   if (/mobility|mobile|phone/.test(n)) return Smartphone;
+  if (/itsm|tech support|helpdesk|it support/.test(n)) return Headphones;
   return Briefcase;
 };
 
@@ -78,12 +103,14 @@ const CATEGORY_LABEL = {
 
 const AppLauncher = () => {
   const { API, getAuthHeader, user } = useAuth();
+  const navigate = useNavigate();
   const [apps, setApps] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [chatOpen, setChatOpen] = useState(false);
   const [now, setNow] = useState(new Date());
   const [activeFilter, setActiveFilter] = useState('All');
+  const [itsmChecking, setItsmChecking] = useState(false);
 
   useEffect(() => { fetchApps(); }, []);
   useEffect(() => {
@@ -99,9 +126,13 @@ const AppLauncher = () => {
   const fetchApps = async () => {
     try {
       const response = await axios.get(`${API}/launcher/apps`, getAuthHeader());
-      setApps(response.data);
+      const list = Array.isArray(response.data) ? response.data : [];
+      const withoutDup = list.filter((app) => app.id !== ITSM_VIRTUAL_APP.id);
+      const hasItsm = withoutDup.some(isItsmApp);
+      setApps(hasItsm ? withoutDup : [...withoutDup, ITSM_VIRTUAL_APP]);
     } catch (error) {
       toast.error('Failed to load apps');
+      setApps([ITSM_VIRTUAL_APP]);
     } finally {
       setLoading(false);
     }
@@ -112,7 +143,83 @@ const AppLauncher = () => {
   const isPWA = isCapacitor || window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   const isMobile = isCapacitor || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
+  const itsmApi = `${process.env.REACT_APP_ITSM_API_URL || process.env.REACT_APP_BACKEND_URL}/api`;
+
+  const launchKissflowApp = (app) => {
+    const baseUrl = process.env.REACT_APP_BACKEND_URL;
+    const token = localStorage.getItem('iam_token');
+
+    if (app.type === 'saml' && token) {
+      const completeUrl = `${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
+      const mobileFlow = isCapacitor || (isPWA && isMobile);
+
+      if (mobileFlow) {
+        const targetUrl = app.home_url
+          ? `${completeUrl}&mobile_module=${encodeURIComponent(app.home_url)}`
+          : completeUrl;
+        launchUrlAfterKissflowClear(targetUrl);
+      } else if (app.home_url) {
+        const windowName = 'kf_sso_' + app.id.substring(0, 8);
+        window.open(completeUrl, windowName);
+        setTimeout(() => {
+          window.open(app.home_url, windowName);
+        }, 3500);
+      } else {
+        window.open(completeUrl, '_blank');
+      }
+      return;
+    }
+
+    // No SAML app config — open Kissflow base / home_url if present
+    if (app.home_url) {
+      if (isPWA && isMobile) window.location.href = app.home_url;
+      else window.open(app.home_url, '_blank');
+      return;
+    }
+
+    // Fallback: in-app form
+    navigate('/itsm');
+  };
+
+  const handleItsmClick = async (app) => {
+    if (app.has_access === false) {
+      toast.error('You do not have permission to access this application. Please contact your administrator for assistance.', { duration: 6000 });
+      return;
+    }
+    if (app.policy_blocked) {
+      toast.error(app.policy_reason || 'Access blocked by policy');
+      return;
+    }
+
+    setItsmChecking(true);
+    try {
+      const res = await axios.get(`${itsmApi}/itsm/kissflow-status`, getAuthHeader());
+      const kissflowOk =
+        res.status === 200 &&
+        res.data?.ok === true &&
+        Number(res.data?.status_code) >= 200 &&
+        Number(res.data?.status_code) < 300;
+
+      if (kissflowOk && (app.type === 'saml' || app.home_url)) {
+        // Kissflow reachable → open Kissflow ITSM via SSO / home_url
+        launchKissflowApp(app);
+      } else {
+        // Kissflow error / non-200 / no SSO target → in-app form
+        navigate('/itsm');
+      }
+    } catch (err) {
+      navigate('/itsm');
+    } finally {
+      setItsmChecking(false);
+    }
+  };
+
   const launchApp = (app) => {
+    if (isItsmApp(app)) {
+      handleItsmClick(app);
+      return;
+    }
+
     if (app.is_placeholder) {
       toast.info(`${app.name} is coming soon`);
       return;
@@ -208,6 +315,14 @@ const AppLauncher = () => {
 
   return (
     <div className="animate-fadeIn" data-testid="app-launcher">
+      {itsmChecking && (
+        <div className="fixed inset-0 z-[60] bg-black/30 flex items-center justify-center">
+          <div className="bg-white rounded-2xl px-6 py-5 shadow-xl flex items-center gap-3">
+            <Loader2 className="animate-spin text-teal-600" size={22} />
+            <span className="text-sm font-medium text-slate-700">Checking Kissflow…</span>
+          </div>
+        </div>
+      )}
       {/* Mobile header — UNCHANGED */}
       <div className="sm:hidden mb-6" data-testid="welcome-header">
         <h1 className="font-heading text-2xl font-semibold text-slate-900 mb-1">Explore</h1>

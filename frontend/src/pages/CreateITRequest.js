@@ -25,18 +25,43 @@ const CRITICALITY_FALLBACK = ['Low', 'Medium', 'High', 'Critical'];
 
 const normalizeKey = (value = '') => value.trim().toLowerCase().replace(/\s+/g, ' ');
 
-const loadStoredProfile = (user) => {
+const mapEntityFromUser = (user) => {
+  const raw = (
+    user?.company ||
+    user?.legal_entity_code ||
+    user?.organization?.name ||
+    ''
+  ).trim();
+  if (!raw) return '';
+  const lower = raw.toLowerCase();
+  if (lower.includes('extrovis')) return 'Extrovis';
+  if (lower.includes('modepro') || lower.includes('mode pro')) return 'ModePro';
+  if (lower.includes('refex')) return 'Refex';
+  const exact = ENTITY_FALLBACK.find((opt) => opt.toLowerCase() === lower);
+  return exact || raw;
+};
+
+const profileFromUser = (user) => ({
+  name: (user?.name || user?.full_name || '').trim(),
+  email: (user?.email || '').trim(),
+  entity: mapEntityFromUser(user),
+  location: (user?.location || user?.office_location || '').trim(),
+});
+
+const mergeProfile = (user) => {
+  const fromLogin = profileFromUser(user);
   let stored = {};
   try {
     stored = JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) || '{}');
   } catch {
     stored = {};
   }
+  // Prefer login values; only fill gaps from stored edits.
   return {
-    name: stored.name || user?.name || user?.full_name || '',
-    email: stored.email || user?.email || '',
-    entity: stored.entity || 'Refex',
-    location: stored.location || 'Chennai',
+    name: fromLogin.name || stored.name || '',
+    email: fromLogin.email || stored.email || '',
+    entity: fromLogin.entity || stored.entity || '',
+    location: fromLogin.location || stored.location || '',
   };
 };
 
@@ -56,7 +81,7 @@ const CreateITRequest = () => {
   const [criticalityOptions, setCriticalityOptions] = useState(CRITICALITY_FALLBACK);
   const [entityOptions, setEntityOptions] = useState(ENTITY_FALLBACK);
 
-  const [profile, setProfile] = useState(() => loadStoredProfile(user));
+  const [profile, setProfile] = useState(() => mergeProfile(user));
   const [editOpen, setEditOpen] = useState(false);
   const [editForm, setEditForm] = useState(profile);
 
@@ -86,6 +111,9 @@ const CreateITRequest = () => {
     profile.email.trim() &&
     profile.entity.trim() &&
     profile.location.trim();
+
+  // Edit only when any personal field is missing from login/profile.
+  const needsProfileEdit = !profileComplete;
 
   const canSubmit =
     !!selectedMatrix &&
@@ -119,11 +147,16 @@ const CreateITRequest = () => {
 
   useEffect(() => {
     if (!user) return;
-    setProfile((prev) => ({
-      ...prev,
-      name: prev.name || user.name || user.full_name || '',
-      email: prev.email || user.email || '',
-    }));
+    setProfile((prev) => {
+      const next = mergeProfile(user);
+      // Keep user-filled gaps only where login still empty.
+      return {
+        name: next.name || prev.name,
+        email: next.email || prev.email,
+        entity: next.entity || prev.entity,
+        location: next.location || prev.location,
+      };
+    });
   }, [user]);
 
   useEffect(() => () => {
@@ -345,15 +378,22 @@ const CreateITRequest = () => {
           <section className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5">
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-heading text-base font-semibold text-slate-900">Personal details</h2>
-              <button
-                type="button"
-                onClick={() => { setEditForm(profile); setEditOpen(true); }}
-                className="inline-flex items-center gap-1.5 text-sm text-teal-700 hover:text-teal-800 font-medium"
-                data-testid="itsm-edit-profile"
-              >
-                <Pencil size={14} /> Edit
-              </button>
+              {needsProfileEdit && (
+                <button
+                  type="button"
+                  onClick={() => { setEditForm(profile); setEditOpen(true); }}
+                  className="inline-flex items-center gap-1.5 text-sm text-teal-700 hover:text-teal-800 font-medium"
+                  data-testid="itsm-edit-profile"
+                >
+                  <Pencil size={14} /> Edit
+                </button>
+              )}
             </div>
+            {!profileComplete && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-3">
+                Some personal details are missing from your login profile. Please fill them to submit.
+              </p>
+            )}
             <div className="space-y-3">
               <DetailRow icon={User} label="Name" value={profile.name} />
               <DetailRow icon={Mail} label="Email" value={profile.email} />
@@ -491,14 +531,28 @@ const CreateITRequest = () => {
               </Field>
               <Field label="Entity">
                 <select
-                  value={editForm.entity}
-                  onChange={(e) => setEditForm({ ...editForm, entity: e.target.value })}
-                  className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm"
+                  value={entityOptions.includes(editForm.entity) ? editForm.entity : (editForm.entity ? '__custom__' : '')}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === '__custom__') return;
+                    setEditForm({ ...editForm, entity: v });
+                  }}
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm mb-2"
                 >
+                  <option value="">Select entity</option>
                   {entityOptions.map((opt) => (
                     <option key={opt} value={opt}>{opt}</option>
                   ))}
+                  {editForm.entity && !entityOptions.includes(editForm.entity) && (
+                    <option value="__custom__">{editForm.entity}</option>
+                  )}
                 </select>
+                <input
+                  value={editForm.entity}
+                  onChange={(e) => setEditForm({ ...editForm, entity: e.target.value })}
+                  placeholder="Or type entity"
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm"
+                />
               </Field>
               <Field label="Location">
                 <input
