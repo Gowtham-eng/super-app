@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorPrimary">#059669</color>
+    <color name="colorPrimaryDark">#047857</color>
+    <color name="colorAccent">#10B981</color>
+    <color name="refex_emerald_50">#ECFDF5</color>
+    <color name="refex_emerald_100">#D1FAE5</color>
+    <color name="refex_white">#FFFFFF</color>
+</resources>

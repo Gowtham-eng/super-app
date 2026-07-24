@@ -5,6 +5,7 @@
     <string name="package_name">com.refex.refexone</string>
     <string name="custom_url_scheme">com.refex.refexone</string>
     <string name="back_to_launcher">Back to App Launcher</string>
+    <string name="back_to_app_center">Back to RefexOne App</string>
     <string name="in_app_loading">Opening application…</string>
     <string name="in_app_signing_in">Signing in securely…</string>
     <string name="in_app_application">Application</string>

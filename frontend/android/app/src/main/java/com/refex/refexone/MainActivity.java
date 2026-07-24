@@ -3,10 +3,12 @@ package com.refex.refexone;
 import android.content.pm.ApplicationInfo;
 import android.net.Uri;
 import android.os.Bundle;
-import android.view.Gravity;
+import android.util.TypedValue;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebResourceRequest;
@@ -15,14 +17,15 @@ import android.webkit.WebView;
 import android.webkit.WebBackForwardList;
 import android.webkit.WebStorage;
 import android.webkit.WebViewClient;
-import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import androidx.coordinatorlayout.widget.CoordinatorLayout;
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import com.getcapacitor.BridgeActivity;
 
 /**
@@ -45,11 +48,20 @@ public class MainActivity extends BridgeActivity {
     };
 
     private LinearLayout closeBar;
+    private LinearLayout contentHost;
+    private View backChip;
     private TextView closeSubtitle;
+    private TextView brandTitle;
     private int closeBarHeightPx;
+    private int compactBarHeightPx;
     private String pendingModuleUrl;
     private boolean pendingHistoryClear;
     private boolean moduleRedirectScheduled;
+    private View contentRoot;
+    private SwipeRefreshLayout swipeRefreshLayout;
+    private boolean webContentAtTop = true;
+    private boolean webViewClientAttached;
+    private Runnable pullRefreshFallbackRunnable;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -57,18 +69,43 @@ public class MainActivity extends BridgeActivity {
         boolean isDebuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         WebView.setWebContentsDebuggingEnabled(isDebuggable);
         closeBarHeightPx = Math.round(64 * getResources().getDisplayMetrics().density);
+        compactBarHeightPx = Math.round(48 * getResources().getDisplayMetrics().density);
 
-        // Android 15+ (targetSdk 35) enforces edge-to-edge, drawing the WebView under the
-        // status/nav bars. Pad the WebView's container by the system bar insets on both
-        // edges so app content (header avatar, floating chat button, etc.) is never
-        // hidden behind the status bar or the 3-button/gesture nav bar.
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
-        View contentRoot = (View) getBridge().getWebView().getParent();
+        applySystemBarPalette(CloseBarMode.HIDDEN);
+
+        contentRoot = (View) getBridge().getWebView().getParent();
         ViewCompat.setOnApplyWindowInsetsListener(contentRoot, (v, insets) -> {
-            Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(0, systemBars.top, 0, systemBars.bottom);
+            // Pad only the status bar at the top. Bottom inset padding left a visible
+            // gap under the WebView; Kissflow and the launcher handle their own footers.
+            Insets statusBars = insets.getInsets(WindowInsetsCompat.Type.statusBars());
+            v.setPadding(0, statusBars.top, 0, 0);
             return insets;
         });
+        ViewCompat.requestApplyInsets(contentRoot);
+    }
+
+    private void applySystemBarPalette(CloseBarMode mode) {
+        Window window = getWindow();
+        int statusColor = getColor(R.color.refex_emerald_50);
+        if (mode == CloseBarMode.FULL) {
+            statusColor = getColor(R.color.refex_white);
+        }
+
+        window.setStatusBarColor(statusColor);
+        window.setNavigationBarColor(getColor(R.color.refex_white));
+
+        WindowInsetsControllerCompat controller =
+            WindowCompat.getInsetsController(window, window.getDecorView());
+        if (controller != null) {
+            controller.setAppearanceLightStatusBars(true);
+            controller.setAppearanceLightNavigationBars(true);
+        }
+
+        window.getDecorView().setBackgroundColor(getColor(R.color.refex_emerald_50));
+        if (contentRoot != null) {
+            contentRoot.setBackgroundColor(statusColor);
+        }
     }
 
     @Override
@@ -90,6 +127,10 @@ public class MainActivity extends BridgeActivity {
 
         webView.addJavascriptInterface(new RefexOneBridge(), "RefexOneBridge");
         setupCloseBar(webView);
+        setupPullToRefresh(webView);
+
+        if (webViewClientAttached) return;
+        webViewClientAttached = true;
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
@@ -100,7 +141,7 @@ public class MainActivity extends BridgeActivity {
                 } else if (isRefexOneLoginUrl(url)) {
                     clearAppSession(view);
                 }
-                hideKissflowOwnHeader(view, url);
+                updateCloseBar(view, url);
             }
 
             @Override
@@ -108,6 +149,7 @@ public class MainActivity extends BridgeActivity {
                 if (isRefexOneLoginUrl(url)) {
                     clearAppSession(view);
                 }
+                updateCloseBar(view, url);
             }
 
             @Override
@@ -126,34 +168,19 @@ public class MainActivity extends BridgeActivity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+                injectPullRefreshSupport(view);
                 captureModuleFromUrl(url);
                 clearWebHistoryIfNeeded(view, url);
                 checkSessionStorageModule(view, url, () -> {
                     maybeRedirectToPendingModule(view, url);
                     updateCloseBar(view, url);
+                    stopPullRefresh();
                 });
-                hideKissflowOwnHeader(view, url);
             }
         });
     }
 
-    private void hideKissflowOwnHeader(WebView view, String url) {
-        if (url == null || !url.contains(KISSFLOW_DOMAIN)) return;
-        // Kissflow's in-page app bar (back/hamburger/title) duplicates our native close
-        // bar. Its class names are CSS-module hashed per build (e.g.
-        // "navBarParentContainer--b8b7c85a1d9560dc"), so match on the stable name prefix
-        // rather than the hash suffix, which can change on Kissflow's end.
-        view.evaluateJavascript(
-            "(function(){try{" +
-            "if(document.getElementById('refexone-hide-kf-header'))return;" +
-            "var style=document.createElement('style');" +
-            "style.id='refexone-hide-kf-header';" +
-            "style.textContent='[class*=\"navBarParentContainer\"]{display:none !important;}';" +
-            "(document.head||document.documentElement).appendChild(style);" +
-            "}catch(e){}})()",
-            null
-        );
-    }
+    private enum CloseBarMode { HIDDEN, COMPACT, FULL }
 
     private void captureModuleFromUrl(String url) {
         if (url == null || !url.contains("/api/saml/")) return;
@@ -239,19 +266,143 @@ public class MainActivity extends BridgeActivity {
         if (closeBar != null) return;
 
         ViewGroup parent = (ViewGroup) webView.getParent();
+        int webIndex = parent.indexOfChild(webView);
+        CoordinatorLayout.LayoutParams coordinatorParams =
+            (CoordinatorLayout.LayoutParams) webView.getLayoutParams();
+
+        parent.removeView(webView);
+
+        contentHost = new LinearLayout(this);
+        contentHost.setOrientation(LinearLayout.VERTICAL);
+        contentHost.setLayoutParams(coordinatorParams);
+
         closeBar = (LinearLayout) LayoutInflater.from(this)
-            .inflate(R.layout.in_app_close_bar, parent, false);
+            .inflate(R.layout.in_app_close_bar, contentHost, false);
         closeSubtitle = closeBar.findViewById(R.id.in_app_close_subtitle);
-        ImageButton backButton = closeBar.findViewById(R.id.in_app_back_button);
+        brandTitle = closeBar.findViewById(R.id.in_app_brand_title);
+        backChip = closeBar.findViewById(R.id.in_app_back_chip);
 
-        backButton.setOnClickListener(v -> returnToLauncher(webView));
+        backChip.setOnClickListener(v -> returnToLauncher(webView));
 
-        CoordinatorLayout.LayoutParams params = new CoordinatorLayout.LayoutParams(
+        closeBar.setLayoutParams(new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            closeBarHeightPx
+            compactBarHeightPx
+        ));
+        closeBar.setVisibility(View.GONE);
+        closeBar.setElevation(4f * getResources().getDisplayMetrics().density);
+
+        webView.setLayoutParams(new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            0,
+            1f
+        ));
+
+        contentHost.addView(closeBar);
+        contentHost.addView(webView);
+        parent.addView(contentHost, webIndex);
+    }
+
+    private void setupPullToRefresh(WebView webView) {
+        if (swipeRefreshLayout != null || contentHost == null) return;
+
+        contentHost.removeView(webView);
+
+        swipeRefreshLayout = new SwipeRefreshLayout(this);
+        swipeRefreshLayout.setLayoutParams(new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            0,
+            1f
+        ));
+        swipeRefreshLayout.setColorSchemeColors(0xFF10B981, 0xFF059669);
+
+        int statusTop = contentRoot != null ? contentRoot.getPaddingTop() : 0;
+        int endOffset = statusTop + Math.round(48 * getResources().getDisplayMetrics().density);
+        swipeRefreshLayout.setProgressViewOffset(false, statusTop, endOffset);
+        swipeRefreshLayout.setOnChildScrollUpCallback((parentLayout, child) -> !webContentAtTop);
+        swipeRefreshLayout.setOnRefreshListener(() -> handlePullToRefresh(webView));
+
+        webView.setLayoutParams(new ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+        swipeRefreshLayout.addView(webView);
+        contentHost.addView(swipeRefreshLayout);
+
+        setupWebViewPullTouch(webView);
+    }
+
+    private void setupWebViewPullTouch(WebView webView) {
+        webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        webView.setOnTouchListener((v, event) -> {
+            if (swipeRefreshLayout == null) return false;
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
+                swipeRefreshLayout.requestDisallowInterceptTouchEvent(!webContentAtTop);
+            }
+            return false;
+        });
+    }
+
+    private void injectPullRefreshSupport(WebView view) {
+        if (view == null) return;
+        view.evaluateJavascript(
+            "(function(){try{" +
+            "function atTop(){var y=window.pageYOffset||document.documentElement.scrollTop||document.body.scrollTop||0;" +
+            "if(y>2)return false;var nodes=document.querySelectorAll('main,[data-scroll-root]');" +
+            "for(var i=0;i<nodes.length;i++){if(nodes[i].scrollTop>2)return false;}return true;}" +
+            "function report(){try{if(window.RefexOneBridge&&RefexOneBridge.setWebContentAtTop){" +
+            "RefexOneBridge.setWebContentAtTop(atTop());}}catch(e){}}" +
+            "if(!window.__refexoneScrollHook){window.__refexoneScrollHook=true;" +
+            "window.addEventListener('scroll',report,{passive:true,capture:true});" +
+            "document.addEventListener('scroll',report,{passive:true,capture:true});}" +
+            "report();}catch(e){}})()",
+            null
         );
-        params.gravity = Gravity.TOP;
-        parent.addView(closeBar, params);
+    }
+
+    private void handlePullToRefresh(WebView webView) {
+        if (webView == null) {
+            stopPullRefresh();
+            return;
+        }
+        if (pullRefreshFallbackRunnable != null) {
+            webView.removeCallbacks(pullRefreshFallbackRunnable);
+            pullRefreshFallbackRunnable = null;
+        }
+
+        String url = webView.getUrl();
+        if (url != null && isRefexOneUrl(url) && !url.contains("/api/saml/")) {
+            webView.evaluateJavascript(
+                "try{window.dispatchEvent(new CustomEvent('refexone-pull-refresh'));}catch(e){}",
+                null
+            );
+            pullRefreshFallbackRunnable = () -> {
+                pullRefreshFallbackRunnable = null;
+                if (swipeRefreshLayout != null && swipeRefreshLayout.isRefreshing()) {
+                    webView.reload();
+                }
+            };
+            webView.postDelayed(pullRefreshFallbackRunnable, 900);
+            return;
+        }
+        webView.reload();
+    }
+
+    private void stopPullRefresh() {
+        WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+        if (webView != null && pullRefreshFallbackRunnable != null) {
+            webView.removeCallbacks(pullRefreshFallbackRunnable);
+            pullRefreshFallbackRunnable = null;
+        }
+        if (swipeRefreshLayout != null) {
+            swipeRefreshLayout.setRefreshing(false);
+        }
+    }
+
+    private void updatePullToRefreshState(String url) {
+        if (swipeRefreshLayout == null) return;
+        boolean enabled = url == null || !url.contains("/api/saml/");
+        swipeRefreshLayout.setEnabled(enabled);
     }
 
     private void returnToLauncher(WebView webView) {
@@ -366,31 +517,97 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void updateCloseBar(WebView webView, String url) {
-        setCloseBarVisible(webView, shouldShowCloseBar(url), url);
+        updatePullToRefreshState(url);
+        setCloseBarMode(webView, getCloseBarMode(url), url);
     }
 
-    private void setCloseBarVisible(WebView webView, boolean show, String url) {
-        if (closeBar == null) return;
-        closeBar.setVisibility(show ? View.VISIBLE : View.GONE);
-        webView.setPadding(0, show ? closeBarHeightPx : 0, 0, 0);
-        if (show && url != null && closeSubtitle != null) {
-            closeSubtitle.setText(resolveSubtitle(url));
+    private CloseBarMode getCloseBarMode(String url) {
+        if (url == null || url.isEmpty()) return CloseBarMode.HIDDEN;
+        if (isKissflowUrl(url) && isKissflowReadyForModuleRedirect(url)) {
+            return CloseBarMode.COMPACT;
         }
-    }
-
-    private boolean shouldShowCloseBar(String url) {
-        if (url == null || url.isEmpty()) return false;
         try {
             Uri uri = Uri.parse(url);
             String host = uri.getHost();
-            if (host == null) return false;
+            if (host == null) return CloseBarMode.HIDDEN;
             if (host.contains(APP_HOST)) {
                 String path = uri.getPath() != null ? uri.getPath() : "";
-                return path.contains("/api/saml/");
+                return path.contains("/api/saml/") ? CloseBarMode.FULL : CloseBarMode.HIDDEN;
             }
-            return true;
+            return CloseBarMode.FULL;
         } catch (Exception e) {
-            return false;
+            return CloseBarMode.HIDDEN;
+        }
+    }
+
+    private void setCloseBarMode(WebView webView, CloseBarMode mode, String url) {
+        if (closeBar == null) return;
+
+        if (mode == CloseBarMode.HIDDEN) {
+            closeBar.setVisibility(View.GONE);
+            applySystemBarPalette(CloseBarMode.HIDDEN);
+            return;
+        }
+
+        closeBar.setVisibility(View.VISIBLE);
+        applySystemBarPalette(mode);
+        int barHeight = mode == CloseBarMode.COMPACT ? compactBarHeightPx : closeBarHeightPx;
+        ViewGroup.LayoutParams barParams = closeBar.getLayoutParams();
+        barParams.height = barHeight;
+        closeBar.setLayoutParams(barParams);
+
+        if (brandTitle != null && closeSubtitle != null) {
+            if (mode == CloseBarMode.COMPACT) {
+                closeBar.setBackgroundResource(R.drawable.in_app_toolbar_bg_compact);
+                closeSubtitle.setVisibility(View.GONE);
+                brandTitle.setText(getString(R.string.back_to_app_center));
+                brandTitle.setTextColor(0xFF047857);
+                brandTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            } else {
+                closeBar.setBackgroundResource(R.drawable.in_app_toolbar_bg);
+                closeSubtitle.setVisibility(View.VISIBLE);
+                brandTitle.setText(getString(R.string.app_name));
+                brandTitle.setTextColor(0xFF0F172A);
+                brandTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+                if (url != null) {
+                    closeSubtitle.setText(resolveSubtitle(url));
+                }
+            }
+        }
+
+        if (mode == CloseBarMode.COMPACT && url != null) {
+            webView.postDelayed(() -> trimKissflowChromeGap(webView), 300);
+        }
+    }
+
+    private void trimKissflowChromeGap(WebView view) {
+        if (view == null) return;
+        view.evaluateJavascript(
+            "(function(){try{" +
+            "var s=document.getElementById('refexone-kf-trim-gap');" +
+            "if(!s){s=document.createElement('style');s.id='refexone-kf-trim-gap';" +
+            "(document.head||document.documentElement).appendChild(s);}" +
+            "s.textContent=" +
+            "'html,body,#root,#app{padding-top:0!important;margin-top:0!important;padding-bottom:0!important;margin-bottom:0!important;}'" +
+            "+'[class*=\"navBarParentContainer\"]{margin-top:0!important;padding-top:0!important;}'" +
+            "+'[class*=\"safeArea\"],[class*=\"SafeArea\"]{padding-top:0!important;margin-top:0!important;padding-bottom:0!important;margin-bottom:0!important;}'" +
+            "+'[class*=\"bottomNav\"],[class*=\"BottomNav\"],[class*=\"footerContainer\"]{margin-bottom:0!important;}';" +
+            "}catch(e){}})()",
+            null
+        );
+    }
+
+    private void setCloseBarVisible(WebView webView, boolean show, String url) {
+        setCloseBarMode(webView, show ? CloseBarMode.FULL : CloseBarMode.HIDDEN, url);
+    }
+
+    private boolean isKissflowUrl(String url) {
+        if (url == null) return false;
+        try {
+            String host = Uri.parse(url).getHost();
+            return host != null && host.contains(KISSFLOW_DOMAIN);
+        } catch (Exception e) {
+            return url.contains(KISSFLOW_DOMAIN);
         }
     }
 
@@ -418,9 +635,28 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onBackPressed() {
         WebView webView = getBridge().getWebView();
+        String url = webView != null ? webView.getUrl() : null;
         // After toolbar ←, history is cleared; never hardware-back into Kissflow from RefexOne
         if (webView != null && wouldBackLeaveRefexOne(webView)) {
             webView.clearHistory();
+            return;
+        }
+        // Kissflow: hardware back navigates within app; toolbar ← returns to RefexOne launcher
+        if (webView != null && isKissflowUrl(url)) {
+            if (webView.canGoBack()) {
+                WebBackForwardList list = webView.copyBackForwardList();
+                int idx = list.getCurrentIndex();
+                if (idx > 0) {
+                    String backUrl = list.getItemAtIndex(idx - 1).getUrl();
+                    if (backUrl != null && (isRefexOneUrl(backUrl) || backUrl.contains("/api/saml/"))) {
+                        returnToLauncher(webView);
+                        return;
+                    }
+                }
+                webView.goBack();
+            } else {
+                returnToLauncher(webView);
+            }
             return;
         }
         if (webView != null && webView.canGoBack()) {
@@ -436,6 +672,16 @@ public class MainActivity extends BridgeActivity {
             if (url != null && !url.isEmpty()) {
                 pendingModuleUrl = url;
             }
+        }
+
+        @JavascriptInterface
+        public void setWebContentAtTop(boolean atTop) {
+            webContentAtTop = atTop;
+        }
+
+        @JavascriptInterface
+        public void onPullRefreshComplete() {
+            runOnUiThread(() -> MainActivity.this.stopPullRefresh());
         }
 
         @JavascriptInterface

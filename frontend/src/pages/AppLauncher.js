@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { launchUrlAfterKissflowClear } from '../utils/nativeSession';
+import { launchUrlAfterKissflowClear, useNativePullToRefresh } from '../utils/nativeSession';
 import { toast } from 'sonner';
 import { Search, Lock, MessageCircle, X, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight } from 'lucide-react';
 
@@ -36,6 +36,13 @@ const hashString = (str = '') => {
 };
 
 const getTilePalette = (app) => DESKTOP_TILE_PALETTE[hashString(app.id || app.name) % DESKTOP_TILE_PALETTE.length];
+
+// Stored logo URLs may use http:// while the app runs on https:// — upgrade to avoid mixed-content blocks
+const secureAssetUrl = (url) => {
+  if (!url || typeof url !== 'string') return url;
+  if (url.startsWith('http://')) return `https://${url.slice(7)}`;
+  return url;
+};
 
 // Pick a Lucide icon for each app based on name keywords
 const pickAppIcon = (name = '') => {
@@ -85,7 +92,21 @@ const AppLauncher = () => {
   const [now, setNow] = useState(new Date());
   const [activeFilter, setActiveFilter] = useState('All');
 
-  useEffect(() => { fetchApps(); }, []);
+  const fetchApps = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
+    try {
+      const response = await axios.get(`${API}/launcher/apps`, getAuthHeader());
+      setApps(response.data);
+      if (silent) toast.success('Apps updated');
+    } catch (error) {
+      toast.error('Failed to load apps');
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [API, getAuthHeader]);
+
+  useEffect(() => { fetchApps(); }, [fetchApps]);
+  useNativePullToRefresh(useCallback(() => fetchApps({ silent: true }), [fetchApps]));
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 30000); // refresh every 30s
     return () => clearInterval(t);
@@ -95,17 +116,6 @@ const AppLauncher = () => {
   const formatTime = (d) => d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 
   const firstName = (user?.name || user?.full_name || 'there').split(' ')[0];
-
-  const fetchApps = async () => {
-    try {
-      const response = await axios.get(`${API}/launcher/apps`, getAuthHeader());
-      setApps(response.data);
-    } catch (error) {
-      toast.error('Failed to load apps');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   // Detect Capacitor (native Android/iOS wrapper) — display-mode standalone does NOT match in Capacitor
   const isCapacitor = typeof window !== 'undefined' && !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
@@ -146,7 +156,7 @@ const AppLauncher = () => {
         // Step 2: After session is established, redirect same tab to module URL
         setTimeout(() => {
           window.open(app.home_url, windowName);
-        }, 3500);
+        }, 300);
       } else {
         // Desktop + primary app: direct SSO
         window.open(completeUrl, '_blank');
@@ -372,7 +382,7 @@ const AppLauncher = () => {
                       >
                         <div className={`w-12 h-12 rounded-xl ${c.bg} ${c.border} border flex items-center justify-center mb-1.5`}>
                           {app.logo_url ? (
-                            <img src={app.logo_url} alt={app.name} className={`w-7 h-7 object-contain ${mRestricted ? 'grayscale-[40%]' : ''}`} />
+                            <img src={secureAssetUrl(app.logo_url)} alt={app.name} className={`w-7 h-7 object-contain ${mRestricted ? 'grayscale-[40%]' : ''}`} />
                           ) : (
                             <span className={`font-heading font-bold text-base ${c.text}`}>
                               {app.name.charAt(0).toUpperCase()}
@@ -421,7 +431,7 @@ const AppLauncher = () => {
                             'bg-white shadow-sm border border-slate-200 group-hover:scale-110'
                           }`}>
                             {app.logo_url ? (
-                              <img src={app.logo_url} alt={app.name} className={`w-8 h-8 object-contain ${restricted ? 'grayscale-[40%]' : ''}`} />
+                              <img src={secureAssetUrl(app.logo_url)} alt={app.name} className={`w-8 h-8 object-contain ${restricted ? 'grayscale-[40%]' : ''}`} />
                             ) : (
                               <AppIcon size={26} strokeWidth={2} className={app.is_placeholder || restricted ? 'text-slate-400' : 'text-slate-600'} />
                             )}
