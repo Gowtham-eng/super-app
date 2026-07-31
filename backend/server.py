@@ -19,6 +19,7 @@ from services.email_service import send_email, build_access_request_email, build
 from services.adrenalin_sync import sync_employees
 from services.kissflow_scim_client import sync_to_kissflow, push_single_user_to_kissflow, get_kissflow_scim_config, save_kissflow_scim_config, resolve_managers_in_kissflow
 from routes import scim as scim_router_module
+from routes.itsm import register_itsm_routes
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -3193,6 +3194,9 @@ async def trigger_manager_resolution(background_tasks: BackgroundTasks, user: di
 @api_router.get("/health")
 async def health():
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+# ITSM ticket routes (Kissflow proxy — approval matrix + webhook submit)
+register_itsm_routes(api_router, get_current_user, db)
 
 # Include router
 app.include_router(api_router)

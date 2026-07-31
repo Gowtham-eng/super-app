@@ -1,9 +1,33 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { launchUrlAfterKissflowClear, useNativePullToRefresh } from '../utils/nativeSession';
+import { launchUrlAfterKissflowClear } from '../utils/nativeSession';
 import { toast } from 'sonner';
-import { Search, Lock, MessageCircle, X, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight } from 'lucide-react';
+import { Search, Lock, MessageCircle, X, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight, Headphones, Loader2 } from 'lucide-react';
+
+const isItsmApp = (app = {}) => {
+  const name = (app.name || '').toLowerCase();
+  const desc = (app.description || '').toLowerCase();
+  const id = (app.id || '').toLowerCase();
+  return (
+    id === 'itsm-inapp' ||
+    /itsm|tech support|it support|helpdesk|it helpdesk|it service/.test(name) ||
+    /itsm|tech support|it helpdesk|helpdesk/.test(desc)
+  );
+};
+
+const ITSM_VIRTUAL_APP = {
+  id: 'itsm-inapp',
+  name: 'ITSM',
+  description: 'Raise an IT support ticket',
+  category: 'Support',
+  type: 'internal',
+  has_access: true,
+  is_placeholder: false,
+  sort_order: 1,
+  logo_url: '',
+};
 
 // Mobile palette (kept untouched)
 const APP_COLORS = [
@@ -37,13 +61,6 @@ const hashString = (str = '') => {
 
 const getTilePalette = (app) => DESKTOP_TILE_PALETTE[hashString(app.id || app.name) % DESKTOP_TILE_PALETTE.length];
 
-// Stored logo URLs may use http:// while the app runs on https:// — upgrade to avoid mixed-content blocks
-const secureAssetUrl = (url) => {
-  if (!url || typeof url !== 'string') return url;
-  if (url.startsWith('http://')) return `https://${url.slice(7)}`;
-  return url;
-};
-
 // Pick a Lucide icon for each app based on name keywords
 const pickAppIcon = (name = '') => {
   const n = name.toLowerCase();
@@ -60,6 +77,7 @@ const pickAppIcon = (name = '') => {
   if (/maint|repair|wrench|tool/.test(n)) return Wrench;
   if (/canteen|food|meal/.test(n)) return Utensils;
   if (/mobility|mobile|phone/.test(n)) return Smartphone;
+  if (/itsm|tech support|helpdesk|it support/.test(n)) return Headphones;
   return Briefcase;
 };
 
@@ -85,28 +103,16 @@ const CATEGORY_LABEL = {
 
 const AppLauncher = () => {
   const { API, getAuthHeader, user } = useAuth();
+  const navigate = useNavigate();
   const [apps, setApps] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [chatOpen, setChatOpen] = useState(false);
   const [now, setNow] = useState(new Date());
   const [activeFilter, setActiveFilter] = useState('All');
+  const [itsmChecking, setItsmChecking] = useState(false);
 
-  const fetchApps = useCallback(async ({ silent = false } = {}) => {
-    if (!silent) setLoading(true);
-    try {
-      const response = await axios.get(`${API}/launcher/apps`, getAuthHeader());
-      setApps(response.data);
-      if (silent) toast.success('Apps updated');
-    } catch (error) {
-      toast.error('Failed to load apps');
-    } finally {
-      if (!silent) setLoading(false);
-    }
-  }, [API, getAuthHeader]);
-
-  useEffect(() => { fetchApps(); }, [fetchApps]);
-  useNativePullToRefresh(useCallback(() => fetchApps({ silent: true }), [fetchApps]));
+  useEffect(() => { fetchApps(); }, []);
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 30000); // refresh every 30s
     return () => clearInterval(t);
@@ -117,12 +123,115 @@ const AppLauncher = () => {
 
   const firstName = (user?.name || user?.full_name || 'there').split(' ')[0];
 
+  const fetchApps = async () => {
+    try {
+      const response = await axios.get(`${API}/launcher/apps`, getAuthHeader());
+      const list = Array.isArray(response.data) ? response.data : [];
+      const withoutDup = list.filter((app) => app.id !== ITSM_VIRTUAL_APP.id);
+      const hasItsm = withoutDup.some(isItsmApp);
+      setApps(hasItsm ? withoutDup : [...withoutDup, ITSM_VIRTUAL_APP]);
+    } catch (error) {
+      toast.error('Failed to load apps');
+      setApps([ITSM_VIRTUAL_APP]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Detect Capacitor (native Android/iOS wrapper) — display-mode standalone does NOT match in Capacitor
   const isCapacitor = typeof window !== 'undefined' && !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
   const isPWA = isCapacitor || window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   const isMobile = isCapacitor || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
+  const itsmApi = `${process.env.REACT_APP_ITSM_API_URL || process.env.REACT_APP_BACKEND_URL}/api`;
+
+  const launchKissflowApp = (app) => {
+    const baseUrl = process.env.REACT_APP_BACKEND_URL;
+    const token = localStorage.getItem('iam_token');
+
+    if (app.type === 'saml' && token) {
+      const completeUrl = `${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
+      const mobileFlow = isCapacitor || (isPWA && isMobile);
+
+      if (mobileFlow) {
+        const targetUrl = app.home_url
+          ? `${completeUrl}&mobile_module=${encodeURIComponent(app.home_url)}`
+          : completeUrl;
+        launchUrlAfterKissflowClear(targetUrl);
+      } else if (app.home_url) {
+        const windowName = 'kf_sso_' + app.id.substring(0, 8);
+        window.open(completeUrl, windowName);
+        setTimeout(() => {
+          window.open(app.home_url, windowName);
+        }, 3500);
+      } else {
+        window.open(completeUrl, '_blank');
+      }
+      return;
+    }
+
+    // No SAML app config — open Kissflow base / home_url if present
+    if (app.home_url) {
+      if (isPWA && isMobile) window.location.href = app.home_url;
+      else window.open(app.home_url, '_blank');
+      return;
+    }
+
+    // Fallback: in-app form
+    navigate('/itsm');
+  };
+
+  const handleItsmClick = async (app) => {
+    if (app.has_access === false) {
+      toast.error('You do not have permission to access this application. Please contact your administrator for assistance.', { duration: 6000 });
+      return;
+    }
+    if (app.policy_blocked) {
+      toast.error(app.policy_reason || 'Access blocked by policy');
+      return;
+    }
+
+    setItsmChecking(true);
+    try {
+      const res = await axios.get(`${itsmApi}/itsm/kissflow-status`, getAuthHeader());
+      const kissflowOk =
+        res.status === 200 &&
+        res.data?.ok === true &&
+        Number(res.data?.status_code) >= 200 &&
+        Number(res.data?.status_code) < 300;
+      const userInKissflow = res.data?.user_in_kissflow === true;
+      const canLaunchKissflow =
+        kissflowOk &&
+        userInKissflow &&
+        (app.type === 'saml' || app.home_url);
+
+      if (canLaunchKissflow) {
+        launchKissflowApp(app);
+      } else {
+        navigate('/itsm', {
+          state: {
+            kissflowFallback: !userInKissflow || !kissflowOk,
+            reason: !userInKissflow
+              ? 'not_in_kissflow'
+              : !kissflowOk
+                ? 'kissflow_unavailable'
+                : 'no_sso_target',
+          },
+        });
+      }
+    } catch (err) {
+      navigate('/itsm', { state: { kissflowFallback: true, reason: 'check_failed' } });
+    } finally {
+      setItsmChecking(false);
+    }
+  };
+
   const launchApp = (app) => {
+    if (isItsmApp(app)) {
+      handleItsmClick(app);
+      return;
+    }
+
     if (app.is_placeholder) {
       toast.info(`${app.name} is coming soon`);
       return;
@@ -156,7 +265,7 @@ const AppLauncher = () => {
         // Step 2: After session is established, redirect same tab to module URL
         setTimeout(() => {
           window.open(app.home_url, windowName);
-        }, 300);
+        }, 3500);
       } else {
         // Desktop + primary app: direct SSO
         window.open(completeUrl, '_blank');
@@ -218,6 +327,14 @@ const AppLauncher = () => {
 
   return (
     <div className="animate-fadeIn" data-testid="app-launcher">
+      {itsmChecking && (
+        <div className="fixed inset-0 z-[60] bg-black/30 flex items-center justify-center">
+          <div className="bg-white rounded-2xl px-6 py-5 shadow-xl flex items-center gap-3">
+            <Loader2 className="animate-spin text-teal-600" size={22} />
+            <span className="text-sm font-medium text-slate-700">Checking Kissflow…</span>
+          </div>
+        </div>
+      )}
       {/* Mobile header — UNCHANGED */}
       <div className="sm:hidden mb-6" data-testid="welcome-header">
         <h1 className="font-heading text-2xl font-semibold text-slate-900 mb-1">Explore</h1>
@@ -382,7 +499,7 @@ const AppLauncher = () => {
                       >
                         <div className={`w-12 h-12 rounded-xl ${c.bg} ${c.border} border flex items-center justify-center mb-1.5`}>
                           {app.logo_url ? (
-                            <img src={secureAssetUrl(app.logo_url)} alt={app.name} className={`w-7 h-7 object-contain ${mRestricted ? 'grayscale-[40%]' : ''}`} />
+                            <img src={app.logo_url} alt={app.name} className={`w-7 h-7 object-contain ${mRestricted ? 'grayscale-[40%]' : ''}`} />
                           ) : (
                             <span className={`font-heading font-bold text-base ${c.text}`}>
                               {app.name.charAt(0).toUpperCase()}
@@ -431,7 +548,7 @@ const AppLauncher = () => {
                             'bg-white shadow-sm border border-slate-200 group-hover:scale-110'
                           }`}>
                             {app.logo_url ? (
-                              <img src={secureAssetUrl(app.logo_url)} alt={app.name} className={`w-8 h-8 object-contain ${restricted ? 'grayscale-[40%]' : ''}`} />
+                              <img src={app.logo_url} alt={app.name} className={`w-8 h-8 object-contain ${restricted ? 'grayscale-[40%]' : ''}`} />
                             ) : (
                               <AppIcon size={26} strokeWidth={2} className={app.is_placeholder || restricted ? 'text-slate-400' : 'text-slate-600'} />
                             )}

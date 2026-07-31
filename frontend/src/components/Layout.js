@@ -1,7 +1,6 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { isCapacitorNative, useNativePullToRefresh } from '../utils/nativeSession';
 import axios from 'axios';
 import { toast } from 'sonner';
 import {
@@ -105,13 +104,6 @@ const Layout = ({ children }) => {
 
   const navSections = isAdmin ? adminSections : userSections;
   const isActive = (path) => location.pathname === path;
-
-  useNativePullToRefresh(useCallback(() => {
-    if (!isCapacitorNative()) return undefined;
-    if (location.pathname.startsWith('/launcher')) return undefined;
-    window.location.reload();
-    return undefined;
-  }, [location.pathname]));
 
   const initials = (user?.name || 'U').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 

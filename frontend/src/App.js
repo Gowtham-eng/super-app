@@ -18,6 +18,7 @@ import AuditLogs from "./pages/AuditLogs";
 import Settings from "./pages/Settings";
 import HRSync from "./pages/HRSync";
 import SCIMSetup from "./pages/SCIMSetup";
+import CreateITRequest from "./pages/CreateITRequest";
 import Layout from "./components/Layout";
 import "./App.css";
 
@@ -91,6 +92,7 @@ function App() {
           {/* User-accessible routes */}
           <Route path="/launcher" element={<ProtectedRoute><AppLauncher /></ProtectedRoute>} />
           <Route path="/catalog" element={<ProtectedRoute><AppCatalog /></ProtectedRoute>} />
+          <Route path="/itsm" element={<ProtectedRoute><CreateITRequest /></ProtectedRoute>} />
           {/* Admin-only routes */}
           <Route path="/apps/saml" element={<AdminRoute><SAMLApps /></AdminRoute>} />
           <Route path="/apps/oidc" element={<AdminRoute><OIDCApps /></AdminRoute>} />
