@@ -29,13 +29,22 @@ const HRSync = () => {
 
   const triggerSync = async () => {
     setSyncing(true);
+    setLastResult(null);
     try {
       const res = await axios.post(`${API}/hr-sync/trigger`, {}, getAuthHeader());
       setLastResult(res.data);
-      toast.success(`Sync complete: ${res.data.created} created, ${res.data.disabled} disabled`);
+      if (res.data.errors?.length) {
+        toast.error(res.data.errors[0]);
+      } else {
+        toast.success(`Sync complete: ${res.data.created} created, ${res.data.updated || 0} updated, ${res.data.disabled} disabled`);
+      }
       fetchLogs();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Sync failed');
+      const detail = err.response?.data?.detail;
+      if (detail) {
+        setLastResult({ total: 0, created: 0, disabled: 0, updated: 0, errors: [detail] });
+      }
+      toast.error(detail || 'Sync failed');
     } finally {
       setSyncing(false);
     }
@@ -92,6 +101,17 @@ const HRSync = () => {
             </div>
             <p className="text-2xl font-bold text-red-600">{lastResult.errors?.length || 0}</p>
           </div>
+        </div>
+      )}
+
+      {lastResult?.errors?.length > 0 && (
+        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+          <p className="text-sm font-medium text-red-800 mb-1">Sync errors</p>
+          <ul className="text-xs text-red-700 space-y-1 list-disc pl-4">
+            {lastResult.errors.map((err, idx) => (
+              <li key={idx}>{err}</li>
+            ))}
+          </ul>
         </div>
       )}
 

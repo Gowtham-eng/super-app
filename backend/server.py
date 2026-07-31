@@ -22,7 +22,7 @@ from routes import scim as scim_router_module
 from routes.itsm import register_itsm_routes
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / '.env', override=True)
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -3008,12 +3008,15 @@ async def update_access_request(request_id: str, body: dict, user: dict = Depend
 # ===================== HR SYNC (ADRENALIN) =====================
 
 @api_router.post("/hr-sync/trigger")
-async def trigger_hr_sync(user: dict = Depends(get_current_user)):
+async def trigger_hr_sync(background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     """Admin manually triggers HR sync"""
     if user.get("role") != "org_admin":
         raise HTTPException(status_code=403, detail="Only admins can trigger HR sync")
 
-    result = await sync_employees(db, user["org_id"])
+    result = await sync_employees(db, user["org_id"], skip_kissflow=True)
+
+    if result.get("errors") and not result.get("total"):
+        raise HTTPException(status_code=502, detail=result["errors"][0])
 
     # Log the sync
     log_doc = {
@@ -3030,7 +3033,19 @@ async def trigger_hr_sync(user: dict = Depends(get_current_user)):
         {"$set": {"adrenalin_sync_enabled": True}}
     )
 
+    if result.get("created") or result.get("updated") or result.get("disabled"):
+        background_tasks.add_task(_push_kissflow_scim_background, user["org_id"])
+
     return result
+
+
+async def _push_kissflow_scim_background(org_id: str):
+    """Push HR sync changes to Kissflow without blocking the API response."""
+    try:
+        kf_result = await sync_to_kissflow(db, org_id)
+        logger.info("Background Kissflow SCIM push for org %s: %s", org_id, kf_result)
+    except Exception as e:
+        logger.error("Background Kissflow SCIM push failed for org %s: %s", org_id, e)
 
 
 @api_router.get("/hr-sync/logs")

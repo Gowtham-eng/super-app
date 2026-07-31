@@ -6,32 +6,61 @@ After sync, pushes created/updated users to Kissflow via SCIM.
 import os
 import uuid
 import logging
+from pathlib import Path
+
 import httpx
 import bcrypt
 from datetime import datetime, timezone
+from dotenv import load_dotenv
+
 from services.kissflow_scim_client import sync_to_kissflow
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 logger = logging.getLogger(__name__)
 
 
 def _get_config():
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)
+    base_url = (os.environ.get("ADRENALIN_BASE_URL") or "").strip().rstrip("/")
     return {
-        "base_url": os.environ.get("ADRENALIN_BASE_URL", ""),
-        "username": os.environ.get("ADRENALIN_USERNAME", ""),
-        "password": os.environ.get("ADRENALIN_PASSWORD", ""),
-        "company_id": os.environ.get("ADRENALIN_COMPANY_ID", ""),
+        "base_url": base_url,
+        "username": (os.environ.get("ADRENALIN_USERNAME") or "").strip(),
+        "password": os.environ.get("ADRENALIN_PASSWORD") or "",
+        "company_id": (os.environ.get("ADRENALIN_COMPANY_ID") or "").strip(),
         "default_password": os.environ.get("DEFAULT_USER_PASSWORD", "Welcome@2026"),
     }
+
+
+def _validate_config(cfg: dict) -> None:
+    """Fail fast with a clear message when Adrenalin env vars are missing."""
+    missing = []
+    if not cfg.get("base_url"):
+        missing.append("ADRENALIN_BASE_URL")
+    if not cfg.get("username"):
+        missing.append("ADRENALIN_USERNAME")
+    if not cfg.get("password"):
+        missing.append("ADRENALIN_PASSWORD")
+    if not cfg.get("company_id"):
+        missing.append("ADRENALIN_COMPANY_ID")
+    if missing:
+        raise ValueError(
+            "Missing HR sync configuration in backend/.env: "
+            + ", ".join(missing)
+        )
 
 
 async def get_adrenalin_token() -> str:
     """Authenticate with Adrenalin and return bearer token"""
     cfg = _get_config()
+    _validate_config(cfg)
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             f"{cfg['base_url']}/Authorization/UserLogin",
             json={"UserName": cfg["username"], "Password": cfg["password"], "CompanyId": cfg["company_id"]},
         )
+        if resp.status_code >= 400:
+            raise Exception(f"Adrenalin auth HTTP {resp.status_code}: {resp.text[:200]}")
         data = resp.json()
         if data.get("IsValid") and data.get("Data"):
             return data["Data"][0]
@@ -41,6 +70,7 @@ async def get_adrenalin_token() -> str:
 async def fetch_all_employees(token: str) -> list:
     """Fetch all employees from Adrenalin with pagination"""
     cfg = _get_config()
+    _validate_config(cfg)
     all_employees = []
     page = 1
     page_size = 100
@@ -52,11 +82,14 @@ async def fetch_all_employees(token: str) -> list:
                 json={"PAGE_NUMBER": page, "PAGE_SIZE": page_size},
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             )
+            if resp.status_code >= 400:
+                raise Exception(f"Adrenalin employee fetch HTTP {resp.status_code}: {resp.text[:200]}")
             data = resp.json()
             if not data.get("IsValid") or not data.get("Data"):
                 break
 
-            employees = data["Data"][0] if isinstance(data["Data"][0], list) else data["Data"]
+            raw_data = data["Data"]
+            employees = raw_data[0] if raw_data and isinstance(raw_data[0], list) else raw_data
             if not employees:
                 break
 
@@ -159,7 +192,7 @@ def _extract_all_hr_fields(emp: dict, lookup: dict) -> dict:
     }
 
 
-async def sync_employees(db, org_id: str) -> dict:
+async def sync_employees(db, org_id: str, *, skip_kissflow: bool = False) -> dict:
     """
     Sync ALL employee fields from Adrenalin HR to IAM system.
     - New employees -> create user with default password
@@ -284,7 +317,11 @@ async def sync_employees(db, org_id: str) -> dict:
             result["errors"].append(err_msg)
             logger.error(err_msg)
 
-    # After HR sync, push created/updated users to Kissflow
+    # After HR sync, push created/updated users to Kissflow (optional background step)
+    if skip_kissflow:
+        result["kissflow_sync"] = {"skipped": True, "reason": "Deferred to background job"}
+        return result
+
     kissflow_result = None
     try:
         if result["created"] > 0 or result["updated"] > 0 or result["disabled"] > 0:

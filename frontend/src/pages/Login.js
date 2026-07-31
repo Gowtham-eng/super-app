@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Eye, EyeSlash, ArrowRight } from '@phosphor-icons/react';
+import { API, BACKEND_ORIGIN } from '../config/api';
 
 const REFEX_LOGO = '/refexone-logo.png';
 
@@ -40,8 +41,6 @@ const Login = () => {
   const { login, token } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-
-  const API = process.env.REACT_APP_BACKEND_URL + '/api';
 
   // Carousel auto-rotate
   useEffect(() => {
@@ -81,7 +80,7 @@ const Login = () => {
     const storedToken = localStorage.getItem('iam_token');
     if (storedToken) {
       const relayState = searchParams.get('relay_state') || '';
-      let completeUrl = `${process.env.REACT_APP_BACKEND_URL}/api/saml/${appId}/complete?token=${encodeURIComponent(storedToken)}`;
+      let completeUrl = `${BACKEND_ORIGIN}/api/saml/${appId}/complete?token=${encodeURIComponent(storedToken)}`;
       if (relayState) completeUrl += `&relay_state=${encodeURIComponent(relayState)}`;
       window.location.href = completeUrl;
     } else {
