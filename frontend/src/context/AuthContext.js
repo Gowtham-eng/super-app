@@ -34,11 +34,15 @@ export const AuthProvider = ({ children }) => {
   const login = async (email, password) => {
     clearKissflowNativeSession();
     const response = await axios.post(`${API}/auth/login`, { email, password });
-    const { token: newToken, user: userData } = response.data;
+    const { token: newToken } = response.data;
     localStorage.setItem('iam_token', newToken);
     setToken(newToken);
-    setUser(userData);
-    return userData;
+    const me = await axios.get(`${API}/auth/me`, {
+      headers: { Authorization: `Bearer ${newToken}` },
+    });
+    setUser(me.data);
+    setOrganization(me.data.organization);
+    return me.data;
   };
 
   const register = async (email, password, name, orgId) => {

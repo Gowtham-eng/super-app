@@ -3041,11 +3041,23 @@ async def trigger_hr_sync(background_tasks: BackgroundTasks, user: dict = Depend
 
 async def _push_kissflow_scim_background(org_id: str):
     """Push HR sync changes to Kissflow without blocking the API response."""
+    latest = await db.hr_sync_logs.find_one({"org_id": org_id}, sort=[("timestamp", -1)])
+    log_id = latest.get("_id") if latest else None
     try:
         kf_result = await sync_to_kissflow(db, org_id)
         logger.info("Background Kissflow SCIM push for org %s: %s", org_id, kf_result)
+        if log_id:
+            await db.hr_sync_logs.update_one(
+                {"_id": log_id},
+                {"$set": {"result.kissflow_sync": kf_result}},
+            )
     except Exception as e:
         logger.error("Background Kissflow SCIM push failed for org %s: %s", org_id, e)
+        if log_id:
+            await db.hr_sync_logs.update_one(
+                {"_id": log_id},
+                {"$set": {"result.kissflow_sync": {"error": str(e)}}},
+            )
 
 
 @api_router.get("/hr-sync/logs")

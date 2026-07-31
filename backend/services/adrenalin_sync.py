@@ -229,12 +229,21 @@ async def sync_employees(db, org_id: str, *, skip_kissflow: bool = False) -> dic
             status_desc = hr["employment_status_description"].lower()
             date_of_exit = hr["date_of_exit"]
 
-            existing_user = await db.users.find_one({"email": email, "org_id": org_id})
+            existing_user = None
+            emp_id = hr["adrenalin_employee_id"]
+            if emp_id:
+                existing_user = await db.users.find_one(
+                    {"org_id": org_id, "adrenalin_employee_id": emp_id},
+                    {"_id": 0},
+                )
+            if not existing_user:
+                existing_user = await db.users.find_one({"email": email, "org_id": org_id}, {"_id": 0})
             # Defensive: legacy users may have mixed-case emails — try case-insensitive
             if not existing_user:
                 import re as _re
                 existing_user = await db.users.find_one(
-                    {"email": {"$regex": f"^{_re.escape(email)}$", "$options": "i"}, "org_id": org_id}
+                    {"email": {"$regex": f"^{_re.escape(email)}$", "$options": "i"}, "org_id": org_id},
+                    {"_id": 0},
                 )
 
             # Common HR fields to store on every user
@@ -278,6 +287,9 @@ async def sync_employees(db, org_id: str, *, skip_kissflow: bool = False) -> dic
                 "l2_manager_name": hr["l2_manager_name"],
                 "hr_synced_at": datetime.now(timezone.utc).isoformat(),
             }
+            # Adrenalin email changed — keep IAM record in sync
+            if existing_user and existing_user.get("email") != email:
+                hr_update["email"] = email
 
             if existing_user:
                 is_exited = status_desc != "active" or bool(date_of_exit)
@@ -311,6 +323,8 @@ async def sync_employees(db, org_id: str, *, skip_kissflow: bool = False) -> dic
                     await db.users.insert_one(new_user)
                     result["created"] += 1
                     logger.info(f"Created user: {email} ({full_name})")
+                else:
+                    result["skipped"] += 1
 
         except Exception as e:
             err_msg = f"Error processing {emp.get('EMAIL_ADDRESS', 'unknown')}: {str(e)}"
