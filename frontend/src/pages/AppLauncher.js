@@ -221,6 +221,30 @@ const AppLauncher = () => {
     setTimeout(() => navigateSsoWindowToModule(ssoWindow, homeUrl), 500);
   };
 
+  /** Find a SAML/Kissflow app to SSO into when the ITSM tile itself is the virtual in-app tile. */
+  const resolveKissflowLaunchApp = (tappedApp) => {
+    if (tappedApp?.type === 'saml' || tappedApp?.home_url) return tappedApp;
+    const list = Array.isArray(apps) ? apps : [];
+    const usable = (a) =>
+      a &&
+      a.has_access !== false &&
+      !a.policy_blocked &&
+      !a.is_placeholder &&
+      a.id !== ITSM_VIRTUAL_APP.id;
+
+    const itsmSaml = list.find((a) => usable(a) && a.type === 'saml' && isItsmApp(a));
+    if (itsmSaml) return itsmSaml;
+
+    const kissflowSaml = list.find((a) => {
+      if (!usable(a) || a.type !== 'saml') return false;
+      const blob = `${a.name || ''} ${a.description || ''} ${a.home_url || ''}`.toLowerCase();
+      return /kissflow/.test(blob);
+    });
+    if (kissflowSaml) return kissflowSaml;
+
+    return null;
+  };
+
   const launchKissflowApp = (app) => {
     const baseUrl = process.env.REACT_APP_BACKEND_URL;
     const token = localStorage.getItem('iam_token');
@@ -265,32 +289,22 @@ const AppLauncher = () => {
 
     setItsmChecking(true);
     try {
+      // Previous behavior: user in Kissflow → open Kissflow SSO; otherwise Create IT Request.
+      // Do not gate on approval-matrix API health (itsm entity keys) — that blocked Kissflow users.
       const res = await axios.get(`${itsmApi}/itsm/kissflow-status`, getAuthHeader());
-      const kissflowOk =
-        res.status === 200 &&
-        res.data?.ok === true &&
-        Number(res.data?.status_code) >= 200 &&
-        Number(res.data?.status_code) < 300;
       const userInKissflow = res.data?.user_in_kissflow === true;
-      const canLaunchKissflow =
-        kissflowOk &&
-        userInKissflow &&
-        (app.type === 'saml' || app.home_url);
 
-      if (canLaunchKissflow) {
-        launchKissflowApp(app);
-      } else {
-        navigate('/itsm', {
-          state: {
-            kissflowFallback: !userInKissflow || !kissflowOk,
-            reason: !userInKissflow
-              ? 'not_in_kissflow'
-              : !kissflowOk
-                ? 'kissflow_unavailable'
-                : 'no_sso_target',
-          },
-        });
+      if (userInKissflow) {
+        const target = resolveKissflowLaunchApp(app);
+        if (target) {
+          launchKissflowApp(target);
+          return;
+        }
+        navigate('/itsm', { state: { kissflowFallback: true, reason: 'no_sso_target' } });
+        return;
       }
+
+      navigate('/itsm', { state: { kissflowFallback: true, reason: 'not_in_kissflow' } });
     } catch (err) {
       navigate('/itsm', { state: { kissflowFallback: true, reason: 'check_failed' } });
     } finally {
