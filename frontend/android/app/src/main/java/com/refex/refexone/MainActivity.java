@@ -1,11 +1,14 @@
 package com.refex.refexone;
 
+import android.content.Intent;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.LayoutInflater;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -17,16 +20,23 @@ import android.webkit.WebView;
 import android.webkit.WebBackForwardList;
 import android.webkit.WebStorage;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import androidx.appcompat.app.AlertDialog;
 import androidx.coordinatorlayout.widget.CoordinatorLayout;
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 import com.getcapacitor.BridgeActivity;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.concurrent.Executors;
+import org.json.JSONObject;
 
 /**
  * Launched apps open inside the WebView with a top close bar.
@@ -39,6 +49,11 @@ public class MainActivity extends BridgeActivity {
     private static final String LAUNCHER_URL = "https://refexone.com/launcher";
     private static final String SAML_ACS_PATH = "/signin/";
     private static final String SAML_LOGIN_PATH = "/view/login";
+    // Debug builds use adb reverse to local API; release uses production.
+    private static final String APP_UPDATE_CHECK_URL_PROD =
+        "https://refexone.com/api/app-update/check";
+    private static final String APP_UPDATE_CHECK_URL_LOCAL =
+        "http://127.0.0.1:8000/api/app-update/check";
     private static final long MODULE_REDIRECT_DELAY_MS = 2000;
 
     private static final String[] KISSFLOW_COOKIE_ORIGINS = {
@@ -50,6 +65,9 @@ public class MainActivity extends BridgeActivity {
     private LinearLayout closeBar;
     private LinearLayout contentHost;
     private View backChip;
+    private View refreshButton;
+    private View refreshChip;
+    private View pageLoader;
     private TextView closeSubtitle;
     private TextView brandTitle;
     private int closeBarHeightPx;
@@ -57,11 +75,15 @@ public class MainActivity extends BridgeActivity {
     private String pendingModuleUrl;
     private boolean pendingHistoryClear;
     private boolean moduleRedirectScheduled;
+    private boolean pageRefreshPending;
+    private Runnable hidePageLoaderRunnable;
     private View contentRoot;
-    private SwipeRefreshLayout swipeRefreshLayout;
-    private boolean webContentAtTop = true;
     private boolean webViewClientAttached;
-    private Runnable pullRefreshFallbackRunnable;
+    private boolean forceUpdateBlocking;
+    private AlertDialog updateDialog;
+    private int lastStatusBarInset = 0;
+    private int lastNavBarInset = 0;
+    private CloseBarMode currentCloseBarMode = CloseBarMode.HIDDEN;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -69,20 +91,174 @@ public class MainActivity extends BridgeActivity {
         boolean isDebuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         WebView.setWebContentsDebuggingEnabled(isDebuggable);
         closeBarHeightPx = Math.round(64 * getResources().getDisplayMetrics().density);
-        compactBarHeightPx = Math.round(48 * getResources().getDisplayMetrics().density);
+        compactBarHeightPx = Math.round(56 * getResources().getDisplayMetrics().density);
 
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         applySystemBarPalette(CloseBarMode.HIDDEN);
 
         contentRoot = (View) getBridge().getWebView().getParent();
         ViewCompat.setOnApplyWindowInsetsListener(contentRoot, (v, insets) -> {
-            // Pad only the status bar at the top. Bottom inset padding left a visible
-            // gap under the WebView; Kissflow and the launcher handle their own footers.
             Insets statusBars = insets.getInsets(WindowInsetsCompat.Type.statusBars());
-            v.setPadding(0, statusBars.top, 0, 0);
-            return insets;
+            Insets navBars = insets.getInsets(WindowInsetsCompat.Type.navigationBars());
+            lastStatusBarInset = statusBars.top;
+            lastNavBarInset = navBars.bottom;
+            applyContentRootPadding();
+            // Consume top insets so WebView CSS does not double-pad under the status bar.
+            // Keep navigation insets zeroed for Refex pages (we pad the container instead).
+            return new WindowInsetsCompat.Builder(insets)
+                .setInsets(WindowInsetsCompat.Type.statusBars(), Insets.NONE)
+                .setInsets(WindowInsetsCompat.Type.displayCutout(), Insets.NONE)
+                .setInsets(WindowInsetsCompat.Type.navigationBars(), Insets.NONE)
+                .build();
         });
         ViewCompat.requestApplyInsets(contentRoot);
+        checkForAppUpdate();
+    }
+
+    /** Keep WebView clear of status + system nav bars (launcher and Kissflow). */
+    private void applyContentRootPadding() {
+        if (contentRoot == null) return;
+        contentRoot.setPadding(0, lastStatusBarInset, 0, lastNavBarInset);
+    }
+
+    private int currentVersionCode() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return info.versionCode;
+        } catch (PackageManager.NameNotFoundException e) {
+            return 0;
+        }
+    }
+
+    private void checkForAppUpdate() {
+        final int build = currentVersionCode();
+        Executors.newSingleThreadExecutor().execute(() -> {
+            HttpURLConnection conn = null;
+            try {
+                String checkUrl = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0
+                    ? APP_UPDATE_CHECK_URL_LOCAL
+                    : APP_UPDATE_CHECK_URL_PROD;
+                String requestUrl = checkUrl + "?platform=android&build=" + build;
+                Log.i("RefexOne", "App update check: " + requestUrl);
+                URL url = new URL(requestUrl);
+                conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(8000);
+                conn.setReadTimeout(8000);
+                conn.setRequestMethod("GET");
+                int code = conn.getResponseCode();
+                Log.i("RefexOne", "App update check HTTP " + code);
+                if (code < 200 || code >= 300) return;
+                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+                Log.i("RefexOne", "App update check body: " + sb);
+                JSONObject json = new JSONObject(sb.toString());
+                runOnUiThread(() -> presentUpdateDialog(json));
+            } catch (Exception e) {
+                Log.e("RefexOne", "App update check failed: " + e.getMessage(), e);
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+        });
+    }
+
+    private void presentUpdateDialog(JSONObject json) {
+        if (isFinishing() || isDestroyed()) return;
+        try {
+            if (!json.optBoolean("enabled", false)) return;
+            boolean force = json.optBoolean("force_update", false);
+            boolean available = json.optBoolean("update_available", false) || force;
+            if (!available) {
+                forceUpdateBlocking = false;
+                return;
+            }
+
+            String title = json.optString(
+                "title",
+                force ? "Update required" : "Update available"
+            );
+            String message = json.optString(
+                "message",
+                "A new version of RefexOne is available."
+            );
+            String storeUrl = json.optString(
+                "store_url",
+                "https://play.google.com/store/apps/details?id=com.refex.refexone"
+            );
+            int currentBuild = json.optInt("current_build", currentVersionCode());
+            int latestBuild = json.optInt("latest_build", 0);
+
+            if (updateDialog != null && updateDialog.isShowing()) {
+                updateDialog.dismiss();
+            }
+
+            View dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_app_update, null);
+            TextView badge = dialogView.findViewById(R.id.update_badge);
+            TextView titleView = dialogView.findViewById(R.id.update_title);
+            TextView messageView = dialogView.findViewById(R.id.update_message);
+            TextView metaView = dialogView.findViewById(R.id.update_meta);
+            TextView positive = dialogView.findViewById(R.id.update_positive);
+            TextView negative = dialogView.findViewById(R.id.update_negative);
+
+            titleView.setText(title);
+            messageView.setText(message);
+
+            if (force) {
+                badge.setText("Required update");
+                badge.setTextColor(0xFFB91C1C);
+                badge.setBackgroundResource(R.drawable.dialog_update_badge_force);
+                negative.setVisibility(View.GONE);
+                forceUpdateBlocking = true;
+            } else {
+                badge.setText("Optional update");
+                badge.setTextColor(0xFF047857);
+                badge.setBackgroundResource(R.drawable.dialog_update_badge_optional);
+                negative.setVisibility(View.VISIBLE);
+                forceUpdateBlocking = false;
+            }
+
+            if (latestBuild > 0) {
+                metaView.setVisibility(View.VISIBLE);
+                metaView.setText("Your build " + currentBuild + "  ·  Latest " + latestBuild);
+            } else {
+                metaView.setVisibility(View.GONE);
+            }
+
+            AlertDialog.Builder builder = new AlertDialog.Builder(this, R.style.AppUpdateDialogTheme)
+                .setView(dialogView)
+                .setCancelable(!force);
+
+            updateDialog = builder.create();
+            if (updateDialog.getWindow() != null) {
+                updateDialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+            }
+            updateDialog.setCanceledOnTouchOutside(!force);
+
+            positive.setOnClickListener(v -> {
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(storeUrl)));
+                } catch (Exception ignored) {
+                }
+                if (force) {
+                    forceUpdateBlocking = true;
+                    updateDialog.dismiss();
+                    getWindow().getDecorView().postDelayed(this::checkForAppUpdate, 600);
+                } else {
+                    updateDialog.dismiss();
+                }
+            });
+
+            negative.setOnClickListener(v -> {
+                forceUpdateBlocking = false;
+                updateDialog.dismiss();
+            });
+
+            updateDialog.show();
+        } catch (Exception e) {
+            Log.w("RefexOne", "Failed to show update dialog", e);
+        }
     }
 
     private void applySystemBarPalette(CloseBarMode mode) {
@@ -109,6 +285,14 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
+    public void onResume() {
+        super.onResume();
+        if (forceUpdateBlocking) {
+            checkForAppUpdate();
+        }
+    }
+
+    @Override
     public void onStart() {
         super.onStart();
 
@@ -123,11 +307,11 @@ public class MainActivity extends BridgeActivity {
         settings.setDomStorageEnabled(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
+        // Do not rewrite Kissflow/Lead Tracker page scripts — keep original web behavior.
         settings.setSupportMultipleWindows(false);
 
         webView.addJavascriptInterface(new RefexOneBridge(), "RefexOneBridge");
         setupCloseBar(webView);
-        setupPullToRefresh(webView);
 
         if (webViewClientAttached) return;
         webViewClientAttached = true;
@@ -139,7 +323,13 @@ public class MainActivity extends BridgeActivity {
                 if (isSamlCompleteUrl(url)) {
                     clearKissflowCookiesOnly(view);
                 } else if (isRefexOneLoginUrl(url)) {
-                    clearAppSession(view);
+                    // Do NOT clearAppSession here — a failed Kissflow SSO may redirect to
+                    // /login?sso_app=... while the user is still logged into RefexOne.
+                    // Wiping localStorage forced a real login screen until logout.
+                    bounceAuthenticatedUserOffLogin(view, url);
+                } else if (isKissflowLoginUrl(url)) {
+                    // Kissflow SSO failed (landed on KF login) → back to RefexOne home
+                    returnToLauncher(view);
                 }
                 updateCloseBar(view, url);
             }
@@ -147,7 +337,9 @@ public class MainActivity extends BridgeActivity {
             @Override
             public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
                 if (isRefexOneLoginUrl(url)) {
-                    clearAppSession(view);
+                    bounceAuthenticatedUserOffLogin(view, url);
+                } else if (isKissflowLoginUrl(url)) {
+                    returnToLauncher(view);
                 }
                 updateCloseBar(view, url);
             }
@@ -168,13 +360,12 @@ public class MainActivity extends BridgeActivity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                injectPullRefreshSupport(view);
+                scheduleHidePageLoader(view);
                 captureModuleFromUrl(url);
                 clearWebHistoryIfNeeded(view, url);
                 checkSessionStorageModule(view, url, () -> {
                     maybeRedirectToPendingModule(view, url);
                     updateCloseBar(view, url);
-                    stopPullRefresh();
                 });
             }
         });
@@ -281,8 +472,17 @@ public class MainActivity extends BridgeActivity {
         closeSubtitle = closeBar.findViewById(R.id.in_app_close_subtitle);
         brandTitle = closeBar.findViewById(R.id.in_app_brand_title);
         backChip = closeBar.findViewById(R.id.in_app_back_chip);
+        refreshChip = closeBar.findViewById(R.id.in_app_refresh_chip);
+        refreshButton = closeBar.findViewById(R.id.in_app_refresh_button);
 
         backChip.setOnClickListener(v -> returnToLauncher(webView));
+        View.OnClickListener reload = v -> {
+            if (webView == null || pageRefreshPending) return;
+            showPageLoader();
+            webView.reload();
+        };
+        if (refreshChip != null) refreshChip.setOnClickListener(reload);
+        if (refreshButton != null) refreshButton.setOnClickListener(reload);
 
         closeBar.setLayoutParams(new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -291,127 +491,120 @@ public class MainActivity extends BridgeActivity {
         closeBar.setVisibility(View.GONE);
         closeBar.setElevation(4f * getResources().getDisplayMetrics().density);
 
-        webView.setLayoutParams(new LinearLayout.LayoutParams(
+        FrameLayout pageHost = new FrameLayout(this);
+        pageHost.setLayoutParams(new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             0,
             1f
         ));
 
-        contentHost.addView(closeBar);
-        contentHost.addView(webView);
-        parent.addView(contentHost, webIndex);
-    }
-
-    private void setupPullToRefresh(WebView webView) {
-        if (swipeRefreshLayout != null || contentHost == null) return;
-
-        contentHost.removeView(webView);
-
-        swipeRefreshLayout = new SwipeRefreshLayout(this);
-        swipeRefreshLayout.setLayoutParams(new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            0,
-            1f
-        ));
-        swipeRefreshLayout.setColorSchemeColors(0xFF10B981, 0xFF059669);
-
-        int statusTop = contentRoot != null ? contentRoot.getPaddingTop() : 0;
-        int endOffset = statusTop + Math.round(48 * getResources().getDisplayMetrics().density);
-        swipeRefreshLayout.setProgressViewOffset(false, statusTop, endOffset);
-        swipeRefreshLayout.setOnChildScrollUpCallback((parentLayout, child) -> !webContentAtTop);
-        swipeRefreshLayout.setOnRefreshListener(() -> handlePullToRefresh(webView));
-
-        webView.setLayoutParams(new ViewGroup.LayoutParams(
+        webView.setLayoutParams(new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
         ));
-        swipeRefreshLayout.addView(webView);
-        contentHost.addView(swipeRefreshLayout);
 
-        setupWebViewPullTouch(webView);
+        pageLoader = LayoutInflater.from(this)
+            .inflate(R.layout.in_app_page_loader, pageHost, false);
+        pageLoader.setVisibility(View.GONE);
+
+        pageHost.addView(webView);
+        pageHost.addView(pageLoader);
+
+        contentHost.addView(closeBar);
+        contentHost.addView(pageHost);
+        parent.addView(contentHost, webIndex);
     }
 
-    private void setupWebViewPullTouch(WebView webView) {
-        webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        webView.setOnTouchListener((v, event) -> {
-            if (swipeRefreshLayout == null) return false;
-            int action = event.getActionMasked();
-            if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
-                swipeRefreshLayout.requestDisallowInterceptTouchEvent(!webContentAtTop);
-            }
-            return false;
-        });
+    private void showPageLoader() {
+        pageRefreshPending = true;
+        if (hidePageLoaderRunnable != null && pageLoader != null) {
+            pageLoader.removeCallbacks(hidePageLoaderRunnable);
+            hidePageLoaderRunnable = null;
+        }
+        if (pageLoader != null) {
+            pageLoader.setVisibility(View.VISIBLE);
+            pageLoader.bringToFront();
+        }
+        if (refreshChip != null) refreshChip.setEnabled(false);
+        if (refreshButton != null) refreshButton.setEnabled(false);
     }
 
-    private void injectPullRefreshSupport(WebView view) {
-        if (view == null) return;
-        view.evaluateJavascript(
-            "(function(){try{" +
-            "function atTop(){var y=window.pageYOffset||document.documentElement.scrollTop||document.body.scrollTop||0;" +
-            "if(y>2)return false;var nodes=document.querySelectorAll('main,[data-scroll-root]');" +
-            "for(var i=0;i<nodes.length;i++){if(nodes[i].scrollTop>2)return false;}return true;}" +
-            "function report(){try{if(window.RefexOneBridge&&RefexOneBridge.setWebContentAtTop){" +
-            "RefexOneBridge.setWebContentAtTop(atTop());}}catch(e){}}" +
-            "if(!window.__refexoneScrollHook){window.__refexoneScrollHook=true;" +
-            "window.addEventListener('scroll',report,{passive:true,capture:true});" +
-            "document.addEventListener('scroll',report,{passive:true,capture:true});}" +
-            "report();}catch(e){}})()",
-            null
-        );
+    private void scheduleHidePageLoader(WebView view) {
+        if (!pageRefreshPending || pageLoader == null) return;
+        if (hidePageLoaderRunnable != null) {
+            pageLoader.removeCallbacks(hidePageLoaderRunnable);
+        }
+        // Brief delay so the first paint isn't flashed behind the overlay removal
+        hidePageLoaderRunnable = this::hidePageLoader;
+        pageLoader.postDelayed(hidePageLoaderRunnable, 350);
     }
 
-    private void handlePullToRefresh(WebView webView) {
-        if (webView == null) {
-            stopPullRefresh();
-            return;
+    private void hidePageLoader() {
+        pageRefreshPending = false;
+        hidePageLoaderRunnable = null;
+        if (pageLoader != null) {
+            pageLoader.setVisibility(View.GONE);
         }
-        if (pullRefreshFallbackRunnable != null) {
-            webView.removeCallbacks(pullRefreshFallbackRunnable);
-            pullRefreshFallbackRunnable = null;
-        }
-
-        String url = webView.getUrl();
-        if (url != null && isRefexOneUrl(url) && !url.contains("/api/saml/")) {
-            webView.evaluateJavascript(
-                "try{window.dispatchEvent(new CustomEvent('refexone-pull-refresh'));}catch(e){}",
-                null
-            );
-            pullRefreshFallbackRunnable = () -> {
-                pullRefreshFallbackRunnable = null;
-                if (swipeRefreshLayout != null && swipeRefreshLayout.isRefreshing()) {
-                    webView.reload();
-                }
-            };
-            webView.postDelayed(pullRefreshFallbackRunnable, 900);
-            return;
-        }
-        webView.reload();
-    }
-
-    private void stopPullRefresh() {
-        WebView webView = getBridge() != null ? getBridge().getWebView() : null;
-        if (webView != null && pullRefreshFallbackRunnable != null) {
-            webView.removeCallbacks(pullRefreshFallbackRunnable);
-            pullRefreshFallbackRunnable = null;
-        }
-        if (swipeRefreshLayout != null) {
-            swipeRefreshLayout.setRefreshing(false);
-        }
-    }
-
-    private void updatePullToRefreshState(String url) {
-        if (swipeRefreshLayout == null) return;
-        boolean enabled = url == null || !url.contains("/api/saml/");
-        swipeRefreshLayout.setEnabled(enabled);
+        if (refreshChip != null) refreshChip.setEnabled(true);
+        if (refreshButton != null) refreshButton.setEnabled(true);
     }
 
     private void returnToLauncher(WebView webView) {
         pendingModuleUrl = null;
         moduleRedirectScheduled = false;
         pendingHistoryClear = true;
+        hidePageLoader();
         clearKissflowSession(webView);
         webView.loadUrl(LAUNCHER_URL);
         setCloseBarVisible(webView, false, null);
+    }
+
+    /**
+     * If RefexOne still has iam_token, never stay on /login — send user to launcher.
+     * Session is cleared only on explicit Sign Out (JS logout / clearAppSession bridge).
+     *
+     * Exception: /login?oidc_redirect=... or /login?sso_app=... must reach the web Login
+     * page so OIDC (Feast/RefexQR) and SAML can resume with the existing token — same as Chrome.
+     * Interrupting that bounce is what broke OIDC in the Android app while web still worked.
+     */
+    private void bounceAuthenticatedUserOffLogin(WebView webView, String url) {
+        if (webView == null || !isRefexOneLoginUrl(url)) return;
+        // Allow forcing the login screen after real logout
+        if (url.contains("force_login=1") || url.contains("logged_out=1")) {
+            return;
+        }
+        // Do not interrupt SSO resume flows (Feast / RefexQR OIDC, SAML)
+        if (url.contains("oidc_redirect=") || url.contains("sso_app=")) {
+            return;
+        }
+        webView.evaluateJavascript(
+            "(function(){try{return localStorage.getItem('iam_token')||'';}catch(e){return ''}})()",
+            value -> {
+                String token = unwrapJsString(value);
+                if (token == null || token.isEmpty()) {
+                    return;
+                }
+                pendingModuleUrl = null;
+                moduleRedirectScheduled = false;
+                pendingHistoryClear = true;
+                webView.loadUrl(LAUNCHER_URL);
+                setCloseBarVisible(webView, false, null);
+            }
+        );
+    }
+
+    private boolean isKissflowLoginUrl(String url) {
+        if (url == null || !url.contains(KISSFLOW_DOMAIN)) return false;
+        // Successful SSO posts to ACS under /signin/.../saml — never treat as failure
+        if (url.contains(SAML_ACS_PATH) || url.contains("/saml")) return false;
+        try {
+            String path = Uri.parse(url).getPath();
+            if (path == null) return false;
+            String p = path.toLowerCase();
+            return p.contains("/view/login") || p.equals("/login") || p.endsWith("/login");
+        } catch (Exception e) {
+            return url.contains(SAML_LOGIN_PATH);
+        }
     }
 
     private boolean isSamlCompleteUrl(String url) {
@@ -517,7 +710,6 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void updateCloseBar(WebView webView, String url) {
-        updatePullToRefreshState(url);
         setCloseBarMode(webView, getCloseBarMode(url), url);
     }
 
@@ -541,6 +733,8 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void setCloseBarMode(WebView webView, CloseBarMode mode, String url) {
+        currentCloseBarMode = mode;
+        applyContentRootPadding();
         if (closeBar == null) return;
 
         if (mode == CloseBarMode.HIDDEN) {
@@ -561,8 +755,9 @@ public class MainActivity extends BridgeActivity {
                 closeBar.setBackgroundResource(R.drawable.in_app_toolbar_bg_compact);
                 closeSubtitle.setVisibility(View.GONE);
                 brandTitle.setText(getString(R.string.back_to_app_center));
-                brandTitle.setTextColor(0xFF047857);
+                brandTitle.setTextColor(0xFF065F46);
                 brandTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                if (refreshChip != null) refreshChip.setVisibility(View.VISIBLE);
             } else {
                 closeBar.setBackgroundResource(R.drawable.in_app_toolbar_bg);
                 closeSubtitle.setVisibility(View.VISIBLE);
@@ -572,29 +767,10 @@ public class MainActivity extends BridgeActivity {
                 if (url != null) {
                     closeSubtitle.setText(resolveSubtitle(url));
                 }
+                // Keep refresh during SSO/full bar as well
+                if (refreshChip != null) refreshChip.setVisibility(View.VISIBLE);
             }
         }
-
-        if (mode == CloseBarMode.COMPACT && url != null) {
-            webView.postDelayed(() -> trimKissflowChromeGap(webView), 300);
-        }
-    }
-
-    private void trimKissflowChromeGap(WebView view) {
-        if (view == null) return;
-        view.evaluateJavascript(
-            "(function(){try{" +
-            "var s=document.getElementById('refexone-kf-trim-gap');" +
-            "if(!s){s=document.createElement('style');s.id='refexone-kf-trim-gap';" +
-            "(document.head||document.documentElement).appendChild(s);}" +
-            "s.textContent=" +
-            "'html,body,#root,#app{padding-top:0!important;margin-top:0!important;padding-bottom:0!important;margin-bottom:0!important;}'" +
-            "+'[class*=\"navBarParentContainer\"]{margin-top:0!important;padding-top:0!important;}'" +
-            "+'[class*=\"safeArea\"],[class*=\"SafeArea\"]{padding-top:0!important;margin-top:0!important;padding-bottom:0!important;margin-bottom:0!important;}'" +
-            "+'[class*=\"bottomNav\"],[class*=\"BottomNav\"],[class*=\"footerContainer\"]{margin-bottom:0!important;}';" +
-            "}catch(e){}})()",
-            null
-        );
     }
 
     private void setCloseBarVisible(WebView webView, boolean show, String url) {
@@ -672,16 +848,6 @@ public class MainActivity extends BridgeActivity {
             if (url != null && !url.isEmpty()) {
                 pendingModuleUrl = url;
             }
-        }
-
-        @JavascriptInterface
-        public void setWebContentAtTop(boolean atTop) {
-            webContentAtTop = atTop;
-        }
-
-        @JavascriptInterface
-        public void onPullRefreshComplete() {
-            runOnUiThread(() -> MainActivity.this.stopPullRefresh());
         }
 
         @JavascriptInterface

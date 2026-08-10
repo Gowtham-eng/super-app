@@ -1631,7 +1631,7 @@ diag.innerHTML = lines.join("<br>");
         // After Kissflow processes SAML in iframe (session cookie set), redirect to module
         setTimeout(function() {{
             window.location.href = "{escape(module_target)}";
-        }}, 3500);
+        }}, 500);
     </script>
 </body>
 </html>'''

@@ -7,7 +7,29 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
 import { Switch } from '../components/ui/switch';
-import { DeviceMobile, Plus, PencilSimple, Trash, Upload, AppleLogo, GooglePlayLogo } from '@phosphor-icons/react';
+import { DeviceMobile, Plus, PencilSimple, Trash, Upload, AppleLogo, GooglePlayLogo, DownloadSimple } from '@phosphor-icons/react';
+
+const defaultUpdateConfig = {
+  enabled: false,
+  android: {
+    min_build: 5,
+    latest_build: 5,
+    store_url: 'https://play.google.com/store/apps/details?id=com.refex.refexone',
+    force_title: 'Update required',
+    force_message: 'A new version of RefexOne is required to continue. Please update from the Play Store.',
+    optional_title: 'Update available',
+    optional_message: 'A new version of RefexOne is available on the Play Store.',
+  },
+  ios: {
+    min_build: 1,
+    latest_build: 1,
+    store_url: 'https://apps.apple.com/',
+    force_title: 'Update required',
+    force_message: 'A new version of RefexOne is required to continue. Please update from the App Store.',
+    optional_title: 'Update available',
+    optional_message: 'A new version of RefexOne is available on the App Store.',
+  },
+};
 
 const MobileApps = () => {
   const { API, getAuthHeader, user } = useAuth();
@@ -20,6 +42,8 @@ const MobileApps = () => {
   const [saving, setSaving] = useState(false);
   const [logoPreview, setLogoPreview] = useState(null);
   const logoInputRef = useRef(null);
+  const [updateConfig, setUpdateConfig] = useState(defaultUpdateConfig);
+  const [savingUpdate, setSavingUpdate] = useState(false);
 
   const [form, setForm] = useState({
     name: '', description: '', app_store_url: '', play_store_url: '',
@@ -28,21 +52,58 @@ const MobileApps = () => {
   });
 
   useEffect(() => { fetchData(); }, []);
+  useEffect(() => {
+    if (!loading && (window.location.hash === '#app-updates' || window.location.pathname.includes('/settings/app-update'))) {
+      document.getElementById('app-updates')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [loading]);
 
   const fetchData = async () => {
     try {
-      const [appsRes, groupsRes, rolesRes] = await Promise.all([
+      const [appsRes, groupsRes, rolesRes, updateRes] = await Promise.all([
         axios.get(`${API}/apps/mobile`, getAuthHeader()),
         axios.get(`${API}/groups`, getAuthHeader()),
-        axios.get(`${API}/roles`, getAuthHeader())
+        axios.get(`${API}/roles`, getAuthHeader()),
+        axios.get(`${API}/app-update/config`, getAuthHeader()).catch(() => ({ data: defaultUpdateConfig })),
       ]);
       setApps(appsRes.data);
       setGroups(groupsRes.data);
       setRoles(rolesRes.data);
+      setUpdateConfig({
+        ...defaultUpdateConfig,
+        ...updateRes.data,
+        android: { ...defaultUpdateConfig.android, ...(updateRes.data?.android || {}) },
+        ios: { ...defaultUpdateConfig.ios, ...(updateRes.data?.ios || {}) },
+      });
     } catch (error) {
       toast.error('Failed to load mobile apps');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const setPlatformField = (platform, key, value) => {
+    setUpdateConfig((prev) => ({
+      ...prev,
+      [platform]: { ...prev[platform], [key]: value },
+    }));
+  };
+
+  const saveUpdateConfig = async () => {
+    setSavingUpdate(true);
+    try {
+      const res = await axios.put(`${API}/app-update/config`, updateConfig, getAuthHeader());
+      setUpdateConfig({
+        ...defaultUpdateConfig,
+        ...res.data,
+        android: { ...defaultUpdateConfig.android, ...(res.data?.android || {}) },
+        ios: { ...defaultUpdateConfig.ios, ...(res.data?.ios || {}) },
+      });
+      toast.success('App update settings saved');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to save update settings');
+    } finally {
+      setSavingUpdate(false);
     }
   };
 
@@ -123,6 +184,88 @@ const MobileApps = () => {
     setLogoPreview(null);
   };
 
+  const renderPlatformFields = (platform, label, Icon) => (
+    <div className="bg-slate-50/80 border border-slate-200 rounded-2xl p-5 space-y-4 hover:border-emerald-200 transition-colors">
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="font-heading font-semibold text-sm text-slate-700 flex items-center gap-2">
+          <Icon size={16} weight="fill" /> {label}
+        </h4>
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 bg-white border border-slate-200 rounded-full px-2 py-0.5">
+          Min {updateConfig[platform].min_build} · Latest {updateConfig[platform].latest_build}
+        </span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <Label className="label-uppercase text-xs">Min build (force below)</Label>
+          <Input
+            type="number"
+            min={1}
+            value={updateConfig[platform].min_build}
+            onChange={(e) => setPlatformField(platform, 'min_build', parseInt(e.target.value || '1', 10))}
+            className="input-brutalist w-full mt-1.5"
+            data-testid={`update-${platform}-min-build`}
+          />
+          <p className="text-xs text-slate-400 mt-1">Users below this build must update</p>
+        </div>
+        <div>
+          <Label className="label-uppercase text-xs">Latest build (optional prompt)</Label>
+          <Input
+            type="number"
+            min={1}
+            value={updateConfig[platform].latest_build}
+            onChange={(e) => setPlatformField(platform, 'latest_build', parseInt(e.target.value || '1', 10))}
+            className="input-brutalist w-full mt-1.5"
+            data-testid={`update-${platform}-latest-build`}
+          />
+          <p className="text-xs text-slate-400 mt-1">Users below this see optional update</p>
+        </div>
+      </div>
+      <div>
+        <Label className="label-uppercase text-xs">Store URL</Label>
+        <Input
+          value={updateConfig[platform].store_url}
+          onChange={(e) => setPlatformField(platform, 'store_url', e.target.value)}
+          className="input-brutalist w-full mt-1.5 font-mono text-sm"
+          data-testid={`update-${platform}-store-url`}
+        />
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <Label className="label-uppercase text-xs">Force title</Label>
+          <Input
+            value={updateConfig[platform].force_title}
+            onChange={(e) => setPlatformField(platform, 'force_title', e.target.value)}
+            className="input-brutalist w-full mt-1.5"
+          />
+        </div>
+        <div>
+          <Label className="label-uppercase text-xs">Optional title</Label>
+          <Input
+            value={updateConfig[platform].optional_title}
+            onChange={(e) => setPlatformField(platform, 'optional_title', e.target.value)}
+            className="input-brutalist w-full mt-1.5"
+          />
+        </div>
+      </div>
+      <div>
+        <Label className="label-uppercase text-xs">Force message</Label>
+        <Input
+          value={updateConfig[platform].force_message}
+          onChange={(e) => setPlatformField(platform, 'force_message', e.target.value)}
+          className="input-brutalist w-full mt-1.5"
+        />
+      </div>
+      <div>
+        <Label className="label-uppercase text-xs">Optional message</Label>
+        <Input
+          value={updateConfig[platform].optional_message}
+          onChange={(e) => setPlatformField(platform, 'optional_message', e.target.value)}
+          className="input-brutalist w-full mt-1.5"
+        />
+      </div>
+    </div>
+  );
+
   if (loading) return <div className="flex items-center justify-center h-64"><div className="spinner" /></div>;
 
   return (
@@ -135,6 +278,76 @@ const MobileApps = () => {
         <Button onClick={() => { resetForm(); setShowModal(true); }} className="btn-primary" data-testid="add-mobile-app">
           <Plus size={18} className="mr-2" /> Add Mobile App
         </Button>
+      </div>
+
+      <div id="app-updates" className="bg-white border border-slate-200 rounded-2xl p-6 mb-8 shadow-sm" data-testid="app-update-config">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-6">
+          <div>
+            <h2 className="font-heading text-lg font-semibold text-slate-900 flex items-center gap-2">
+              <DownloadSimple size={20} className="text-emerald-600" />
+              App Update Control
+            </h2>
+            <p className="text-sm text-slate-500 mt-1 max-w-xl">
+              Force or optionally prompt RefexOne Android / iOS users to update. Compare against Android versionCode and iOS CFBundleVersion.
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5">
+              <Switch
+                checked={!!updateConfig.enabled}
+                onCheckedChange={(c) => setUpdateConfig({ ...updateConfig, enabled: c })}
+                data-testid="update-enabled-switch"
+              />
+              <span className={`text-sm font-medium ${updateConfig.enabled ? 'text-emerald-700' : 'text-slate-500'}`}>
+                {updateConfig.enabled ? 'Enabled' : 'Disabled'}
+              </span>
+            </div>
+            <Button onClick={saveUpdateConfig} disabled={savingUpdate} className="btn-primary" data-testid="save-update-config">
+              {savingUpdate ? 'Saving...' : 'Save Update Settings'}
+            </Button>
+          </div>
+        </div>
+
+        <div className="grid gap-5 xl:grid-cols-[1fr_280px]">
+          <div className="grid gap-4 lg:grid-cols-2">
+            {renderPlatformFields('android', 'Android (versionCode)', GooglePlayLogo)}
+            {renderPlatformFields('ios', 'iOS (CFBundleVersion / build)', AppleLogo)}
+          </div>
+
+          <div className="rounded-2xl border border-emerald-100 bg-gradient-to-b from-emerald-50/80 to-white p-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700 mb-3">Dialog preview</p>
+            <div className="rounded-2xl bg-white border border-slate-200 shadow-lg overflow-hidden">
+              <div className="bg-gradient-to-br from-emerald-600 via-teal-600 to-teal-500 px-4 pt-5 pb-4 text-center">
+                <div className="mx-auto w-12 h-12 rounded-full bg-white/20 border border-white/30 flex items-center justify-center mb-3">
+                  <DownloadSimple size={22} className="text-white" weight="bold" />
+                </div>
+                <span className="inline-flex items-center rounded-full bg-red-50 text-red-700 border border-red-200 px-2.5 py-0.5 text-[10px] font-bold">
+                  Required update
+                </span>
+              </div>
+              <div className="px-4 py-4 text-center">
+                <p className="text-sm font-semibold text-slate-900">{updateConfig.android.force_title || 'Update required'}</p>
+                <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                  {updateConfig.android.force_message || 'A new version of RefexOne is required.'}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-3">
+                  Your build · Latest {updateConfig.android.latest_build}
+                </p>
+                <div className="mt-4 space-y-2">
+                  <div className="h-10 rounded-xl bg-emerald-600 text-white text-xs font-bold flex items-center justify-center">
+                    Update now
+                  </div>
+                  <div className="h-9 rounded-xl bg-slate-50 border border-slate-200 text-slate-500 text-xs font-semibold flex items-center justify-center">
+                    Remind me later
+                  </div>
+                </div>
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-3 text-center">
+              Force dialog hides Later. Optional shows both actions.
+            </p>
+          </div>
+        </div>
       </div>
 
       {apps.length === 0 ? (
@@ -197,14 +410,12 @@ const MobileApps = () => {
         </div>
       )}
 
-      {/* Add/Edit Modal */}
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{selectedApp ? 'Edit Mobile App' : 'Add Mobile App'}</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-5">
-            {/* Logo + Name */}
             <div className="flex items-start gap-4">
               <div
                 className="w-16 h-16 shrink-0 border-2 border-dashed border-slate-300 rounded-lg flex items-center justify-center cursor-pointer hover:border-emerald-400 hover:bg-emerald-50 transition-colors overflow-hidden"
@@ -230,7 +441,6 @@ const MobileApps = () => {
               </div>
             </div>
 
-            {/* Store URLs */}
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-4">
               <h4 className="font-heading font-semibold text-sm text-slate-700">Store Links (at least one required)</h4>
               <div>
@@ -243,7 +453,6 @@ const MobileApps = () => {
               </div>
             </div>
 
-            {/* Category & Sort */}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label className="label-uppercase text-xs">Category (App Launcher)</Label>
@@ -274,7 +483,6 @@ const MobileApps = () => {
               </div>
             </div>
 
-            {/* Coming Soon */}
             <div className="flex items-center justify-between p-3 bg-white rounded-lg border border-slate-200">
               <div>
                 <Label className="text-sm font-semibold text-slate-700">Coming Soon</Label>
@@ -287,7 +495,6 @@ const MobileApps = () => {
               />
             </div>
 
-            {/* Restricted */}
             <div className="flex items-center justify-between p-3 bg-white rounded-lg border border-slate-200">
               <div>
                 <Label className="text-sm font-semibold text-slate-700">Restricted</Label>
@@ -300,7 +507,6 @@ const MobileApps = () => {
               />
             </div>
 
-            {/* Access Control */}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label className="label-uppercase text-xs">Allowed Groups</Label>

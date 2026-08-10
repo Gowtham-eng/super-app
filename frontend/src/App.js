@@ -97,6 +97,7 @@ function App() {
           <Route path="/apps/saml" element={<AdminRoute><SAMLApps /></AdminRoute>} />
           <Route path="/apps/oidc" element={<AdminRoute><OIDCApps /></AdminRoute>} />
           <Route path="/apps/mobile" element={<AdminRoute><MobileApps /></AdminRoute>} />
+          <Route path="/settings/app-update" element={<AdminRoute><MobileApps /></AdminRoute>} />
           <Route path="/users" element={<AdminRoute><Users /></AdminRoute>} />
           <Route path="/groups" element={<AdminRoute><Groups /></AdminRoute>} />
           <Route path="/roles" element={<AdminRoute><Roles /></AdminRoute>} />

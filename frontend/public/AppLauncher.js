@@ -24,6 +24,28 @@ const CATEGORY_META = {
 
 const CATEGORY_ORDER = ['Expense', 'Productivity', 'Facility', 'Support'];
 
+/** One shared browser tab for all desktop app launches (reused instead of new tabs). */
+const DESKTOP_APP_WINDOW = 'refexone_app';
+
+const openDesktopAppTab = (url) => {
+  if (!url) return;
+  let win = null;
+  try {
+    win = window.open(url, DESKTOP_APP_WINDOW);
+  } catch (e) {
+    win = null;
+  }
+  if (!win) {
+    window.location.href = url;
+    return;
+  }
+  try {
+    win.focus();
+  } catch (e) {
+    // ignore
+  }
+};
+
 const getColor = () => {
   return { bg: 'bg-white', text: 'text-slate-900', border: 'border-slate-200' };
 };
@@ -50,6 +72,42 @@ const AppLauncher = () => {
 
   const isPWA = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+  const isSafari = /Safari/i.test(ua) && !/Chrome|CriOS|Chromium|Edg|Android/i.test(ua);
+
+  const navigateSsoWindowToModule = (ssoWindow, homeUrl) => {
+    try {
+      if (ssoWindow && !ssoWindow.closed) {
+        ssoWindow.location.href = homeUrl;
+        return;
+      }
+    } catch (e) {
+      // ignore
+    }
+    openDesktopAppTab(homeUrl);
+  };
+
+  const launchDesktopModuleSso = (completeUrl, homeUrl) => {
+    if (isSafari) {
+      const ssoWindow = window.open('about:blank', DESKTOP_APP_WINDOW);
+      if (!ssoWindow) {
+        window.location.href = completeUrl;
+        return;
+      }
+      try { ssoWindow.opener = null; } catch (e) { /* ignore */ }
+      ssoWindow.location.href = completeUrl;
+      setTimeout(() => navigateSsoWindowToModule(ssoWindow, homeUrl), 1500);
+      setTimeout(() => navigateSsoWindowToModule(ssoWindow, homeUrl), 2500);
+      return;
+    }
+    const ssoWindow = window.open(completeUrl, DESKTOP_APP_WINDOW);
+    if (!ssoWindow) {
+      window.location.href = completeUrl;
+      return;
+    }
+    try { ssoWindow.focus(); } catch (e) { /* ignore */ }
+    setTimeout(() => navigateSsoWindowToModule(ssoWindow, homeUrl), 500);
+  };
 
   const launchApp = (app) => {
     if (app.is_placeholder) {
@@ -75,24 +133,17 @@ const AppLauncher = () => {
           window.location.href = completeUrl;
         }
       } else if (app.home_url) {
-        // Desktop + module app: Two-step named window SSO
-        // Step 1: Open SSO in a named tab to establish Kissflow session
-        const windowName = 'kf_sso_' + app.id.substring(0, 8);
-        window.open(completeUrl, windowName);
-        // Step 2: After session is established, redirect same tab to module URL
-        setTimeout(() => {
-          window.open(app.home_url, windowName);
-        }, 500);
+        launchDesktopModuleSso(completeUrl, app.home_url);
       } else {
-        // Desktop + primary app: direct SSO
-        window.open(completeUrl, '_blank');
+        // Desktop + primary app: reuse one app tab
+        openDesktopAppTab(completeUrl);
       }
     } else if (app.type === 'oidc') {
       const targetUrl = app.home_url || `${baseUrl}${app.launch_url}`;
-      if (isPWA && isMobile) { window.location.href = targetUrl; } else { window.open(targetUrl, '_blank'); }
+      if (isPWA && isMobile) { window.location.href = targetUrl; } else { openDesktopAppTab(targetUrl); }
     } else {
       const targetUrl = `${baseUrl}${app.launch_url}`;
-      if (isPWA && isMobile) { window.location.href = targetUrl; } else { window.open(targetUrl, '_blank'); }
+      if (isPWA && isMobile) { window.location.href = targetUrl; } else { openDesktopAppTab(targetUrl); }
     }
   };
 

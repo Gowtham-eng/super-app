@@ -26,6 +26,20 @@ body {
   background-color: #FAFAFA;
 }
 
+/* Mobile system nav / home-indicator clearance (iOS + browser; Android APK also pads natively). */
+:root {
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sat: env(safe-area-inset-top, 0px);
+}
+
+.safe-pb {
+  padding-bottom: max(0.75rem, var(--sab));
+}
+
+.safe-fixed-bottom {
+  bottom: max(1.5rem, calc(var(--sab) + 0.75rem));
+}
+
 code, .font-mono {
   font-family: 'JetBrains Mono', source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
 }

@@ -26,7 +26,8 @@ import {
   RefreshCw,
   Lock,
   Eye,
-  EyeOff
+  EyeOff,
+  Download
 } from 'lucide-react';
 
 const REFEX_LOGO = '/refexone-logo.png';
@@ -46,7 +47,7 @@ const Layout = ({ children }) => {
   const profileRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  const isAdmin = user?.role === 'org_admin' || user?.role === 'admin';
+  const isAdmin = user?.role === 'org_admin' || user?.role === 'admin' || user?.role === 'super_admin';
 
   const adminSections = [
     {
@@ -87,6 +88,7 @@ const Layout = ({ children }) => {
         { path: '/audit', label: 'Audit Logs', icon: ScrollText },
         { path: '/hr-sync', label: 'HR Sync', icon: RefreshCw },
         { path: '/scim', label: 'SCIM Setup', icon: KeyRound },
+        { path: '/settings/app-update', label: 'App Updates', icon: Download },
         { path: '/settings', label: 'Settings', icon: Settings },
       ]
     }
@@ -368,9 +370,9 @@ const Layout = ({ children }) => {
         </div>
       </aside>
 
-      {/* Main Content */}
+      {/* Main Content — extra bottom pad so last tiles clear the phone nav / home bar */}
       <main className="lg:ml-[260px] pt-14 lg:pt-0 min-h-screen">
-        <div className="p-3 sm:p-8 lg:p-10 w-full">
+        <div className="p-3 sm:p-8 lg:p-10 w-full safe-pb">
           {children}
         </div>
       </main>

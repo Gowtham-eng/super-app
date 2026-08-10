@@ -18,6 +18,8 @@ import ipaddress
 from services.email_service import send_email, build_access_request_email, build_request_status_email, build_sync_report_email
 from services.adrenalin_sync import sync_employees
 from services.kissflow_scim_client import sync_to_kissflow, push_single_user_to_kissflow, get_kissflow_scim_config, save_kissflow_scim_config, resolve_managers_in_kissflow
+from services.app_update import get_app_update_config, save_app_update_config, evaluate_update
+from services.oidc_crypto import get_jwks, sign_oidc_jwt, normalize_issuer, decode_oidc_jwt
 from routes import scim as scim_router_module
 from routes.itsm import register_itsm_routes
 
@@ -347,15 +349,9 @@ async def log_audit(org_id: str, action: str, resource_type: str, user_id: str =
     await db.audit_logs.insert_one(audit_doc)
 
 def get_public_base_url(request: Request = None) -> str:
-    """Get the public-facing base URL. Uses PUBLIC_URL env var, falls back to request headers."""
-    if PUBLIC_URL:
-        return PUBLIC_URL
-    if request:
-        forwarded_host = request.headers.get('x-forwarded-host')
-        host = forwarded_host or request.headers.get('host', '')
-        scheme = request.headers.get('x-forwarded-proto', 'https')
-        return f"{scheme}://{host}"
-    return 'http://localhost:8001'
+    """Get the public-facing base URL. Uses PUBLIC_URL env var, falls back to request headers.
+    Non-localhost http:// is upgraded to https:// so OIDC issuer validation succeeds."""
+    return normalize_issuer(PUBLIC_URL, request)
 
 def generate_self_signed_cert():
     from cryptography import x509
@@ -1435,14 +1431,17 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     
     if not auth_token:
         from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=f"{base_url}/login?sso_app={app_id}")
+        # Prefer launcher over /login so already-authenticated mobile WebViews
+        # are not forced through the login screen (ProtectedRoute will send
+        # truly logged-out users to /login).
+        return RedirectResponse(url=f"{base_url}/launcher?sso_error=missing_token")
     
     # Decode token and get user
     try:
         payload = decode_token(auth_token)
     except:
         from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=f"{base_url}/login?sso_app={app_id}")
+        return RedirectResponse(url=f"{base_url}/launcher?sso_error=invalid_token")
     
     user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0, "password": 0})
     if not user:
@@ -2227,9 +2226,18 @@ async def get_oidc_discovery(app_id: str, request: Request):
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
         "subject_types_supported": ["public"],
-        "id_token_signing_alg_values_supported": ["HS256"],
+        "id_token_signing_alg_values_supported": ["RS256"],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
     }
+
+@api_router.get("/oidc/jwks")
+async def oidc_jwks():
+    """JWKS for validating RS256 id_token / access_token (required by Feast and most RPs)."""
+    try:
+        return get_jwks()
+    except Exception as e:
+        logging.exception("OIDC JWKS failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"JWKS unavailable: {e}")
 
 # ===================== OIDC PROVIDER FLOW =====================
 
@@ -2441,22 +2449,23 @@ async def oidc_token(app_id: str, request: Request):
         "exp": int((now + timedelta(hours=1)).timestamp()),
         "scope": auth_code.get('scope', 'openid'),
     }
-    access_token = jwt.encode(access_token_payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-    
-    # Generate ID token (for OpenID Connect)
+    access_token = sign_oidc_jwt(access_token_payload)
+
+    # Generate ID token (for OpenID Connect) — RS256 so Feast can verify via JWKS
     id_token_payload = {
         "sub": auth_code['user_id'],
         "email": auth_code['email'],
+        "email_verified": True,
         "name": auth_code.get('name', ''),
+        "preferred_username": auth_code['email'],
         "iss": base_url,
         "aud": client_id,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(hours=1)).timestamp()),
-        "at_hash": "",  # Simplified
     }
     if auth_code.get('nonce'):
         id_token_payload['nonce'] = auth_code['nonce']
-    id_token = jwt.encode(id_token_payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    id_token = sign_oidc_jwt(id_token_payload)
     
     # Store access token for userinfo lookups
     await db.oidc_access_tokens.insert_one({
@@ -2489,9 +2498,9 @@ async def oidc_userinfo(request: Request):
     
     access_token = auth_header[7:]
     
-    # Try to decode the JWT directly
+    # Decode OIDC access token (RS256) — fall back to legacy HS256
     try:
-        payload = jwt.decode(access_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = decode_oidc_jwt(access_token, hs_secret=JWT_SECRET, hs_algorithm=JWT_ALGORITHM)
         user_id = payload.get('sub')
         user = await db.users.find_one({"id": user_id}, {"_id": 0})
         if user:
@@ -2500,6 +2509,7 @@ async def oidc_userinfo(request: Request):
                 "email": user.get('email', ''),
                 "email_verified": True,
                 "name": user.get('name', user.get('full_name', '')),
+                "preferred_username": user.get('email', ''),
             }
             # Add profile fields if scope includes 'profile'
             if user.get('name') or user.get('full_name'):
@@ -3216,6 +3226,31 @@ async def trigger_manager_resolution(background_tasks: BackgroundTasks, user: di
     return {"message": "Manager resolution started in background.", "status": "running"}
 
 
+# ---- Native App Update Control ----
+
+@api_router.get("/app-update/check")
+async def check_app_update(
+    platform: str = Query("android"),
+    build: str = Query("0"),
+):
+    """Public endpoint — called by Android / iOS shells on launch."""
+    config = await get_app_update_config(db)
+    return evaluate_update(config, platform, build)
+
+
+@api_router.get("/app-update/config")
+async def get_app_update_admin_config(user: dict = Depends(get_current_user)):
+    if user.get("role") not in ("org_admin", "admin", "super_admin"):
+        raise HTTPException(status_code=403, detail="Admin only")
+    return await get_app_update_config(db)
+
+
+@api_router.put("/app-update/config")
+async def put_app_update_admin_config(request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") not in ("org_admin", "admin", "super_admin"):
+        raise HTTPException(status_code=403, detail="Admin only")
+    body = await request.json()
+    return await save_app_update_config(db, body or {})
 
 
 @api_router.get("/health")

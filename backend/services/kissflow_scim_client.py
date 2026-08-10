@@ -10,6 +10,7 @@ Key features:
 - Reads config from DB (kissflow_scim_config) or falls back to env vars
 """
 import os
+import re
 import asyncio
 import logging
 import httpx
@@ -339,6 +340,106 @@ async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token:
 
     except Exception as e:
         return {"action": "exception", "email": email, "detail": str(e)[:300]}
+
+
+async def check_user_kissflow_access(db, org_id: str, email: str, user_id: str = None) -> dict:
+    """
+    Live-verify whether the user still has Kissflow login access (SCIM).
+    If the user was deleted/deactivated in Kissflow, clear stale kissflow_user_id in RefexOne DB.
+    """
+    email = (email or "").strip().lower()
+    result = {
+        "user_in_kissflow": False,
+        "kissflow_user_id": None,
+        "kissflow_active": False,
+        "verified_via": None,
+    }
+    if not email:
+        return result
+
+    config = await get_kissflow_scim_config(db, org_id) if db is not None else None
+
+    async def _clear_stale_local_id():
+        if db is None:
+            return
+        query = {"org_id": org_id, "email": email} if org_id else {"email": email}
+        if user_id:
+            query = {"id": user_id}
+        await db.users.update_one(
+            query,
+            {"$unset": {"kissflow_user_id": "", "kissflow_synced_at": ""}},
+        )
+
+    if not config:
+        # No SCIM — fall back to local flag only
+        local_kf_id = None
+        if db is not None:
+            q = {"id": user_id} if user_id else {"email": email}
+            local = await db.users.find_one(q, {"_id": 0, "kissflow_user_id": 1})
+            local_kf_id = (local or {}).get("kissflow_user_id")
+        has_local = bool(local_kf_id and str(local_kf_id).strip())
+        result["user_in_kissflow"] = has_local
+        result["kissflow_user_id"] = local_kf_id if has_local else None
+        result["kissflow_active"] = has_local
+        result["verified_via"] = "local_db"
+        return result
+
+    base_url = config["base_url"].rstrip("/") + "/"
+    token = config["token"]
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/scim+json",
+    }
+    filter_url = f'{base_url}Users?filter=userName eq "{email}"'
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            search_resp = await _request_with_retry(client, "GET", filter_url, headers)
+
+        if search_resp.status_code != 200:
+            # Do not trust stale local id when SCIM check fails closed for access redirect
+            result["verified_via"] = "scim_error"
+            result["error"] = f"scim_status_{search_resp.status_code}"
+            return result
+
+        resources = (search_resp.json() or {}).get("Resources") or []
+        if not resources:
+            # Deleted from Kissflow — clear stale RefexOne flag so ITSM opens create form
+            await _clear_stale_local_id()
+            result["verified_via"] = "scim"
+            return result
+
+        kf_user = resources[0]
+        kf_id = kf_user.get("id")
+        active = kf_user.get("active", True) is True
+        if not active:
+            await _clear_stale_local_id()
+            result["verified_via"] = "scim"
+            result["kissflow_user_id"] = kf_id
+            result["kissflow_active"] = False
+            return result
+
+        # Active in Kissflow — keep/update local id
+        if db is not None and kf_id:
+            q = {"id": user_id} if user_id else {"email": email, "org_id": org_id}
+            await db.users.update_one(
+                q,
+                {"$set": {
+                    "kissflow_user_id": kf_id,
+                    "kissflow_synced_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+
+        result["kissflow_user_id"] = kf_id
+        result["kissflow_active"] = True
+        result["user_in_kissflow"] = True
+        result["verified_via"] = "scim"
+        return result
+    except Exception as exc:
+        logger.warning("Kissflow access check failed for %s: %s", email, exc)
+        result["verified_via"] = "scim_exception"
+        result["error"] = str(exc)[:200]
+        return result
 
 
 async def deactivate_user_in_kissflow(client: httpx.AsyncClient, base_url: str, token: str, email: str) -> dict:

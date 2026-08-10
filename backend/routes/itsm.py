@@ -137,18 +137,21 @@ def _raw_body_indicates_success(raw: Any) -> bool:
 def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
     """Register ITSM proxy routes (requires IAM auth)."""
 
-    async def _user_kissflow_profile(user: dict) -> Dict[str, Any]:
-        kissflow_user_id = None
-        if db is not None and user.get("id"):
-            full = await db.users.find_one(
-                {"id": user["id"]},
-                {"_id": 0, "kissflow_user_id": 1},
-            )
-            kissflow_user_id = (full or {}).get("kissflow_user_id")
-        in_kissflow = bool(kissflow_user_id and str(kissflow_user_id).strip())
+    async def _verify_kissflow_access(user: dict) -> Dict[str, Any]:
+        """Live SCIM check: deleted Kissflow users must not be treated as having access."""
+        from services.kissflow_scim_client import check_user_kissflow_access
+
+        profile = await check_user_kissflow_access(
+            db,
+            user.get("org_id") or "",
+            user.get("email") or "",
+            user_id=user.get("id"),
+        )
         return {
-            "user_in_kissflow": in_kissflow,
-            "kissflow_user_id": kissflow_user_id if in_kissflow else None,
+            "user_in_kissflow": bool(profile.get("user_in_kissflow")),
+            "kissflow_user_id": profile.get("kissflow_user_id") if profile.get("user_in_kissflow") else None,
+            "kissflow_active": bool(profile.get("kissflow_active")),
+            "verified_via": profile.get("verified_via"),
         }
 
     @api_router.get("/itsm/config")
@@ -162,8 +165,13 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
 
     @api_router.get("/itsm/kissflow-status")
     async def kissflow_status(user: dict = Depends(get_current_user)):
-        """Kissflow reachability + whether the logged-in user exists in Kissflow."""
-        user_profile = await _user_kissflow_profile(user)
+        """
+        Called once when user taps ITSM.
+        user_in_kissflow=true only after live Kissflow SCIM verification (active user).
+        If user was deleted from Kissflow, clears stale kissflow_user_id and returns false
+        so App Launcher opens the Create ITSM form.
+        """
+        user_profile = await _verify_kissflow_access(user)
         path = (
             f"/form/2/{KISSFLOW_ACCOUNT_ID}/{KISSFLOW_APPROVAL_MATRIX_ID}/list"
             f"?page_number=1&page_size=1"

@@ -164,8 +164,27 @@ const CreateITRequest = () => {
   const filteredOptions = useMemo(() => {
     const q = debouncedQuery.trim().toLowerCase();
     if (!q) return subTypeOptions;
-    return subTypeOptions.filter((item) => item.toLowerCase().includes(q));
-  }, [debouncedQuery, subTypeOptions]);
+
+    const matches = subTypeOptions.filter((item) => item.toLowerCase().includes(q));
+    if (matches.length > 0) return matches;
+
+    // No subtype match for this keyword → show Others so user can still raise a ticket
+    const othersFromOptions = subTypeOptions.find((item) => /^others?$/i.test(String(item).trim()));
+    if (othersFromOptions) return [othersFromOptions];
+
+    for (const record of records) {
+      if (!matchesEntity(record, profile.entity)) continue;
+      const subType = record.subType?.trim();
+      if (subType && /^others?$/i.test(subType)) return [subType];
+    }
+    return [];
+  }, [debouncedQuery, subTypeOptions, records, profile.entity]);
+
+  const showingOthersFallback =
+    !!debouncedQuery.trim() &&
+    filteredOptions.length === 1 &&
+    /^others?$/i.test(String(filteredOptions[0]).trim()) &&
+    !String(filteredOptions[0]).toLowerCase().includes(debouncedQuery.trim().toLowerCase());
 
   const fetchMatrix = async () => {
     setLoadingMatrix(true);
@@ -491,6 +510,11 @@ const CreateITRequest = () => {
             )}
             {showSuggestions && (
               <div className="mt-2 max-h-52 overflow-auto rounded-xl border border-slate-200 bg-white shadow-md">
+                {showingOthersFallback && (
+                  <p className="px-4 py-2 text-xs text-slate-500 bg-slate-50 border-b border-slate-100">
+                    No exact match — select Others
+                  </p>
+                )}
                 {filteredOptions.map((item) => (
                   <button
                     key={item}

@@ -29,6 +29,28 @@ const ITSM_VIRTUAL_APP = {
   logo_url: '',
 };
 
+/** One shared browser tab for all desktop app launches (reused instead of new tabs). */
+const DESKTOP_APP_WINDOW = 'refexone_app';
+
+const openDesktopAppTab = (url) => {
+  if (!url) return;
+  let win = null;
+  try {
+    win = window.open(url, DESKTOP_APP_WINDOW);
+  } catch (e) {
+    win = null;
+  }
+  if (!win) {
+    window.location.href = url;
+    return;
+  }
+  try {
+    win.focus();
+  } catch (e) {
+    // ignore
+  }
+};
+
 // Mobile palette (kept untouched)
 const APP_COLORS = [
   { bg: 'bg-blue-50', text: 'text-blue-600', border: 'border-blue-100' },
@@ -142,8 +164,62 @@ const AppLauncher = () => {
   const isCapacitor = typeof window !== 'undefined' && !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
   const isPWA = isCapacitor || window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   const isMobile = isCapacitor || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  // Safari (desktop + iOS) — exclude Chrome/CriOS/Edge/Android WebView
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+  const isSafari = /Safari/i.test(ua) && !/Chrome|CriOS|Chromium|Edg|Android/i.test(ua);
 
   const itsmApi = `${process.env.REACT_APP_ITSM_API_URL || process.env.REACT_APP_BACKEND_URL}/api`;
+
+  /**
+   * Desktop module SSO (Expense/Travel/etc.):
+   * Reuse one dedicated tab (DESKTOP_APP_WINDOW). Safari: open about:blank on
+   * the user gesture, then navigate that same window (avoids a second tab without cookies).
+   */
+  const navigateSsoWindowToModule = (ssoWindow, homeUrl) => {
+    try {
+      if (ssoWindow && !ssoWindow.closed) {
+        ssoWindow.location.href = homeUrl;
+        return;
+      }
+    } catch (e) {
+      // ignore — fall through
+    }
+    openDesktopAppTab(homeUrl);
+  };
+
+  const launchDesktopModuleSso = (completeUrl, homeUrl) => {
+    // Safari ITP: open about:blank on the user gesture, then navigate that same window
+    if (isSafari) {
+      const ssoWindow = window.open('about:blank', DESKTOP_APP_WINDOW);
+      if (!ssoWindow) {
+        // Popup blocked — same-tab SSO (lands on Kissflow after ACS)
+        window.location.href = completeUrl;
+        return;
+      }
+      try {
+        ssoWindow.opener = null;
+      } catch (e) {
+        // ignore
+      }
+      ssoWindow.location.href = completeUrl;
+      // Dual delays: ACS + Kissflow session cookie settle can be slow on Safari
+      setTimeout(() => navigateSsoWindowToModule(ssoWindow, homeUrl), 1500);
+      setTimeout(() => navigateSsoWindowToModule(ssoWindow, homeUrl), 2500);
+      return;
+    }
+
+    const ssoWindow = window.open(completeUrl, DESKTOP_APP_WINDOW);
+    if (!ssoWindow) {
+      window.location.href = completeUrl;
+      return;
+    }
+    try {
+      ssoWindow.focus();
+    } catch (e) {
+      // ignore
+    }
+    setTimeout(() => navigateSsoWindowToModule(ssoWindow, homeUrl), 500);
+  };
 
   const launchKissflowApp = (app) => {
     const baseUrl = process.env.REACT_APP_BACKEND_URL;
@@ -159,13 +235,9 @@ const AppLauncher = () => {
           : completeUrl;
         launchUrlAfterKissflowClear(targetUrl);
       } else if (app.home_url) {
-        const windowName = 'kf_sso_' + app.id.substring(0, 8);
-        window.open(completeUrl, windowName);
-        setTimeout(() => {
-          window.open(app.home_url, windowName);
-        }, 3500);
+        launchDesktopModuleSso(completeUrl, app.home_url);
       } else {
-        window.open(completeUrl, '_blank');
+        openDesktopAppTab(completeUrl);
       }
       return;
     }
@@ -173,7 +245,7 @@ const AppLauncher = () => {
     // No SAML app config — open Kissflow base / home_url if present
     if (app.home_url) {
       if (isPWA && isMobile) window.location.href = app.home_url;
-      else window.open(app.home_url, '_blank');
+      else openDesktopAppTab(app.home_url);
       return;
     }
 
@@ -258,21 +330,23 @@ const AppLauncher = () => {
           : completeUrl;
         launchUrlAfterKissflowClear(targetUrl);
       } else if (app.home_url) {
-        // Desktop + module app: Two-step named window SSO
-        // Step 1: Open SSO in a named tab to establish Kissflow session
-        const windowName = 'kf_sso_' + app.id.substring(0, 8);
-        window.open(completeUrl, windowName);
-        // Step 2: After session is established, redirect same tab to module URL
-        setTimeout(() => {
-          window.open(app.home_url, windowName);
-        }, 3500);
+        // Desktop + module app: one shared tab for SSO, then navigate to module
+        launchDesktopModuleSso(completeUrl, app.home_url);
       } else {
-        // Desktop + primary app: direct SSO
-        window.open(completeUrl, '_blank');
+        // Desktop + primary app: direct SSO in shared app tab
+        openDesktopAppTab(completeUrl);
       }
     } else if (app.type === 'oidc') {
-      const targetUrl = app.home_url || `${baseUrl}${app.launch_url}`;
-      if (isPWA && isMobile) { window.location.href = targetUrl; } else { window.open(targetUrl, '_blank'); }
+      // Prefer IdP authorize with session token so Feast/OIDC RPs don't bounce to a bare login
+      const launchPath = app.launch_url || '';
+      let targetUrl = app.home_url || `${baseUrl}${launchPath}`;
+      if (token && launchPath.includes('/oidc/') && launchPath.includes('/authorize')) {
+        const authorizeUrl = `${baseUrl}${launchPath}${launchPath.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+        // When home_url is set (Feast), still open the app; Feast will call authorize itself.
+        // If no home_url, start authorize directly with token.
+        targetUrl = app.home_url || authorizeUrl;
+      }
+      if (isPWA && isMobile) { window.location.href = targetUrl; } else { openDesktopAppTab(targetUrl); }
     } else if (app.type === 'mobile') {
       // Detect device and route to the appropriate store
       const ua = navigator.userAgent || '';
@@ -294,7 +368,7 @@ const AppLauncher = () => {
       if (isPWA && isMobile) { window.location.href = targetUrl; } else { window.open(targetUrl, '_blank'); }
     } else {
       const targetUrl = `${baseUrl}${app.launch_url}`;
-      if (isPWA && isMobile) { window.location.href = targetUrl; } else { window.open(targetUrl, '_blank'); }
+      if (isPWA && isMobile) { window.location.href = targetUrl; } else { openDesktopAppTab(targetUrl); }
     }
   };
 
@@ -598,7 +672,7 @@ const AppLauncher = () => {
       )}
 
       {/* Refexions Chatbot - Bottom Right */}
-      <div className="fixed bottom-6 right-6 z-50" data-testid="refexions-chatbot">
+      <div className="fixed right-6 z-50 safe-fixed-bottom bottom-6" data-testid="refexions-chatbot">
         {chatOpen ? (
           <div className="w-80 sm:w-96 h-[480px] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in slide-in-from-bottom-4">
             {/* Chat Header */}

@@ -56,23 +56,27 @@ const Login = () => {
   }, [searchParams]);
 
   useEffect(() => {
+    if (!token) return undefined;
+
+    // Already logged in — never stay on the login screen until Sign Out
     if (token && ssoAppId && !ssoRedirecting.current) {
       ssoRedirecting.current = true;
       completeSSOLogin(ssoAppId);
-    } else if (token) {
-      // Check for OIDC redirect
-      const oidcRedirect = searchParams.get('oidc_redirect');
-      if (oidcRedirect) {
-        // After login, redirect back to OIDC authorize with token
-        const storedToken = localStorage.getItem('iam_token');
-        const separator = oidcRedirect.includes('?') ? '&' : '?';
-        window.location.href = `${oidcRedirect}${separator}token=${encodeURIComponent(storedToken)}`;
-        return;
-      }
-      if (!ssoAppId) {
-        navigate('/');
-      }
+      return undefined;
     }
+
+    const oidcRedirect = searchParams.get('oidc_redirect');
+    if (oidcRedirect) {
+      const storedToken = localStorage.getItem('iam_token');
+      const separator = oidcRedirect.includes('?') ? '&' : '?';
+      window.location.href = `${oidcRedirect}${separator}token=${encodeURIComponent(storedToken)}`;
+      return undefined;
+    }
+
+    if (!ssoAppId) {
+      navigate('/', { replace: true });
+    }
+    return undefined;
   }, [token, ssoAppId, navigate, searchParams]);
 
   const completeSSOLogin = async (appId) => {
@@ -100,6 +104,14 @@ const Login = () => {
       toast.success('Welcome back!');
       if (ssoAppId) {
         completeSSOLogin(ssoAppId);
+        return;
+      }
+      const oidcRedirect = searchParams.get('oidc_redirect');
+      if (oidcRedirect) {
+        const storedToken = localStorage.getItem('iam_token');
+        const separator = oidcRedirect.includes('?') ? '&' : '?';
+        window.location.href = `${oidcRedirect}${separator}token=${encodeURIComponent(storedToken || '')}`;
+        return;
       }
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Login failed');
