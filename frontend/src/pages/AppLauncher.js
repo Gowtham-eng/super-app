@@ -337,16 +337,22 @@ const AppLauncher = () => {
         openDesktopAppTab(completeUrl);
       }
     } else if (app.type === 'oidc') {
-      // Prefer IdP authorize with session token so Feast/OIDC RPs don't bounce to a bare login
+      // Feast/QR: open home_url so the RP starts OIDC with its own state.
+      // Session continues via iam_token cookie / Login?oidc_redirect resume (mobile).
       const launchPath = app.launch_url || '';
       let targetUrl = app.home_url || `${baseUrl}${launchPath}`;
       if (token && launchPath.includes('/oidc/') && launchPath.includes('/authorize')) {
         const authorizeUrl = `${baseUrl}${launchPath}${launchPath.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
-        // When home_url is set (Feast), still open the app; Feast will call authorize itself.
+        // When home_url is set (Feast/QR), open the app; it will call authorize itself.
         // If no home_url, start authorize directly with token.
         targetUrl = app.home_url || authorizeUrl;
       }
-      if (isPWA && isMobile) { window.location.href = targetUrl; } else { openDesktopAppTab(targetUrl); }
+      const mobileFlow = isCapacitor || (isPWA && isMobile);
+      if (mobileFlow) {
+        window.location.href = targetUrl;
+      } else {
+        openDesktopAppTab(targetUrl);
+      }
     } else if (app.type === 'mobile') {
       // Detect device and route to the appropriate store
       const ua = navigator.userAgent || '';

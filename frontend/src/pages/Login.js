@@ -121,6 +121,16 @@ const Login = () => {
   };
 
   const slide = CAROUSEL_SLIDES[currentSlide];
+  const oidcRedirectPending = searchParams.get('oidc_redirect');
+
+  // Already signed in + Feast/QR SSO resume: never flash the login form
+  if (token && oidcRedirectPending) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-white" data-testid="login-oidc-resume">
+        <div className="spinner" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex" data-testid="login-page">

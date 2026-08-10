@@ -11,6 +11,27 @@ export const AuthProvider = ({ children }) => {
   const [token, setToken] = useState(localStorage.getItem('iam_token'));
   const [loading, setLoading] = useState(true);
 
+  // Cookie lets /api/oidc/.../authorize silent-SSO when Feast/QR call authorize without ?token=
+  const persistToken = (newToken) => {
+    if (!newToken) return;
+    localStorage.setItem('iam_token', newToken);
+    try {
+      const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+      document.cookie = `iam_token=${encodeURIComponent(newToken)}; Path=/; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}${secure}`;
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  const clearToken = () => {
+    localStorage.removeItem('iam_token');
+    try {
+      document.cookie = 'iam_token=; Path=/; Max-Age=0; SameSite=Lax';
+    } catch (e) {
+      // ignore
+    }
+  };
+
   useEffect(() => {
     const initAuth = async () => {
       if (token) {
@@ -20,9 +41,10 @@ export const AuthProvider = ({ children }) => {
           });
           setUser(response.data);
           setOrganization(response.data.organization);
+          persistToken(token);
         } catch (error) {
           console.error('Auth check failed:', error);
-          localStorage.removeItem('iam_token');
+          clearToken();
           setToken(null);
         }
       }
@@ -35,7 +57,7 @@ export const AuthProvider = ({ children }) => {
     clearKissflowNativeSession();
     const response = await axios.post(`${API}/auth/login`, { email, password });
     const { token: newToken } = response.data;
-    localStorage.setItem('iam_token', newToken);
+    persistToken(newToken);
     setToken(newToken);
     const me = await axios.get(`${API}/auth/me`, {
       headers: { Authorization: `Bearer ${newToken}` },
@@ -53,7 +75,7 @@ export const AuthProvider = ({ children }) => {
       org_id: orgId
     });
     const { token: newToken, user: userData } = response.data;
-    localStorage.setItem('iam_token', newToken);
+    persistToken(newToken);
     setToken(newToken);
     setUser(userData);
     return userData;
@@ -66,7 +88,7 @@ export const AuthProvider = ({ children }) => {
 
   const logout = () => {
     clearNativeAppSession();
-    localStorage.removeItem('iam_token');
+    clearToken();
     setToken(null);
     setUser(null);
     setOrganization(null);

@@ -27,7 +27,8 @@ import {
   Lock,
   Eye,
   EyeOff,
-  Download
+  Download,
+  Headphones
 } from 'lucide-react';
 
 const REFEX_LOGO = '/refexone-logo.png';
@@ -88,6 +89,7 @@ const Layout = ({ children }) => {
         { path: '/audit', label: 'Audit Logs', icon: ScrollText },
         { path: '/hr-sync', label: 'HR Sync', icon: RefreshCw },
         { path: '/scim', label: 'SCIM Setup', icon: KeyRound },
+        { path: '/itsm-setup', label: 'ITSM Setup', icon: Headphones },
         { path: '/settings/app-update', label: 'App Updates', icon: Download },
         { path: '/settings', label: 'Settings', icon: Settings },
       ]

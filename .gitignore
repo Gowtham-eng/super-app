@@ -63,6 +63,11 @@ chainlit.md
 
 # Data and databases
 agenthub/agents/youtube/db
+backend/data/
+
+# Local ops scripts that may contain secrets (do not commit)
+backend/scripts/sync_itsm_entity_configs.js
+backend/scripts/
 
 # Archive files and large assets
 **/*.zip
@@ -81,7 +86,7 @@ memory/test_credentials.md
 # Mobile development
 android-sdk/frontend/node_modules/.cache/default-development/0.pack
 frontend/node_modules/.cache/default-development/0.pack
--e 
+
 # Environment and credential files
 .env
 .env.*
@@ -90,3 +95,24 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+# Local ADB / UI test screenshots (repo root)
+_*.png
+_*.jpg
+_*.jpeg
+_*.webp
+after_*.png
+after_*.jpg
+refex*.png
+refex*.jpg
+case_*.png
+case_*.jpg
+form_*.png
+form_*.jpg
+ui.xml
+
+# Local ADB / UI test helper scripts (repo root)
+_find*.py
+_locate*.py
+_gowtham_query.js
+_patch_extract_*.txt

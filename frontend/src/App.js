@@ -18,6 +18,7 @@ import AuditLogs from "./pages/AuditLogs";
 import Settings from "./pages/Settings";
 import HRSync from "./pages/HRSync";
 import SCIMSetup from "./pages/SCIMSetup";
+import ITSMSetup from "./pages/ITSMSetup";
 import CreateITRequest from "./pages/CreateITRequest";
 import Layout from "./components/Layout";
 import "./App.css";
@@ -106,6 +107,7 @@ function App() {
           <Route path="/audit" element={<AdminRoute><AuditLogs /></AdminRoute>} />
           <Route path="/hr-sync" element={<AdminRoute><HRSync /></AdminRoute>} />
           <Route path="/scim" element={<AdminRoute><SCIMSetup /></AdminRoute>} />
+          <Route path="/itsm-setup" element={<AdminRoute><ITSMSetup /></AdminRoute>} />
           <Route path="/settings" element={<AdminRoute><Settings /></AdminRoute>} />
           <Route path="/access-requests" element={<ProtectedRoute><AccessRequests /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />

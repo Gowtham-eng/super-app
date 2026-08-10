@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
+import { ITSM_API } from '../config/api';
 import { toast } from 'sonner';
 import { getApiErrorMessage } from '../utils/apiError';
 import {
@@ -24,14 +25,65 @@ import {
 const PROFILE_STORAGE_KEY = 'itsm_personal_details';
 const ENTITY_FALLBACK = ['Refex', 'Extrovis', 'ModePro'];
 
+/** Common office / site locations — dropdown + free-text custom. */
+const LOCATION_OPTIONS = [
+  'Refex Group',
+  'Refex Tower-Nungambakkam',
+  'Bazullah -T.Nagar',
+  'Thoraipakkam',
+  'Chennai',
+  'Bengaluru - BO',
+  'Bengaluru',
+  'Jayant Site',
+  'ADMS-Mohali E-70',
+  'ADMS-Mohali-D 207',
+  'Singrauli',
+  'Kolhapur',
+  'Delhi',
+  'New Delhi',
+  'Hub-Charging Station',
+  'Hub-Refex Green Mobility',
+  'Koppal Project Site',
+  'Goregaon',
+  'Mumbai',
+  'Pune',
+  'Airport-Pune',
+  'Hyderabad',
+  'Begumpet',
+  'Vijayawada',
+  'Visakhapatnam',
+  'Vyzag-CBG',
+  'Patna',
+  'Silvassa',
+  'Lucknow',
+  'Ahmedabad',
+  'Chhattisgarh-Bhilai Plant',
+  'Chhattisgarh-KSK Site',
+  'NTPC Ramagundam',
+  'SCCL Ramagundam',
+  'North Karanpura',
+  'Dhanbad',
+];
+
 const normalizeKey = (value = '') => value.trim().toLowerCase().replace(/\s+/g, ' ');
+
+/** Extrovis rows often use Category/SubCategory with empty Sub_Type; Refex uses Sub_Type. */
+const recordServiceLabel = (record) => {
+  const subType = (record?.subType || '').trim();
+  if (subType) return subType;
+  const category = (record?.category || '').trim();
+  const subCategory = (record?.subCategory || '').trim();
+  if (category && subCategory) return `${category} / ${subCategory}`;
+  return category || subCategory || (record?.type || '').trim() || '';
+};
 
 const matchesEntity = (record, entity) => {
   const userEntity = normalizeKey(entity);
   if (!userEntity) return false;
   const recordEntity = normalizeKey(record?.entity);
   if (!recordEntity) return true;
-  return recordEntity === userEntity;
+  if (recordEntity === userEntity) return true;
+  return recordEntity.includes(userEntity) || userEntity.includes(recordEntity);
 };
 
 const getSubTypesForEntity = (records, entity) => {
@@ -40,12 +92,12 @@ const getSubTypesForEntity = (records, entity) => {
   const result = [];
   for (const record of records) {
     if (!matchesEntity(record, entity)) continue;
-    const subType = record.subType?.trim();
-    if (!subType) continue;
-    const key = normalizeKey(subType);
+    const label = recordServiceLabel(record);
+    if (!label) continue;
+    const key = normalizeKey(label);
     if (seen.has(key)) continue;
     seen.add(key);
-    result.push(subType);
+    result.push(label);
   }
   return result.sort((a, b) => a.localeCompare(b));
 };
@@ -100,7 +152,7 @@ const criticalityBadgeClass = (value = '') => {
 
 const CreateITRequest = () => {
   const { getAuthHeader, user } = useAuth();
-  const itsmApi = `${process.env.REACT_APP_ITSM_API_URL || process.env.REACT_APP_BACKEND_URL}/api`;
+  const itsmApi = ITSM_API;
   const navigate = useNavigate();
 
   const [initialized, setInitialized] = useState(false);
@@ -127,6 +179,7 @@ const CreateITRequest = () => {
   const recognitionRef = useRef(null);
   const descriptionBeforeListen = useRef('');
   const debounceRef = useRef(null);
+  const matrixAbortRef = useRef(null);
 
   const subTypeOptions = useMemo(
     () => getSubTypesForEntity(records, profile.entity),
@@ -135,7 +188,7 @@ const CreateITRequest = () => {
 
   const findMatrixForSubType = (subType, entity = profile.entity) => {
     const key = normalizeKey(subType);
-    const matches = records.filter((record) => normalizeKey(record.subType) === key);
+    const matches = records.filter((record) => normalizeKey(recordServiceLabel(record)) === key);
     if (!matches.length) return null;
     if (entity) {
       const entityMatch = matches.find((record) => matchesEntity(record, entity));
@@ -144,15 +197,14 @@ const CreateITRequest = () => {
     return matches[0];
   };
 
-  const criticality = selectedMatrix?.criticality?.trim() || '';
+  // Extrovis (and some live rows) omit Criticality — default Medium so submit works
+  const criticality = selectedMatrix?.criticality?.trim() || (selectedMatrix ? 'Medium' : '');
 
   const profileComplete =
     profile.name.trim() &&
     profile.email.trim() &&
     profile.entity.trim() &&
     profile.location.trim();
-
-  const needsProfileEdit = !profileComplete;
 
   const canSubmit =
     !!selectedMatrix &&
@@ -165,17 +217,40 @@ const CreateITRequest = () => {
     const q = debouncedQuery.trim().toLowerCase();
     if (!q) return subTypeOptions;
 
-    const matches = subTypeOptions.filter((item) => item.toLowerCase().includes(q));
-    if (matches.length > 0) return matches;
+    const entityRecords = records.filter((record) => matchesEntity(record, profile.entity));
+    const matchedLabels = [];
+    const seen = new Set();
+    for (const record of entityRecords) {
+      const label = recordServiceLabel(record);
+      if (!label) continue;
+      const haystack = [
+        label,
+        record.category,
+        record.subCategory,
+        record.subType,
+        record.type,
+        record.ticketType,
+        record.detailsScope,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (!haystack.includes(q)) continue;
+      const key = normalizeKey(label);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      matchedLabels.push(label);
+    }
+    if (matchedLabels.length > 0) {
+      return matchedLabels.sort((a, b) => a.localeCompare(b));
+    }
 
-    // No subtype match for this keyword → show Others so user can still raise a ticket
     const othersFromOptions = subTypeOptions.find((item) => /^others?$/i.test(String(item).trim()));
     if (othersFromOptions) return [othersFromOptions];
 
-    for (const record of records) {
-      if (!matchesEntity(record, profile.entity)) continue;
-      const subType = record.subType?.trim();
-      if (subType && /^others?$/i.test(subType)) return [subType];
+    for (const record of entityRecords) {
+      const label = recordServiceLabel(record);
+      if (label && /^others?$/i.test(label)) return [label];
     }
     return [];
   }, [debouncedQuery, subTypeOptions, records, profile.entity]);
@@ -186,25 +261,55 @@ const CreateITRequest = () => {
     /^others?$/i.test(String(filteredOptions[0]).trim()) &&
     !String(filteredOptions[0]).toLowerCase().includes(debouncedQuery.trim().toLowerCase());
 
-  const fetchMatrix = async () => {
+  const fetchMatrix = async (entity) => {
+    if (matrixAbortRef.current) {
+      try { matrixAbortRef.current.abort(); } catch { /* ignore */ }
+    }
+    const controller = new AbortController();
+    matrixAbortRef.current = controller;
+
     setLoadingMatrix(true);
     setInitError('');
     try {
-      const res = await axios.get(`${itsmApi}/itsm/approval-matrix`, getAuthHeader());
+      const params = entity?.trim() ? { entity: entity.trim() } : undefined;
+      const res = await axios.get(`${itsmApi}/itsm/approval-matrix`, {
+        ...getAuthHeader(),
+        params,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
       setRecords(res.data.records || []);
       setEntityOptions(res.data.entityOptions || ENTITY_FALLBACK);
       setInitialized(true);
     } catch (err) {
+      if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') return;
       setInitError(getApiErrorMessage(err, 'Unable to load service catalog. Please retry.'));
     } finally {
-      setLoadingMatrix(false);
+      if (matrixAbortRef.current === controller) {
+        setLoadingMatrix(false);
+      }
     }
   };
 
   useEffect(() => {
-    fetchMatrix();
+    const loadConfig = async () => {
+      try {
+        const res = await axios.get(`${itsmApi}/itsm/config`, getAuthHeader());
+        if (Array.isArray(res.data.entityOptions) && res.data.entityOptions.length) {
+          setEntityOptions(res.data.entityOptions);
+        }
+      } catch {
+        /* matrix fetch still loads options */
+      }
+    };
+    loadConfig();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    fetchMatrix(profile.entity);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile.entity]);
 
   useEffect(() => {
     if (!user) return;
@@ -237,6 +342,9 @@ const CreateITRequest = () => {
       try { recognitionRef.current.stop(); } catch { /* ignore */ }
     }
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (matrixAbortRef.current) {
+      try { matrixAbortRef.current.abort(); } catch { /* ignore */ }
+    }
   }, []);
 
   const updateSearchQuery = (value) => {
@@ -357,7 +465,7 @@ const CreateITRequest = () => {
           email: profile.email.trim(),
           entity: profile.entity.trim(),
           location: profile.location.trim(),
-          sub_type: selectedMatrix.subType || selectedSubType,
+          sub_type: recordServiceLabel(selectedMatrix) || selectedSubType,
           criticality,
           description: description.trim(),
         },
@@ -409,7 +517,6 @@ const CreateITRequest = () => {
 
   return (
     <div className="animate-fadeIn w-full max-w-3xl mx-auto pb-8" data-testid="itsm-create-page">
-      {/* Hero — matches App Center */}
       <div className="relative overflow-hidden rounded-2xl border-2 border-emerald-200/70 bg-gradient-to-br from-emerald-50 via-white to-teal-50/40 mb-5">
         <div className="absolute -top-12 -right-12 w-56 h-56 rounded-full bg-emerald-100/40 blur-3xl pointer-events-none" />
         <div className="absolute -bottom-12 -left-12 w-56 h-56 rounded-full bg-teal-100/30 blur-3xl pointer-events-none" />
@@ -439,26 +546,23 @@ const CreateITRequest = () => {
       {initError && !initialized ? (
         <div className="card-default p-6 text-center border-red-200">
           <p className="text-sm text-red-600 mb-4">{initError}</p>
-          <button type="button" onClick={fetchMatrix} className="btn-primary">
+          <button type="button" onClick={() => fetchMatrix(profile.entity)} className="btn-primary">
             Retry
           </button>
         </div>
       ) : (
         <div className="space-y-5">
-          {/* Personal details */}
           <section className="form-section !mb-0">
             <div className="flex items-center justify-between mb-4">
               <h2 className="form-section-title !mb-0">Personal details</h2>
-              {needsProfileEdit && (
-                <button
-                  type="button"
-                  onClick={() => { setEditForm(profile); setEditOpen(true); }}
-                  className="inline-flex items-center gap-1.5 text-sm text-emerald-700 hover:text-emerald-800 font-medium"
-                  data-testid="itsm-edit-profile"
-                >
-                  <Pencil size={14} /> Edit
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => { setEditForm(profile); setEditOpen(true); }}
+                className="inline-flex items-center gap-1.5 text-sm text-emerald-700 hover:text-emerald-800 font-medium"
+                data-testid="itsm-edit-profile"
+              >
+                <Pencil size={14} /> Edit
+              </button>
             </div>
             {!profileComplete && (
               <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5 mb-4 flex items-start gap-2">
@@ -474,7 +578,6 @@ const CreateITRequest = () => {
             </div>
           </section>
 
-          {/* Quick Search — Sub Type */}
           <section className="form-section !mb-0">
             <h2 className="form-section-title">Quick Search</h2>
             <p className="text-xs text-slate-500 mb-3">
@@ -529,7 +632,6 @@ const CreateITRequest = () => {
             )}
           </section>
 
-          {/* Request Details */}
           {selectedMatrix && (
             <section className="form-section !mb-0">
               <div className="flex items-center justify-between gap-3 mb-4">
@@ -552,13 +654,12 @@ const CreateITRequest = () => {
                 <InfoBlock label="Category" value={selectedMatrix.category} />
                 <InfoBlock label="Sub Category" value={selectedMatrix.subCategory} />
                 <InfoBlock label="Type" value={selectedMatrix.type} />
-                <InfoBlock label="Sub Type" value={selectedMatrix.subType} highlight />
-                <InfoBlock label="Criticality" value={selectedMatrix.criticality} />
+                <InfoBlock label="Sub Type" value={recordServiceLabel(selectedMatrix)} highlight />
+                <InfoBlock label="Criticality" value={criticality} />
               </div>
             </section>
           )}
 
-          {/* Description */}
           <section className="form-section !mb-0">
             <h2 className="form-section-title">Description</h2>
             <div className="relative">
@@ -644,11 +745,37 @@ const CreateITRequest = () => {
                 />
               </Field>
               <Field label="Location">
+                <select
+                  value={LOCATION_OPTIONS.includes(editForm.location) ? editForm.location : (editForm.location ? '__custom__' : '')}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === '__custom__') return;
+                    setEditForm({ ...editForm, location: v });
+                  }}
+                  className="input-brutalist w-full mb-2"
+                  data-testid="itsm-location-select"
+                >
+                  <option value="">Select location</option>
+                  {LOCATION_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                  {editForm.location && !LOCATION_OPTIONS.includes(editForm.location) && (
+                    <option value="__custom__">{editForm.location}</option>
+                  )}
+                </select>
                 <input
                   value={editForm.location}
                   onChange={(e) => setEditForm({ ...editForm, location: e.target.value })}
+                  placeholder="Or type a custom location"
+                  list="itsm-location-suggestions"
                   className="input-brutalist w-full"
+                  data-testid="itsm-location-input"
                 />
+                <datalist id="itsm-location-suggestions">
+                  {LOCATION_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt} />
+                  ))}
+                </datalist>
               </Field>
             </div>
             <div className="flex gap-2 mt-5">
