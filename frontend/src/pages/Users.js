@@ -109,9 +109,35 @@ const Field = ({ label, value }) => {
   );
 };
 
-const Section = ({ icon: Icon, title, children }) => {
+const EditableField = ({ label, value, onChange, type = 'text', options = null, disabled = false }) => (
+  <div className="min-w-0">
+    <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wider block mb-1">{label}</label>
+    {options ? (
+      <select
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className="w-full text-sm rounded-lg border border-slate-200 bg-white px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 disabled:bg-slate-50 disabled:text-slate-400"
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>{opt.label}</option>
+        ))}
+      </select>
+    ) : (
+      <input
+        type={type}
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className="w-full text-sm rounded-lg border border-slate-200 bg-white px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 disabled:bg-slate-50 disabled:text-slate-400"
+      />
+    )}
+  </div>
+);
+
+const Section = ({ icon: Icon, title, children, forceShow = false }) => {
   const fields = React.Children.toArray(children).filter(Boolean);
-  if (fields.length === 0) return null;
+  if (!forceShow && fields.length === 0) return null;
   return (
     <div>
       <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-3">
@@ -122,6 +148,28 @@ const Section = ({ icon: Icon, title, children }) => {
       </dl>
     </div>
   );
+};
+
+const DETAIL_FORM_KEYS = [
+  'name', 'email', 'status', 'role',
+  'title', 'first_name', 'last_name', 'sex', 'date_of_birth', 'pan_number', 'adrenalin_employee_id',
+  'personal_email', 'work_mobile', 'employee_mobile', 'employee_pincode',
+  'designation', 'department', 'department_code', 'grade', 'company', 'legal_entity_code', 'business_line', 'branch_code',
+  'location', 'office_location',
+  'supervisor_name', 'supervisor_email', 'supervisor_employee_code',
+  'l2_manager_name', 'l2_manager_email', 'l2_manager_employee_code',
+  'employee_status_description', 'employment_status_description', 'joining_date', 'date_of_exit',
+];
+
+const buildDetailForm = (user, samlApps = []) => {
+  const form = {};
+  DETAIL_FORM_KEYS.forEach((key) => {
+    form[key] = user?.[key] ?? '';
+  });
+  if (!form.role) form.role = 'user';
+  if (!form.status) form.status = 'active';
+  form.app_ids = samlApps.filter((a) => a.approved_user_ids?.includes(user?.id)).map((a) => a.id);
+  return form;
 };
 
 // Avatar gradient palette — deterministic by name (matches App Launcher tiles)
@@ -153,6 +201,8 @@ const UsersPage = () => {
   const [showModal, setShowModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
   const [detailUser, setDetailUser] = useState(null);
+  const [detailEditing, setDetailEditing] = useState(false);
+  const [detailForm, setDetailForm] = useState(null);
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [quickFilter, setQuickFilter] = useState('all');
@@ -265,6 +315,81 @@ const UsersPage = () => {
     setSelectedUser(user);
     const userAppIds = samlApps.filter(a => a.approved_user_ids?.includes(user.id)).map(a => a.id);
     setEditForm({ name: user.name, email: user.email || '', status: user.status, designation: user.designation || '', department: user.department || '', company: user.company || '', group_ids: user.group_ids || [], role_ids: user.role_ids || [], app_ids: userAppIds });
+  };
+
+  const openDetail = (user) => {
+    setDetailUser(user);
+    setDetailEditing(false);
+    setDetailForm(null);
+  };
+
+  const closeDetail = () => {
+    setDetailUser(null);
+    setDetailEditing(false);
+    setDetailForm(null);
+  };
+
+  const startDetailEdit = () => {
+    if (!detailUser) return;
+    setDetailForm(buildDetailForm(detailUser, samlApps));
+    setDetailEditing(true);
+  };
+
+  const cancelDetailEdit = () => {
+    setDetailEditing(false);
+    setDetailForm(null);
+  };
+
+  const setDetailField = (key, value) => {
+    setDetailForm((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const handleDetailSave = async () => {
+    if (!detailUser || !detailForm) return;
+    if (!detailForm.email?.trim()) {
+      toast.error('Work email is required');
+      return;
+    }
+    if (!detailForm.name?.trim() && !detailForm.first_name?.trim()) {
+      toast.error('Name is required');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const { app_ids, ...updateData } = detailForm;
+      // Send empty strings as-is so admins can clear fields
+      const payload = {};
+      Object.entries(updateData).forEach(([key, value]) => {
+        if (value === undefined || value === null) return;
+        payload[key] = typeof value === 'string' ? value.trim() : value;
+      });
+      if (!payload.name && (payload.first_name || payload.last_name)) {
+        payload.name = `${payload.first_name || ''} ${payload.last_name || ''}`.trim();
+      }
+
+      const res = await axios.put(`${API}/users/${detailUser.id}`, payload, getAuthHeader());
+
+      for (const app of samlApps) {
+        const isAssigned = app.approved_user_ids?.includes(detailUser.id);
+        const shouldBeAssigned = (app_ids || []).includes(app.id);
+        if (shouldBeAssigned && !isAssigned) {
+          await axios.post(`${API}/apps/saml/${app.id}/users`, { user_ids: [detailUser.id] }, getAuthHeader());
+        } else if (!shouldBeAssigned && isAssigned) {
+          await axios.delete(`${API}/apps/saml/${app.id}/users/${detailUser.id}`, getAuthHeader());
+        }
+      }
+
+      toast.success('User updated');
+      setDetailEditing(false);
+      setDetailForm(null);
+      setDetailUser(res.data || { ...detailUser, ...payload });
+      await fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update user');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const toggleApp = (appId, formSetter, currentIds) => {
@@ -478,7 +603,7 @@ const UsersPage = () => {
                     key={user.id}
                     data-testid={`user-${user.id}`}
                     className="group cursor-pointer hover:bg-slate-50/70 transition-colors"
-                    onClick={() => setDetailUser(detailUser?.id === user.id ? null : user)}
+                    onClick={() => detailUser?.id === user.id ? closeDetail() : openDetail(user)}
                   >
                     <td>
                       <div className="flex items-center gap-3 min-w-0">
@@ -589,94 +714,238 @@ const UsersPage = () => {
       {/* User Detail Panel (slide-in from right) */}
       {detailUser && (
         <div className="fixed inset-0 z-50 flex justify-end" data-testid="user-detail-panel">
-          <div className="absolute inset-0 bg-black/20" onClick={() => setDetailUser(null)} />
+          <div className="absolute inset-0 bg-black/20" onClick={closeDetail} />
           <div className="relative w-full max-w-xl bg-white shadow-2xl overflow-y-auto animate-slideInRight">
-            <div className="sticky top-0 bg-white border-b border-slate-100 px-6 py-4 flex items-center justify-between z-10">
-              <div>
-                <h2 className="font-heading font-semibold text-lg text-slate-900">{detailUser.title ? `${detailUser.title} ` : ''}{detailUser.name}</h2>
-                <p className="text-sm text-slate-400">{detailUser.email}</p>
+            <div className="sticky top-0 bg-white border-b border-slate-100 px-6 py-4 z-10">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h2 className="font-heading font-semibold text-lg text-slate-900 truncate">
+                    {detailEditing
+                      ? `${detailForm?.title ? `${detailForm.title} ` : ''}${detailForm?.name || detailUser.name}`
+                      : `${detailUser.title ? `${detailUser.title} ` : ''}${detailUser.name}`}
+                  </h2>
+                  <p className="text-sm text-slate-400 truncate">
+                    {detailEditing ? (detailForm?.email || detailUser.email) : detailUser.email}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {!detailEditing ? (
+                    <button
+                      type="button"
+                      onClick={startDetailEdit}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 transition-colors"
+                      data-testid="detail-edit-btn"
+                    >
+                      <Pencil size={13} /> Edit
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={cancelDetailEdit}
+                        disabled={saving}
+                        className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                        data-testid="detail-cancel-btn"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDetailSave}
+                        disabled={saving}
+                        className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                        data-testid="detail-save-btn"
+                      >
+                        {saving ? 'Saving…' : 'Save'}
+                      </button>
+                    </>
+                  )}
+                  <button onClick={closeDetail} className="p-2 hover:bg-slate-100 rounded-lg" data-testid="close-detail">
+                    <X size={20} />
+                  </button>
+                </div>
               </div>
-              <button onClick={() => setDetailUser(null)} className="p-2 hover:bg-slate-100 rounded-lg" data-testid="close-detail">
-                <X size={20} />
-              </button>
+              {detailEditing && (
+                <p className="text-[11px] text-slate-400 mt-2">Editing unlocked — update fields below, then Save.</p>
+              )}
             </div>
 
             <div className="px-6 py-5 space-y-6">
-              {/* Identity */}
-              <Section icon={BadgeCheck} title="Identity">
-                <Field label="Employee ID" value={detailUser.adrenalin_employee_id} />
-                <Field label="Title" value={detailUser.title} />
-                <Field label="First Name" value={detailUser.first_name} />
-                <Field label="Last Name" value={detailUser.last_name} />
-                <Field label="Gender" value={detailUser.sex === 'M' ? 'Male' : detailUser.sex === 'F' ? 'Female' : detailUser.sex} />
-                <Field label="Date of Birth" value={detailUser.date_of_birth} />
-                <Field label="PAN Number" value={detailUser.pan_number} />
-                <Field label="System Role" value={detailUser.role === 'org_admin' ? 'Admin' : 'User'} />
-                <Field label="Status" value={detailUser.status} />
-              </Section>
+              {detailEditing && detailForm ? (
+                <>
+                  <Section icon={BadgeCheck} title="Identity" forceShow>
+                    <EditableField label="Employee ID" value={detailForm.adrenalin_employee_id} onChange={(v) => setDetailField('adrenalin_employee_id', v)} />
+                    <EditableField label="Title" value={detailForm.title} onChange={(v) => setDetailField('title', v)} />
+                    <EditableField label="First Name" value={detailForm.first_name} onChange={(v) => setDetailField('first_name', v)} />
+                    <EditableField label="Last Name" value={detailForm.last_name} onChange={(v) => setDetailField('last_name', v)} />
+                    <EditableField label="Display Name" value={detailForm.name} onChange={(v) => setDetailField('name', v)} />
+                    <EditableField
+                      label="Gender"
+                      value={detailForm.sex}
+                      onChange={(v) => setDetailField('sex', v)}
+                      options={[
+                        { value: '', label: '—' },
+                        { value: 'M', label: 'Male' },
+                        { value: 'F', label: 'Female' },
+                      ]}
+                    />
+                    <EditableField label="Date of Birth" value={detailForm.date_of_birth} onChange={(v) => setDetailField('date_of_birth', v)} />
+                    <EditableField label="PAN Number" value={detailForm.pan_number} onChange={(v) => setDetailField('pan_number', v)} />
+                    <EditableField
+                      label="System Role"
+                      value={detailForm.role === 'org_admin' ? 'org_admin' : 'user'}
+                      onChange={(v) => setDetailField('role', v)}
+                      options={[
+                        { value: 'user', label: 'User' },
+                        { value: 'org_admin', label: 'Admin' },
+                      ]}
+                    />
+                    <EditableField
+                      label="Status"
+                      value={detailForm.status}
+                      onChange={(v) => setDetailField('status', v)}
+                      options={[
+                        { value: 'active', label: 'Active' },
+                        { value: 'disabled', label: 'Disabled' },
+                        { value: 'pending', label: 'Pending' },
+                        { value: 'inactive', label: 'Inactive' },
+                      ]}
+                    />
+                  </Section>
 
-              {/* Contact */}
-              <Section icon={Phone} title="Contact">
-                <Field label="Work Email" value={detailUser.email} />
-                <Field label="Personal Email" value={detailUser.personal_email} />
-                <Field label="Work Mobile" value={detailUser.work_mobile} />
-                <Field label="Personal Mobile" value={detailUser.employee_mobile} />
-                <Field label="Pincode" value={detailUser.employee_pincode} />
-              </Section>
+                  <Section icon={Phone} title="Contact" forceShow>
+                    <EditableField label="Work Email" value={detailForm.email} onChange={(v) => setDetailField('email', v)} type="email" />
+                    <EditableField label="Personal Email" value={detailForm.personal_email} onChange={(v) => setDetailField('personal_email', v)} type="email" />
+                    <EditableField label="Work Mobile" value={detailForm.work_mobile} onChange={(v) => setDetailField('work_mobile', v)} />
+                    <EditableField label="Personal Mobile" value={detailForm.employee_mobile} onChange={(v) => setDetailField('employee_mobile', v)} />
+                    <EditableField label="Pincode" value={detailForm.employee_pincode} onChange={(v) => setDetailField('employee_pincode', v)} />
+                  </Section>
 
-              {/* Organization */}
-              <Section icon={Building2} title="Organization">
-                <Field label="Designation" value={detailUser.designation} />
-                <Field label="Department" value={detailUser.department} />
-                <Field label="Dept Code" value={detailUser.department_code} />
-                <Field label="Grade" value={detailUser.grade} />
-                <Field label="Company" value={detailUser.company} />
-                <Field label="Legal Entity" value={detailUser.legal_entity_code} />
-                <Field label="Business Line" value={detailUser.business_line} />
-                <Field label="Branch" value={detailUser.branch_code} />
-              </Section>
+                  <Section icon={Building2} title="Organization" forceShow>
+                    <EditableField label="Designation" value={detailForm.designation} onChange={(v) => setDetailField('designation', v)} />
+                    <EditableField label="Department" value={detailForm.department} onChange={(v) => setDetailField('department', v)} />
+                    <EditableField label="Dept Code" value={detailForm.department_code} onChange={(v) => setDetailField('department_code', v)} />
+                    <EditableField label="Grade" value={detailForm.grade} onChange={(v) => setDetailField('grade', v)} />
+                    <EditableField label="Company" value={detailForm.company} onChange={(v) => setDetailField('company', v)} />
+                    <EditableField label="Legal Entity" value={detailForm.legal_entity_code} onChange={(v) => setDetailField('legal_entity_code', v)} />
+                    <EditableField label="Business Line" value={detailForm.business_line} onChange={(v) => setDetailField('business_line', v)} />
+                    <EditableField label="Branch" value={detailForm.branch_code} onChange={(v) => setDetailField('branch_code', v)} />
+                  </Section>
 
-              {/* Location */}
-              <Section icon={MapPin} title="Location">
-                <Field label="Location" value={detailUser.location} />
-                <Field label="Office Location" value={detailUser.office_location} />
-              </Section>
+                  <Section icon={MapPin} title="Location" forceShow>
+                    <EditableField label="Location" value={detailForm.location} onChange={(v) => setDetailField('location', v)} />
+                    <EditableField label="Office Location" value={detailForm.office_location} onChange={(v) => setDetailField('office_location', v)} />
+                  </Section>
 
-              {/* Reporting */}
-              <Section icon={UserCog} title="Reporting Chain">
-                <Field label="L1 Manager" value={detailUser.supervisor_name} />
-                <Field label="L1 Email" value={detailUser.supervisor_email} />
-                <Field label="L1 Employee Code" value={detailUser.supervisor_employee_code} />
-                <Field label="L2 Manager" value={detailUser.l2_manager_name} />
-                <Field label="L2 Email" value={detailUser.l2_manager_email} />
-                <Field label="L2 Employee Code" value={detailUser.l2_manager_employee_code} />
-              </Section>
+                  <Section icon={UserCog} title="Reporting Chain" forceShow>
+                    <EditableField label="L1 Manager" value={detailForm.supervisor_name} onChange={(v) => setDetailField('supervisor_name', v)} />
+                    <EditableField label="L1 Email" value={detailForm.supervisor_email} onChange={(v) => setDetailField('supervisor_email', v)} type="email" />
+                    <EditableField label="L1 Employee Code" value={detailForm.supervisor_employee_code} onChange={(v) => setDetailField('supervisor_employee_code', v)} />
+                    <EditableField label="L2 Manager" value={detailForm.l2_manager_name} onChange={(v) => setDetailField('l2_manager_name', v)} />
+                    <EditableField label="L2 Email" value={detailForm.l2_manager_email} onChange={(v) => setDetailField('l2_manager_email', v)} type="email" />
+                    <EditableField label="L2 Employee Code" value={detailForm.l2_manager_employee_code} onChange={(v) => setDetailField('l2_manager_employee_code', v)} />
+                  </Section>
 
-              {/* Employment */}
-              <Section icon={CalendarDays} title="Employment">
-                <Field label="Employee Status" value={detailUser.employee_status_description} />
-                <Field label="Employment Status" value={detailUser.employment_status_description} />
-                <Field label="Joining Date" value={detailUser.joining_date} />
-                <Field label="Date of Exit" value={detailUser.date_of_exit} />
-                <Field label="Added On" value={detailUser.emp_added_on} />
-                <Field label="Created Via" value={detailUser.created_via} />
-                <Field label="Last HR Sync" value={detailUser.hr_synced_at ? new Date(detailUser.hr_synced_at).toLocaleString('en-IN') : ''} />
-              </Section>
+                  <Section icon={CalendarDays} title="Employment" forceShow>
+                    <EditableField label="Employee Status" value={detailForm.employee_status_description} onChange={(v) => setDetailField('employee_status_description', v)} />
+                    <EditableField label="Employment Status" value={detailForm.employment_status_description} onChange={(v) => setDetailField('employment_status_description', v)} />
+                    <EditableField label="Joining Date" value={detailForm.joining_date} onChange={(v) => setDetailField('joining_date', v)} />
+                    <EditableField label="Date of Exit" value={detailForm.date_of_exit} onChange={(v) => setDetailField('date_of_exit', v)} />
+                    <Field label="Added On" value={detailUser.emp_added_on} />
+                    <Field label="Created Via" value={detailUser.created_via} />
+                    <Field label="Last HR Sync" value={detailUser.hr_synced_at ? new Date(detailUser.hr_synced_at).toLocaleString('en-IN') : ''} />
+                  </Section>
 
-              {/* App Access */}
-              <div>
-                <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-3">
-                  <AppWindow size={13} /> Application Access
-                </h4>
-                <div className="flex flex-wrap gap-2">
-                  {getUserApps(detailUser.id).map(a => (
-                    <span key={a.id} className="text-xs bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full font-medium">{a.name}</span>
-                  ))}
-                  {getUserApps(detailUser.id).length === 0 && (
-                    <span className="text-xs text-slate-400">No apps assigned</span>
+                  {samlApps.length > 0 && (
+                    <AppAccessSelector
+                      samlApps={samlApps}
+                      selectedIds={detailForm.app_ids || []}
+                      onToggle={(id) => toggleApp(id, setDetailForm, detailForm.app_ids || [])}
+                      onSelectAll={() => setDetailForm({ ...detailForm, app_ids: samlApps.map((a) => a.id) })}
+                      onClear={() => setDetailForm({ ...detailForm, app_ids: [] })}
+                      testIdPrefix="detail-assign-app"
+                    />
                   )}
-                </div>
-              </div>
+                </>
+              ) : (
+                <>
+                  {/* Identity */}
+                  <Section icon={BadgeCheck} title="Identity">
+                    <Field label="Employee ID" value={detailUser.adrenalin_employee_id} />
+                    <Field label="Title" value={detailUser.title} />
+                    <Field label="First Name" value={detailUser.first_name} />
+                    <Field label="Last Name" value={detailUser.last_name} />
+                    <Field label="Gender" value={detailUser.sex === 'M' ? 'Male' : detailUser.sex === 'F' ? 'Female' : detailUser.sex} />
+                    <Field label="Date of Birth" value={detailUser.date_of_birth} />
+                    <Field label="PAN Number" value={detailUser.pan_number} />
+                    <Field label="System Role" value={detailUser.role === 'org_admin' ? 'Admin' : 'User'} />
+                    <Field label="Status" value={detailUser.status} />
+                  </Section>
+
+                  {/* Contact */}
+                  <Section icon={Phone} title="Contact">
+                    <Field label="Work Email" value={detailUser.email} />
+                    <Field label="Personal Email" value={detailUser.personal_email} />
+                    <Field label="Work Mobile" value={detailUser.work_mobile} />
+                    <Field label="Personal Mobile" value={detailUser.employee_mobile} />
+                    <Field label="Pincode" value={detailUser.employee_pincode} />
+                  </Section>
+
+                  {/* Organization */}
+                  <Section icon={Building2} title="Organization">
+                    <Field label="Designation" value={detailUser.designation} />
+                    <Field label="Department" value={detailUser.department} />
+                    <Field label="Dept Code" value={detailUser.department_code} />
+                    <Field label="Grade" value={detailUser.grade} />
+                    <Field label="Company" value={detailUser.company} />
+                    <Field label="Legal Entity" value={detailUser.legal_entity_code} />
+                    <Field label="Business Line" value={detailUser.business_line} />
+                    <Field label="Branch" value={detailUser.branch_code} />
+                  </Section>
+
+                  {/* Location */}
+                  <Section icon={MapPin} title="Location">
+                    <Field label="Location" value={detailUser.location} />
+                    <Field label="Office Location" value={detailUser.office_location} />
+                  </Section>
+
+                  {/* Reporting */}
+                  <Section icon={UserCog} title="Reporting Chain">
+                    <Field label="L1 Manager" value={detailUser.supervisor_name} />
+                    <Field label="L1 Email" value={detailUser.supervisor_email} />
+                    <Field label="L1 Employee Code" value={detailUser.supervisor_employee_code} />
+                    <Field label="L2 Manager" value={detailUser.l2_manager_name} />
+                    <Field label="L2 Email" value={detailUser.l2_manager_email} />
+                    <Field label="L2 Employee Code" value={detailUser.l2_manager_employee_code} />
+                  </Section>
+
+                  {/* Employment */}
+                  <Section icon={CalendarDays} title="Employment">
+                    <Field label="Employee Status" value={detailUser.employee_status_description} />
+                    <Field label="Employment Status" value={detailUser.employment_status_description} />
+                    <Field label="Joining Date" value={detailUser.joining_date} />
+                    <Field label="Date of Exit" value={detailUser.date_of_exit} />
+                    <Field label="Added On" value={detailUser.emp_added_on} />
+                    <Field label="Created Via" value={detailUser.created_via} />
+                    <Field label="Last HR Sync" value={detailUser.hr_synced_at ? new Date(detailUser.hr_synced_at).toLocaleString('en-IN') : ''} />
+                  </Section>
+
+                  {/* App Access */}
+                  <div>
+                    <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-3">
+                      <AppWindow size={13} /> Application Access
+                    </h4>
+                    <div className="flex flex-wrap gap-2">
+                      {getUserApps(detailUser.id).map(a => (
+                        <span key={a.id} className="text-xs bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full font-medium">{a.name}</span>
+                      ))}
+                      {getUserApps(detailUser.id).length === 0 && (
+                        <span className="text-xs text-slate-400">No apps assigned</span>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>

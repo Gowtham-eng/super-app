@@ -177,11 +177,41 @@ class UserUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     status: Optional[str] = None
+    role: Optional[str] = None
     group_ids: Optional[List[str]] = None
     role_ids: Optional[List[str]] = None
     designation: Optional[str] = None
     department: Optional[str] = None
     company: Optional[str] = None
+    # Profile / HR fields editable from User Master detail drawer
+    title: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    sex: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    pan_number: Optional[str] = None
+    adrenalin_employee_id: Optional[str] = None
+    personal_email: Optional[str] = None
+    work_mobile: Optional[str] = None
+    employee_mobile: Optional[str] = None
+    employee_pincode: Optional[str] = None
+    department_code: Optional[str] = None
+    grade: Optional[str] = None
+    legal_entity_code: Optional[str] = None
+    business_line: Optional[str] = None
+    branch_code: Optional[str] = None
+    location: Optional[str] = None
+    office_location: Optional[str] = None
+    supervisor_name: Optional[str] = None
+    supervisor_email: Optional[str] = None
+    supervisor_employee_code: Optional[str] = None
+    l2_manager_name: Optional[str] = None
+    l2_manager_email: Optional[str] = None
+    l2_manager_employee_code: Optional[str] = None
+    employee_status_description: Optional[str] = None
+    employment_status_description: Optional[str] = None
+    joining_date: Optional[str] = None
+    date_of_exit: Optional[str] = None
 
 # Application Models (SAML & OIDC)
 class SAMLAppCreate(BaseModel):
@@ -1065,6 +1095,17 @@ async def update_user(user_id: str, update: UserUpdate, request: Request, user: 
     
     update_data = {k: v for k, v in update.model_dump().items() if v is not None}
 
+    # Only org admins can change system role
+    if 'role' in update_data:
+        if user.get('role') not in ('org_admin', 'owner', 'admin'):
+            raise HTTPException(status_code=403, detail="Only admins can change system role")
+        new_role = (update_data.get('role') or '').strip()
+        if new_role not in ('org_admin', 'user'):
+            raise HTTPException(status_code=400, detail="Role must be org_admin or user")
+        if user_id == user['id'] and new_role != 'org_admin' and target_user.get('role') == 'org_admin':
+            raise HTTPException(status_code=400, detail="Cannot remove your own admin role")
+        update_data['role'] = new_role
+
     # If email is being changed, normalize and validate uniqueness across the org
     if 'email' in update_data:
         new_email = (update_data['email'] or '').strip().lower()
@@ -1078,6 +1119,14 @@ async def update_user(user_id: str, update: UserUpdate, request: Request, user: 
             if conflict:
                 raise HTTPException(status_code=409, detail="Email already in use by another user")
         update_data['email'] = new_email
+
+    # Keep display name in sync when first/last are updated without an explicit name
+    if 'name' not in update_data and ('first_name' in update_data or 'last_name' in update_data):
+        first = update_data.get('first_name', target_user.get('first_name') or '')
+        last = update_data.get('last_name', target_user.get('last_name') or '')
+        combined = f"{first} {last}".strip()
+        if combined:
+            update_data['name'] = combined
 
     if update_data:
         await db.users.update_one({"id": user_id}, {"$set": update_data})
