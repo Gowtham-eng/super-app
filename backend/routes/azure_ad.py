@@ -517,3 +517,242 @@ def register_azure_ad_routes(
             f"{login_url}?azure_token={urllib.parse.quote(token)}",
             status_code=302,
         )
+
+    # ---------- Pull users from Microsoft Graph ----------
+
+    async def _graph_app_token(cfg: dict) -> str:
+        token_url = (
+            f"https://login.microsoftonline.com/{cfg['tenant_id']}/oauth2/v2.0/token"
+        )
+        data = {
+            "client_id": cfg["client_id"],
+            "client_secret": cfg["client_secret"],
+            "grant_type": "client_credentials",
+            "scope": "https://graph.microsoft.com/.default",
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.post(token_url, data=data)
+        if res.status_code != 200:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Failed to get Graph token. Ensure Application permission "
+                    "User.Read.All is added and admin consent is granted. "
+                    f"Azure said: {res.text[:240]}"
+                ),
+            )
+        return res.json()["access_token"]
+
+    async def _graph_list_users(access_token: str) -> List[dict]:
+        select = (
+            "id,displayName,givenName,surname,mail,userPrincipalName,"
+            "jobTitle,department,companyName,accountEnabled,officeLocation"
+        )
+        url = f"https://graph.microsoft.com/v1.0/users?$select={select}&$top=999"
+        headers = {"Authorization": f"Bearer {access_token}"}
+        users: List[dict] = []
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            while url:
+                res = await client.get(url, headers=headers)
+                if res.status_code != 200:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Graph users list failed: {res.text[:300]}",
+                    )
+                payload = res.json()
+                users.extend(payload.get("value") or [])
+                url = payload.get("@odata.nextLink")
+        return users
+
+    def _pick_email(guser: dict) -> str:
+        mail = (guser.get("mail") or "").strip()
+        upn = (guser.get("userPrincipalName") or "").strip()
+        # Prefer real mail; skip guest-style UPNs when mail exists
+        if mail and "@" in mail:
+            return mail.lower()
+        if upn and "@" in upn and "#EXT#" not in upn.upper():
+            return upn.lower()
+        if mail and "@" in mail:
+            return mail.lower()
+        return ""
+
+    @api_router.post("/azure-ad/configs/{config_id}/sync-users")
+    async def sync_users_from_azure_ad(
+        config_id: str,
+        request: Request,
+        user: dict = Depends(get_current_user),
+    ):
+        """
+        Pull users from this Azure AD tenant via Microsoft Graph and
+        create/update them in RefexOne (one config = one company AD).
+        Requires Application permission: User.Read.All (+ admin consent).
+        """
+        _require_admin(user)
+        cfg = await db[COLLECTION].find_one(
+            {"id": config_id, "org_id": user["org_id"]}, {"_id": 0}
+        )
+        if not cfg:
+            raise HTTPException(status_code=404, detail="Azure AD config not found")
+        if cfg.get("status") != "active":
+            raise HTTPException(status_code=400, detail="Enable this Azure AD config first")
+
+        import bcrypt as _bcrypt
+        import os as _os
+        import re as _re
+
+        result = {
+            "config_id": config_id,
+            "label": cfg.get("label"),
+            "fetched": 0,
+            "created": 0,
+            "updated": 0,
+            "disabled": 0,
+            "skipped": 0,
+            "errors": [],
+        }
+
+        try:
+            access_token = await _graph_app_token(cfg)
+            graph_users = await _graph_list_users(access_token)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Azure user sync failed: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+        result["fetched"] = len(graph_users)
+        allowed_domains = set(cfg.get("email_domains") or [])
+        default_pw = _os.environ.get("DEFAULT_USER_PASSWORD", "Welcome@2026")
+        password_hash = _bcrypt.hashpw(default_pw.encode(), _bcrypt.gensalt()).decode()
+        now = datetime.now(timezone.utc).isoformat()
+
+        for guser in graph_users:
+            try:
+                email = _pick_email(guser)
+                if not email or "@" not in email:
+                    result["skipped"] += 1
+                    continue
+                domain = email.split("@")[-1].lower()
+                if allowed_domains and domain not in allowed_domains:
+                    result["skipped"] += 1
+                    continue
+
+                enabled = guser.get("accountEnabled", True)
+                given = (guser.get("givenName") or "").strip()
+                surname = (guser.get("surname") or "").strip()
+                display = (guser.get("displayName") or "").strip()
+                name = display or f"{given} {surname}".strip() or email.split("@")[0]
+
+                fields = {
+                    "name": name,
+                    "first_name": given or (name.split(" ", 1)[0] if name else ""),
+                    "last_name": surname
+                    or (name.split(" ", 1)[1] if name and " " in name else ""),
+                    "designation": (guser.get("jobTitle") or "")[:200],
+                    "department": (guser.get("department") or "")[:200],
+                    "company": (guser.get("companyName") or cfg.get("label") or "")[:200],
+                    "location": (guser.get("officeLocation") or "")[:200],
+                    "azure_oid": guser.get("id"),
+                    "azure_tenant_id": cfg["tenant_id"],
+                    "azure_config_id": cfg["id"],
+                    "azure_upn": guser.get("userPrincipalName"),
+                    "source": "azure_ad",
+                    "azure_synced_at": now,
+                }
+
+                existing = await db.users.find_one(
+                    {"email": email, "org_id": user["org_id"]}, {"_id": 0}
+                )
+                if not existing:
+                    existing = await db.users.find_one(
+                        {
+                            "email": {"$regex": f"^{_re.escape(email)}$", "$options": "i"},
+                            "org_id": user["org_id"],
+                        },
+                        {"_id": 0},
+                    )
+                if not existing and guser.get("id"):
+                    existing = await db.users.find_one(
+                        {
+                            "org_id": user["org_id"],
+                            "azure_oid": guser.get("id"),
+                            "azure_tenant_id": cfg["tenant_id"],
+                        },
+                        {"_id": 0},
+                    )
+
+                if existing:
+                    update = dict(fields)
+                    update["email"] = email
+                    if not enabled and existing.get("status") != "disabled":
+                        update["status"] = "disabled"
+                        update["disabled_at"] = now
+                        update["disabled_reason"] = "Disabled in Azure AD sync"
+                        result["disabled"] += 1
+                    elif enabled and existing.get("status") == "disabled" and existing.get("disabled_reason", "").startswith("Disabled in Azure AD"):
+                        update["status"] = "active"
+                        update["disabled_at"] = None
+                        update["disabled_reason"] = None
+                    await db.users.update_one({"id": existing["id"]}, {"$set": update})
+                    result["updated"] += 1
+                else:
+                    if not enabled:
+                        result["skipped"] += 1
+                        continue
+                    new_user = {
+                        "id": str(uuid.uuid4()),
+                        "email": email,
+                        "password": password_hash,
+                        "role": "user",
+                        "org_id": user["org_id"],
+                        "group_ids": [],
+                        "role_ids": [],
+                        "status": "active",
+                        "created_at": now,
+                        **fields,
+                    }
+                    await db.users.insert_one(new_user)
+                    result["created"] += 1
+            except Exception as e:
+                result["errors"].append(f"{guser.get('userPrincipalName') or guser.get('id')}: {e}")
+                if len(result["errors"]) > 50:
+                    result["errors"].append("… truncated")
+                    break
+
+        await db.azure_ad_sync_logs.insert_one(
+            {
+                "id": str(uuid.uuid4()),
+                "org_id": user["org_id"],
+                "config_id": config_id,
+                "label": cfg.get("label"),
+                "triggered_by": user.get("email"),
+                "timestamp": now,
+                "result": {k: v for k, v in result.items() if k != "errors"}
+                | {"error_count": len(result["errors"])},
+            }
+        )
+        await log_audit(
+            user["org_id"],
+            "azure_ad_users_synced",
+            "azure_ad",
+            user["id"],
+            user.get("email"),
+            config_id,
+            {
+                "created": result["created"],
+                "updated": result["updated"],
+                "disabled": result["disabled"],
+                "fetched": result["fetched"],
+            },
+            request.client.host if request.client else None,
+        )
+        return result
+
+    @api_router.get("/azure-ad/sync-logs")
+    async def list_azure_sync_logs(user: dict = Depends(get_current_user)):
+        _require_admin(user)
+        logs = await db.azure_ad_sync_logs.find(
+            {"org_id": user["org_id"]}, {"_id": 0}
+        ).sort("timestamp", -1).to_list(50)
+        return logs
+

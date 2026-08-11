@@ -230,15 +230,24 @@
           <td>Authorization Code flow (PKCE supported). Do <strong>not</strong> enable SAML SSO on this app.</td>
         </tr>
         <tr>
-          <th>API permissions (Delegated)</th>
+          <th>API permissions (Delegated) — Login</th>
           <td>
             Microsoft Graph:<br />
             <code>openid</code>, <code>profile</code>, <code>email</code>, <code>User.Read</code>
           </td>
         </tr>
         <tr>
+          <th>API permissions (Application) — User pull</th>
+          <td>
+            Microsoft Graph <strong>Application</strong> permission:<br />
+            <code>User.Read.All</code>
+            <br />
+            <span style="color:#b45309;font-size:0.85em">Required so RefexOne can sync/import users from this AD (Extrovis, Kavipharm, etc.).</span>
+          </td>
+        </tr>
+        <tr>
           <th>Admin consent</th>
-          <td>Required — click <strong>Grant admin consent for &lt;tenant&gt;</strong></td>
+          <td>Required for <strong>both</strong> Delegated and Application permissions — click <strong>Grant admin consent for &lt;tenant&gt;</strong></td>
         </tr>
       </table>
       <div class="callout warn">
@@ -259,9 +268,12 @@
         <li>Open <strong>Certificates &amp; secrets</strong> → <strong>New client secret</strong>.
           Description: <code>RefexOne production</code>. Expiry: 12–24 months.
           Copy the <strong>Value</strong> immediately (not the Secret ID).</li>
-        <li>Open <strong>API permissions</strong> → Add a permission → Microsoft Graph → Delegated permissions →
-          add <code>openid</code>, <code>profile</code>, <code>email</code>, <code>User.Read</code> →
-          <strong>Grant admin consent</strong>.</li>
+        <li>Open <strong>API permissions</strong> → Add a permission → Microsoft Graph →
+          <ul>
+            <li><strong>Delegated</strong>: <code>openid</code>, <code>profile</code>, <code>email</code>, <code>User.Read</code></li>
+            <li><strong>Application</strong>: <code>User.Read.All</code> (needed for RefexOne to pull users)</li>
+          </ul>
+          Then click <strong>Grant admin consent</strong>.</li>
         <li>(Recommended) <strong>Token configuration</strong> → Add optional claim → ID → <code>email</code> (and <code>upn</code> if used).</li>
         <li>(Optional) <strong>Enterprise applications</strong> → find <code>RefexOne Login</code> →
           Assignment required = Yes → assign pilot users/groups.</li>
@@ -279,7 +291,8 @@
         <label><input type="checkbox" /> App registration created (single tenant)</label>
         <label><input type="checkbox" /> Redirect URI added exactly as provided</label>
         <label><input type="checkbox" /> Client secret created and Value saved securely</label>
-        <label><input type="checkbox" /> Graph delegated permissions added</label>
+        <label><input type="checkbox" /> Graph delegated permissions added (openid, profile, email, User.Read)</label>
+        <label><input type="checkbox" /> Graph <strong>Application</strong> permission <code>User.Read.All</code> added (for user sync)</label>
         <label><input type="checkbox" /> Admin consent granted</label>
         <label><input type="checkbox" /> Optional email claim added on ID token (recommended)</label>
         <label><input type="checkbox" /> Pilot users/groups assigned (if assignment required)</label>

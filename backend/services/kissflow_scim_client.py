@@ -272,9 +272,17 @@ async def _request_with_retry(client: httpx.AsyncClient, method: str, url: str, 
     return resp
 
 
-async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token: str, user: dict, create_only: bool = False) -> dict:
-    """Push a single user to Kissflow via SCIM. 
+async def push_user_to_kissflow(
+    client: httpx.AsyncClient,
+    base_url: str,
+    token: str,
+    user: dict,
+    create_only: bool = False,
+    update_only: bool = False,
+) -> dict:
+    """Push a single user to Kissflow via SCIM.
     If create_only=True, skip search and POST directly (faster for fresh sync).
+    If update_only=True, never create — return not_found when user is missing in Kissflow.
     Otherwise, search first then create or update.
     """
     headers = {
@@ -286,7 +294,7 @@ async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token:
 
     try:
         # Fast path: direct create (skip search) for fresh sync
-        if create_only:
+        if create_only and not update_only:
             resp = await _request_with_retry(client, "POST", f"{base_url}Users", headers, payload)
             if resp.status_code in (200, 201):
                 kf_id = resp.json().get("id", "")
@@ -315,7 +323,10 @@ async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token:
                 else:
                     return {"action": "update_error", "email": email, "status": resp.status_code, "detail": resp.text[:300]}
             else:
-                # User doesn't exist -> CREATE (POST)
+                # User doesn't exist in Kissflow
+                if update_only:
+                    return {"action": "not_found", "email": email}
+                # CREATE (POST)
                 await asyncio.sleep(REQUEST_DELAY)
                 resp = await _request_with_retry(client, "POST", f"{base_url}Users", headers, payload)
                 if resp.status_code in (200, 201):
@@ -329,6 +340,8 @@ async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token:
         elif search_resp.status_code in (401, 403):
             return {"action": "auth_error", "email": email, "status": search_resp.status_code, "detail": search_resp.text[:300]}
         else:
+            if update_only:
+                return {"action": "search_error", "email": email, "status": search_resp.status_code}
             # Search failed, try direct create
             await asyncio.sleep(REQUEST_DELAY)
             resp = await _request_with_retry(client, "POST", f"{base_url}Users", headers, payload)
@@ -342,10 +355,118 @@ async def push_user_to_kissflow(client: httpx.AsyncClient, base_url: str, token:
         return {"action": "exception", "email": email, "detail": str(e)[:300]}
 
 
+def _is_kissflow_app(app: dict) -> bool:
+    blob = " ".join(
+        str(app.get(k) or "")
+        for k in ("name", "home_url", "acs_url", "entity_id", "description")
+    ).lower()
+    return "kissflow" in blob
+
+
+async def get_kissflow_app_ids(db, org_id: str) -> list:
+    """SAML + OIDC app ids that represent Kissflow in RefexOne."""
+    ids = []
+    for coll in ("saml_apps", "oidc_apps"):
+        apps = await db[coll].find({"org_id": org_id}, {"_id": 0, "id": 1, "name": 1, "home_url": 1, "acs_url": 1, "entity_id": 1, "description": 1}).to_list(200)
+        for app in apps:
+            if _is_kissflow_app(app) and app.get("id"):
+                ids.append({"collection": coll, "id": app["id"]})
+    return ids
+
+
+async def revoke_kissflow_access_in_refexone(db, org_id: str, *, user_id: str = None, email: str = None) -> dict:
+    """
+    Remove ONLY Kissflow app access inside RefexOne when the user is gone/disabled in Kissflow:
+    - clear kissflow_user_id / kissflow_synced_at
+    - remove user from Kissflow app approved_user_ids only
+
+    Does NOT:
+    - disable / delete the RefexOne user
+    - change password, role, or org
+    - remove access to any non-Kissflow apps
+    - touch users who never had Kissflow access
+    """
+    if db is None:
+        return {"revoked": False}
+    query = {"org_id": org_id}
+    if user_id:
+        query = {"id": user_id}
+    elif email:
+        query["email"] = (email or "").strip().lower()
+    else:
+        return {"revoked": False}
+
+    user = await db.users.find_one(
+        query,
+        {"_id": 0, "id": 1, "email": 1, "kissflow_user_id": 1, "status": 1},
+    )
+    if not user:
+        return {"revoked": False, "reason": "user_not_found"}
+
+    uid = user["id"]
+
+    # Only act on users who already had Kissflow access — never touch others
+    if not await user_has_kissflow_access(db, org_id, user):
+        return {
+            "revoked": False,
+            "reason": "no_kissflow_access",
+            "user_id": uid,
+            "email": user.get("email"),
+        }
+
+    # Clear Kissflow linkage only (keep RefexOne account fully intact)
+    await db.users.update_one(
+        {"id": uid},
+        {"$unset": {"kissflow_user_id": "", "kissflow_synced_at": ""}},
+    )
+
+    apps = await get_kissflow_app_ids(db, org_id)
+    removed_from = []
+    for app in apps:
+        res = await db[app["collection"]].update_one(
+            {"id": app["id"]},
+            {"$pull": {"approved_user_ids": uid}},
+        )
+        if res.modified_count:
+            removed_from.append(app["id"])
+
+    logger.info(
+        "Revoked Kissflow-only access in RefexOne for %s (kissflow apps=%s; RefexOne login/other apps unchanged)",
+        user.get("email"),
+        removed_from,
+    )
+    return {
+        "revoked": True,
+        "user_id": uid,
+        "email": user.get("email"),
+        "apps_updated": removed_from,
+        "refexone_account_unchanged": True,
+    }
+
+
+async def user_has_kissflow_access(db, org_id: str, user: dict) -> bool:
+    """True if user already has Kissflow linkage or is assigned to a Kissflow app."""
+    if user.get("kissflow_user_id"):
+        return True
+    uid = user.get("id")
+    if not uid:
+        return False
+    apps = await get_kissflow_app_ids(db, org_id)
+    for app in apps:
+        doc = await db[app["collection"]].find_one(
+            {"id": app["id"], "approved_user_ids": uid},
+            {"_id": 0, "id": 1},
+        )
+        if doc:
+            return True
+    return False
+
+
 async def check_user_kissflow_access(db, org_id: str, email: str, user_id: str = None) -> dict:
     """
     Live-verify whether the user still has Kissflow login access (SCIM).
-    If the user was deleted/deactivated in Kissflow, clear stale kissflow_user_id in RefexOne DB.
+    If the user was deleted/deactivated in Kissflow, clear Kissflow access in RefexOne
+    (kissflow_user_id + Kissflow app approved_user_ids).
     """
     email = (email or "").strip().lower()
     result = {
@@ -359,15 +480,12 @@ async def check_user_kissflow_access(db, org_id: str, email: str, user_id: str =
 
     config = await get_kissflow_scim_config(db, org_id) if db is not None else None
 
-    async def _clear_stale_local_id():
+    async def _revoke_local_access():
         if db is None:
-            return
-        query = {"org_id": org_id, "email": email} if org_id else {"email": email}
-        if user_id:
-            query = {"id": user_id}
-        await db.users.update_one(
-            query,
-            {"$unset": {"kissflow_user_id": "", "kissflow_synced_at": ""}},
+            return None
+        # Only removes Kissflow app assignment — never RefexOne login / other apps
+        return await revoke_kissflow_access_in_refexone(
+            db, org_id, user_id=user_id, email=email
         )
 
     if not config:
@@ -404,19 +522,21 @@ async def check_user_kissflow_access(db, org_id: str, email: str, user_id: str =
 
         resources = (search_resp.json() or {}).get("Resources") or []
         if not resources:
-            # Deleted from Kissflow — clear stale RefexOne flag so ITSM opens create form
-            await _clear_stale_local_id()
+            # Deleted from Kissflow — revoke Kissflow app only (RefexOne account stays)
+            revoke_res = await _revoke_local_access()
             result["verified_via"] = "scim"
+            result["access_revoked"] = bool(revoke_res and revoke_res.get("revoked"))
             return result
 
         kf_user = resources[0]
         kf_id = kf_user.get("id")
         active = kf_user.get("active", True) is True
         if not active:
-            await _clear_stale_local_id()
+            revoke_res = await _revoke_local_access()
             result["verified_via"] = "scim"
             result["kissflow_user_id"] = kf_id
             result["kissflow_active"] = False
+            result["access_revoked"] = bool(revoke_res and revoke_res.get("revoked"))
             return result
 
         # Active in Kissflow — keep/update local id
@@ -477,12 +597,24 @@ async def deactivate_user_in_kissflow(client: httpx.AsyncClient, base_url: str, 
         return {"action": "exception", "email": email, "detail": str(e)[:300]}
 
 
-async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
+async def sync_to_kissflow(
+    db,
+    org_id: str,
+    user_emails: list = None,
+    *,
+    only_existing: bool = True,
+    create_missing: bool = False,
+) -> dict:
     """
-    Push users from IAM to Kissflow via SCIM.
-    If user_emails is provided, only push those specific users.
-    Otherwise push all active users.
-    Includes rate limiting and retry logic.
+    Sync users between RefexOne and Kissflow via SCIM.
+
+    Default (only_existing=True, create_missing=False):
+      - Do NOT push all RefexOne users into Kissflow
+      - Only update users who already have Kissflow access
+        (kissflow_user_id or assigned to a Kissflow app)
+      - If a user is missing/disabled in Kissflow, revoke Kissflow app access in RefexOne
+
+    Set create_missing=True only when you intentionally want to provision new Kissflow accounts.
     """
     config = await get_kissflow_scim_config(db, org_id)
     if not config:
@@ -495,7 +627,20 @@ async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
     if user_emails:
         query["email"] = {"$in": user_emails}
 
-    users = await db.users.find(query, {"_id": 0, "password": 0}).to_list(5000)
+    candidates = await db.users.find(query, {"_id": 0, "password": 0}).to_list(5000)
+
+    users = []
+    if only_existing and not user_emails:
+        # Restrict to users who already have Kissflow access in RefexOne
+        for u in candidates:
+            if await user_has_kissflow_access(db, org_id, u):
+                users.append(u)
+    elif only_existing and user_emails:
+        for u in candidates:
+            if await user_has_kissflow_access(db, org_id, u):
+                users.append(u)
+    else:
+        users = candidates
 
     result = {
         "total": len(users),
@@ -503,15 +648,18 @@ async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
         "updated": 0,
         "deactivated": 0,
         "already_exists": 0,
+        "access_revoked": 0,
         "errors": [],
         "auth_errors": 0,
         "skipped": 0,
+        "mode": "existing_only" if (only_existing and not create_missing) else "full",
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
 
     # Stop early on repeated auth errors
     consecutive_auth_errors = 0
     MAX_AUTH_ERRORS = 5
+    update_only = only_existing and not create_missing
 
     async with httpx.AsyncClient(timeout=60) as client:
         for i, user in enumerate(users):
@@ -536,7 +684,16 @@ async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
                 if res["action"] == "deactivated":
                     result["deactivated"] += 1
                     consecutive_auth_errors = 0
+                    # Also revoke RefexOne Kissflow app tile while disabled
+                    await revoke_kissflow_access_in_refexone(
+                        db, org_id, user_id=user.get("id"), email=email
+                    )
+                    result["access_revoked"] += 1
                 elif res["action"] == "not_found":
+                    await revoke_kissflow_access_in_refexone(
+                        db, org_id, user_id=user.get("id"), email=email
+                    )
+                    result["access_revoked"] += 1
                     result["skipped"] += 1
                 elif res["action"] == "auth_error":
                     result["auth_errors"] += 1
@@ -545,9 +702,14 @@ async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
                     result["errors"].append(f"{email}: {res.get('detail', res['action'])}")
                     consecutive_auth_errors = 0
             else:
-                # Use create_only mode if user has no kissflow_user_id (faster - skips search)
-                is_fresh = not user.get("kissflow_user_id")
-                res = await push_user_to_kissflow(client, base_url, token, user, create_only=is_fresh)
+                res = await push_user_to_kissflow(
+                    client,
+                    base_url,
+                    token,
+                    user,
+                    create_only=False,
+                    update_only=update_only,
+                )
                 if res["action"] == "created":
                     result["created"] += 1
                     consecutive_auth_errors = 0
@@ -557,6 +719,13 @@ async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
                 elif res["action"] == "already_exists":
                     result["already_exists"] += 1
                     consecutive_auth_errors = 0
+                elif res["action"] == "not_found":
+                    # Gone from Kissflow — remove Kissflow access in RefexOne
+                    await revoke_kissflow_access_in_refexone(
+                        db, org_id, user_id=user.get("id"), email=email
+                    )
+                    result["access_revoked"] += 1
+                    consecutive_auth_errors = 0
                 elif res["action"] == "auth_error":
                     result["auth_errors"] += 1
                     consecutive_auth_errors += 1
@@ -565,7 +734,7 @@ async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
                     consecutive_auth_errors = 0
 
             kf_id = res.get("kf_id")
-            if kf_id:
+            if kf_id and res.get("action") in ("created", "updated", "already_exists"):
                 await db.users.update_one(
                     {"email": email, "org_id": org_id},
                     {"$set": {"kissflow_user_id": kf_id, "kissflow_synced_at": datetime.now(timezone.utc).isoformat()}}
@@ -574,14 +743,17 @@ async def sync_to_kissflow(db, org_id: str, user_emails: list = None) -> dict:
             # Log progress every 100 users
             processed = i + 1
             if processed % 100 == 0:
-                logger.info(f"Kissflow sync progress: {processed}/{len(users)} (created={result['created']}, updated={result['updated']}, errors={len(result['errors'])})")
+                logger.info(f"Kissflow sync progress: {processed}/{len(users)} (created={result['created']}, updated={result['updated']}, revoked={result['access_revoked']}, errors={len(result['errors'])})")
 
     result["completed_at"] = datetime.now(timezone.utc).isoformat()
     return result
 
 
 async def push_single_user_to_kissflow(db, org_id: str, email: str) -> dict:
-    """Push a single user to Kissflow. Used for real-time sync on admin edits."""
+    """
+    Update an existing Kissflow user from RefexOne.
+    Does NOT create new Kissflow accounts — only keeps access for users who already have it.
+    """
     config = await get_kissflow_scim_config(db, org_id)
     if not config:
         return {"error": "Kissflow SCIM not configured"}
@@ -593,14 +765,34 @@ async def push_single_user_to_kissflow(db, org_id: str, email: str) -> dict:
     if not user:
         return {"error": f"User {email} not found"}
 
+    # Skip users who never had Kissflow access — do not provision everyone
+    if not await user_has_kissflow_access(db, org_id, user):
+        return {
+            "action": "skipped",
+            "email": email,
+            "detail": "User has no existing Kissflow access in RefexOne; not creating in Kissflow",
+        }
+
     async with httpx.AsyncClient(timeout=30) as client:
         if user.get("status") == "disabled":
             res = await deactivate_user_in_kissflow(client, base_url, token, email)
+            if res.get("action") in ("deactivated", "not_found"):
+                await revoke_kissflow_access_in_refexone(
+                    db, org_id, user_id=user.get("id"), email=email
+                )
+                res["access_revoked"] = True
         else:
-            res = await push_user_to_kissflow(client, base_url, token, user)
+            res = await push_user_to_kissflow(
+                client, base_url, token, user, update_only=True
+            )
+            if res.get("action") == "not_found":
+                await revoke_kissflow_access_in_refexone(
+                    db, org_id, user_id=user.get("id"), email=email
+                )
+                res["access_revoked"] = True
 
     kf_id = res.get("kf_id")
-    if kf_id:
+    if kf_id and res.get("action") in ("created", "updated", "already_exists"):
         await db.users.update_one(
             {"email": email, "org_id": org_id},
             {"$set": {"kissflow_user_id": kf_id, "kissflow_synced_at": datetime.now(timezone.utc).isoformat()}}

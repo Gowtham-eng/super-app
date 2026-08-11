@@ -11,6 +11,7 @@ import {
   Pencil,
   Plus,
   Power,
+  RefreshCw,
   Trash2,
   X,
 } from 'lucide-react';
@@ -49,6 +50,8 @@ const AzureADSetup = () => {
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
+  const [syncingId, setSyncingId] = useState(null);
+  const [lastSync, setLastSync] = useState(null);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -172,6 +175,33 @@ const AzureADSetup = () => {
     }
   };
 
+  const syncUsers = async (cfg) => {
+    if (
+      !window.confirm(
+        `Pull users from "${cfg.label}" Azure AD into RefexOne?\n\nRequires Graph permission User.Read.All + admin consent on that app.`
+      )
+    ) {
+      return;
+    }
+    setSyncingId(cfg.id);
+    setLastSync(null);
+    try {
+      const res = await axios.post(
+        `${API}/azure-ad/configs/${cfg.id}/sync-users`,
+        {},
+        getAuthHeader()
+      );
+      setLastSync(res.data);
+      toast.success(
+        `${cfg.label}: ${res.data.created || 0} created, ${res.data.updated || 0} updated, ${res.data.disabled || 0} disabled`
+      );
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'User sync failed');
+    } finally {
+      setSyncingId(null);
+    }
+  };
+
   const copy = (text) => {
     navigator.clipboard.writeText(text);
     toast.success('Copied');
@@ -208,8 +238,15 @@ const AzureADSetup = () => {
       </div>
 
       {/* Handoff info */}
-      <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-xl">
-        <p className="text-sm font-medium text-slate-800 mb-2">Give these to each AD team</p>
+      <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+        <div>
+          <p className="text-sm font-medium text-slate-800 mb-1">Multi-company setup (Extrovis, Kavipharm, …)</p>
+          <p className="text-xs text-slate-500">
+            Add <strong>one Azure AD config per company</strong>. Use <strong>Sync users</strong> on each row to pull
+            that tenant’s users into RefexOne. Ask each AD team for Application permission{' '}
+            <code className="bg-white border px-1 rounded">User.Read.All</code> + admin consent.
+          </p>
+        </div>
         <div className="space-y-2 text-sm">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-slate-500 w-28 shrink-0">Redirect URI</span>
@@ -237,6 +274,18 @@ const AzureADSetup = () => {
           </div>
         </div>
       </div>
+
+      {lastSync && (
+        <div className="mb-4 p-3 bg-emerald-50 border border-emerald-100 rounded-xl text-sm text-emerald-900">
+          Last sync (<strong>{lastSync.label}</strong>): fetched {lastSync.fetched}, created {lastSync.created},
+          updated {lastSync.updated}, disabled {lastSync.disabled}, skipped {lastSync.skipped}
+          {lastSync.errors?.length ? (
+            <span className="block text-amber-800 mt-1 text-xs">
+              {lastSync.errors.length} error(s): {lastSync.errors[0]}
+            </span>
+          ) : null}
+        </div>
+      )}
 
       {configs.length === 0 ? (
         <div className="border border-dashed border-slate-200 rounded-xl p-10 text-center">
@@ -292,7 +341,21 @@ const AzureADSetup = () => {
                   ))}
                 </p>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+                <button
+                  type="button"
+                  title="Pull users from this Azure AD"
+                  onClick={() => syncUsers(cfg)}
+                  disabled={syncingId === cfg.id || cfg.status !== 'active'}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 text-slate-700 text-xs font-medium hover:bg-slate-50 disabled:opacity-50"
+                >
+                  {syncingId === cfg.id ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <RefreshCw size={14} />
+                  )}
+                  Sync users
+                </button>
                 <button
                   type="button"
                   title={cfg.status === 'active' ? 'Disable' : 'Enable'}

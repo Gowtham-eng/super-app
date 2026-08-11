@@ -3166,7 +3166,7 @@ async def save_kf_scim_config(request: Request, user: dict = Depends(get_current
 
 @api_router.post("/kissflow-scim/sync")
 async def trigger_kissflow_sync(background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
-    """Admin manually triggers Kissflow SCIM push for all users (runs in background)"""
+    """Admin sync: update existing Kissflow users only; revoke RefexOne access if removed in Kissflow."""
     if user.get("role") != "org_admin":
         raise HTTPException(status_code=403, detail="Only admins can trigger Kissflow sync")
 
