@@ -67,6 +67,19 @@ export const AuthProvider = ({ children }) => {
     return me.data;
   };
 
+  /** Complete session from Azure AD (or other SSO) callback token */
+  const loginWithToken = async (newToken) => {
+    clearKissflowNativeSession();
+    persistToken(newToken);
+    setToken(newToken);
+    const me = await axios.get(`${API}/auth/me`, {
+      headers: { Authorization: `Bearer ${newToken}` },
+    });
+    setUser(me.data);
+    setOrganization(me.data.organization);
+    return me.data;
+  };
+
   const register = async (email, password, name, orgId) => {
     const response = await axios.post(`${API}/auth/register`, { 
       email, 
@@ -118,7 +131,8 @@ export const AuthProvider = ({ children }) => {
       organization,
       token, 
       loading, 
-      login, 
+      login,
+      loginWithToken,
       register,
       createOrganization,
       logout, 

@@ -22,6 +22,7 @@ from services.app_update import get_app_update_config, save_app_update_config, e
 from services.oidc_crypto import get_jwks, sign_oidc_jwt, normalize_issuer, decode_oidc_jwt
 from routes import scim as scim_router_module
 from routes.itsm import register_itsm_routes
+from routes.azure_ad import register_azure_ad_routes
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env', override=True)
@@ -3308,6 +3309,18 @@ async def health():
 
 # ITSM ticket routes (Kissflow proxy — approval matrix + webhook submit)
 register_itsm_routes(api_router, get_current_user, db)
+
+# Azure AD / Entra ID login (multi-tenant App Registrations for RefexOne login)
+register_azure_ad_routes(
+    api_router,
+    get_current_user,
+    db,
+    create_token=create_token,
+    log_audit=log_audit,
+    normalize_email=normalize_email,
+    jwt_secret=JWT_SECRET,
+    public_url=PUBLIC_URL,
+)
 
 # Include router
 app.include_router(api_router)
