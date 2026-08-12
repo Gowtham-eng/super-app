@@ -8,6 +8,44 @@ import { API, BACKEND_ORIGIN } from '../config/api';
 
 const REFEX_LOGO = '/refexone-logo.png';
 
+/** Survive URL drops / re-renders so P2P (and other apps) resume after RefexOne password login. */
+const PENDING_SSO_APP_KEY = 'refexone_pending_sso_app';
+const PENDING_RELAY_KEY = 'refexone_pending_relay_state';
+const PENDING_OIDC_KEY = 'refexone_pending_oidc_redirect';
+
+const readPendingSso = () => {
+  try {
+    return {
+      ssoApp: sessionStorage.getItem(PENDING_SSO_APP_KEY) || '',
+      relayState: sessionStorage.getItem(PENDING_RELAY_KEY) || '',
+      oidcRedirect: sessionStorage.getItem(PENDING_OIDC_KEY) || '',
+    };
+  } catch (e) {
+    return { ssoApp: '', relayState: '', oidcRedirect: '' };
+  }
+};
+
+const persistPendingSso = ({ ssoApp, relayState, oidcRedirect }) => {
+  try {
+    // Only write non-empty values so a partial update never wipes P2P relay/state.
+    if (ssoApp) sessionStorage.setItem(PENDING_SSO_APP_KEY, ssoApp);
+    if (relayState) sessionStorage.setItem(PENDING_RELAY_KEY, relayState);
+    if (oidcRedirect) sessionStorage.setItem(PENDING_OIDC_KEY, oidcRedirect);
+  } catch (e) {
+    // ignore
+  }
+};
+
+const clearPendingSso = () => {
+  try {
+    sessionStorage.removeItem(PENDING_SSO_APP_KEY);
+    sessionStorage.removeItem(PENDING_RELAY_KEY);
+    sessionStorage.removeItem(PENDING_OIDC_KEY);
+  } catch (e) {
+    // ignore
+  }
+};
+
 const CAROUSEL_SLIDES = [
   {
     image: 'https://www.refex.co.in/uploads/images/image-1765792912552-76106071.webp',
@@ -36,11 +74,15 @@ const Login = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [currentSlide, setCurrentSlide] = useState(0);
   const [ssoAppId, setSsoAppId] = useState(null);
+  const [azureProviders, setAzureProviders] = useState([]);
+  const [showAzurePicker, setShowAzurePicker] = useState(false);
+  const [azureBusy, setAzureBusy] = useState(false);
   const ssoRedirecting = React.useRef(false);
+  const azureHandled = React.useRef(false);
 
-  const { login, token } = useAuth();
+  const { login, loginWithToken, token } = useAuth();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // Carousel auto-rotate
   useEffect(() => {
@@ -50,46 +92,143 @@ const Login = () => {
     return () => clearInterval(timer);
   }, []);
 
+  // Capture P2P / app SSO intent from URL (and keep it across login)
   useEffect(() => {
-    const ssoApp = searchParams.get('sso_app');
-    if (ssoApp) setSsoAppId(ssoApp);
+    const ssoApp = searchParams.get('sso_app') || '';
+    const relayState = searchParams.get('relay_state') || '';
+    const oidcRedirect = searchParams.get('oidc_redirect') || '';
+    if (ssoApp || oidcRedirect || relayState) {
+      persistPendingSso({ ssoApp, relayState, oidcRedirect });
+    }
+    const pending = readPendingSso();
+    if (ssoApp || pending.ssoApp) {
+      setSsoAppId(ssoApp || pending.ssoApp);
+    }
   }, [searchParams]);
 
+  // Load active Azure AD providers for Microsoft login
   useEffect(() => {
-    if (!token) return undefined;
+    axios
+      .get(`${API}/azure-ad/providers`)
+      .then((res) => setAzureProviders(res.data || []))
+      .catch(() => setAzureProviders([]));
+  }, []);
 
-    // Already logged in — never stay on the login screen until Sign Out
-    if (token && ssoAppId && !ssoRedirecting.current) {
-      ssoRedirecting.current = true;
-      completeSSOLogin(ssoAppId);
-      return undefined;
+  // Handle Azure AD callback (?azure_token= / ?azure_error=)
+  useEffect(() => {
+    const azureError = searchParams.get('azure_error');
+    if (azureError) {
+      toast.error(azureError);
+      const next = new URLSearchParams(searchParams);
+      next.delete('azure_error');
+      setSearchParams(next, { replace: true });
+      return;
     }
 
-    const oidcRedirect = searchParams.get('oidc_redirect');
-    if (oidcRedirect) {
-      const storedToken = localStorage.getItem('iam_token');
-      const separator = oidcRedirect.includes('?') ? '&' : '?';
-      window.location.href = `${oidcRedirect}${separator}token=${encodeURIComponent(storedToken)}`;
-      return undefined;
-    }
+    const azureToken = searchParams.get('azure_token');
+    if (!azureToken || azureHandled.current) return;
+    azureHandled.current = true;
+    setAzureBusy(true);
+    (async () => {
+      try {
+        await loginWithToken(azureToken);
+        toast.success('Signed in with Microsoft');
+        const next = new URLSearchParams(searchParams);
+        next.delete('azure_token');
+        setSearchParams(next, { replace: true });
+      } catch (err) {
+        toast.error('Microsoft sign-in failed');
+        azureHandled.current = false;
+      } finally {
+        setAzureBusy(false);
+      }
+    })();
+  }, [searchParams, loginWithToken, setSearchParams]);
 
-    if (!ssoAppId) {
-      navigate('/', { replace: true });
-    }
-    return undefined;
-  }, [token, ssoAppId, navigate, searchParams]);
+  const resumeOidcRedirect = (oidcRedirect) => {
+    if (!oidcRedirect) return false;
+    const storedToken = localStorage.getItem('iam_token');
+    if (!storedToken) return false;
+    clearPendingSso();
+    const separator = oidcRedirect.includes('?') ? '&' : '?';
+    window.location.href = `${oidcRedirect}${separator}token=${encodeURIComponent(storedToken)}`;
+    return true;
+  };
 
-  const completeSSOLogin = async (appId) => {
+  const completeSSOLogin = async (appId, relayStateOverride = null) => {
     await new Promise(resolve => setTimeout(resolve, 300));
     const storedToken = localStorage.getItem('iam_token');
     if (storedToken) {
-      const relayState = searchParams.get('relay_state') || '';
+      const pending = readPendingSso();
+      const relayState =
+        relayStateOverride ??
+        searchParams.get('relay_state') ??
+        pending.relayState ??
+        '';
       let completeUrl = `${BACKEND_ORIGIN}/api/saml/${appId}/complete?token=${encodeURIComponent(storedToken)}`;
       if (relayState) completeUrl += `&relay_state=${encodeURIComponent(relayState)}`;
+      clearPendingSso();
       window.location.href = completeUrl;
     } else {
       toast.error('Please login first to continue SSO');
     }
+  };
+
+  /** After RefexOne login: finish P2P/SAML/OIDC instead of dumping user on launcher. */
+  const resumePendingAppSso = () => {
+    if (ssoRedirecting.current) return true;
+    const pending = readPendingSso();
+    const appId = ssoAppId || searchParams.get('sso_app') || pending.ssoApp;
+    const oidcRedirect = searchParams.get('oidc_redirect') || pending.oidcRedirect;
+
+    if (appId) {
+      ssoRedirecting.current = true;
+      completeSSOLogin(appId, pending.relayState || searchParams.get('relay_state') || '');
+      return true;
+    }
+    if (oidcRedirect) {
+      ssoRedirecting.current = true;
+      return resumeOidcRedirect(oidcRedirect);
+    }
+    return false;
+  };
+
+  useEffect(() => {
+    if (!token) return undefined;
+
+    // Already logged in â€” resume pending app SSO (P2P email View, Feast/QR, etc.)
+    if (resumePendingAppSso()) {
+      return undefined;
+    }
+
+    navigate('/', { replace: true });
+    return undefined;
+  }, [token, ssoAppId, navigate, searchParams]);
+
+  const startAzureLogin = (configId) => {
+    // Keep pending P2P/SSO intent across Microsoft round-trip if used later
+    const pending = readPendingSso();
+    persistPendingSso({
+      ssoApp: searchParams.get('sso_app') || pending.ssoApp,
+      relayState: searchParams.get('relay_state') || pending.relayState,
+      oidcRedirect: searchParams.get('oidc_redirect') || pending.oidcRedirect,
+    });
+    const url = configId
+      ? `${BACKEND_ORIGIN}/api/auth/azure/login?config_id=${encodeURIComponent(configId)}`
+      : `${BACKEND_ORIGIN}/api/auth/azure/login`;
+    window.location.href = url;
+  };
+
+  const handleMicrosoftClick = () => {
+    if (!azureProviders.length) {
+      toast.error('Microsoft login is not configured yet');
+      return;
+    }
+    if (azureProviders.length === 1) {
+      startAzureLogin(azureProviders[0].id);
+      return;
+    }
+    setShowAzurePicker(true);
   };
 
   const handleLogin = async (e) => {
@@ -100,17 +239,17 @@ const Login = () => {
     }
     setIsLoading(true);
     try {
+      // Re-persist from URL + existing pending (email deep links / long authorize URLs)
+      const existing = readPendingSso();
+      persistPendingSso({
+        ssoApp: searchParams.get('sso_app') || ssoAppId || existing.ssoApp,
+        relayState: searchParams.get('relay_state') || existing.relayState,
+        oidcRedirect: searchParams.get('oidc_redirect') || existing.oidcRedirect,
+      });
       await login(email, password);
       toast.success('Welcome back!');
-      if (ssoAppId) {
-        completeSSOLogin(ssoAppId);
-        return;
-      }
-      const oidcRedirect = searchParams.get('oidc_redirect');
-      if (oidcRedirect) {
-        const storedToken = localStorage.getItem('iam_token');
-        const separator = oidcRedirect.includes('?') ? '&' : '?';
-        window.location.href = `${oidcRedirect}${separator}token=${encodeURIComponent(storedToken || '')}`;
+      // Critical: resume P2P/SAML/OIDC immediately (don't rely only on useEffect)
+      if (resumePendingAppSso()) {
         return;
       }
     } catch (error) {
@@ -121,10 +260,13 @@ const Login = () => {
   };
 
   const slide = CAROUSEL_SLIDES[currentSlide];
-  const oidcRedirectPending = searchParams.get('oidc_redirect');
+  const pendingSso = readPendingSso();
+  const oidcRedirectPending =
+    searchParams.get('oidc_redirect') || pendingSso.oidcRedirect;
+  const ssoPending = !!(ssoAppId || pendingSso.ssoApp || oidcRedirectPending);
 
-  // Already signed in + Feast/QR SSO resume: never flash the login form
-  if (token && oidcRedirectPending) {
+  // Already signed in + app SSO resume: never flash the login form
+  if (token && ssoPending) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white" data-testid="login-oidc-resume">
         <div className="spinner" />
@@ -199,7 +341,7 @@ const Login = () => {
           </div>
 
           {/* SSO Banner */}
-          {ssoAppId && (
+          {ssoPending && (
             <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-xl">
               <p className="text-sm text-blue-800 font-medium">
                 Sign in to continue to your application
@@ -250,7 +392,7 @@ const Login = () => {
 
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || azureBusy}
               className="w-full py-3.5 bg-zinc-900 hover:bg-zinc-800 text-white font-semibold rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
               data-testid="submit-button"
             >
@@ -264,6 +406,63 @@ const Login = () => {
               )}
             </button>
           </form>
+
+          {azureProviders.length > 0 && (
+            <div className="mt-6">
+              <div className="relative flex items-center justify-center mb-4">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-zinc-200" />
+                </div>
+                <span className="relative bg-white px-3 text-xs text-zinc-400 uppercase tracking-wide">
+                  or
+                </span>
+              </div>
+
+              {!showAzurePicker ? (
+                <button
+                  type="button"
+                  onClick={handleMicrosoftClick}
+                  disabled={azureBusy}
+                  data-testid="microsoft-login-button"
+                  className="w-full py-3.5 border border-zinc-200 hover:border-zinc-300 bg-white text-zinc-800 font-semibold rounded-xl transition-colors flex items-center justify-center gap-3 disabled:opacity-60"
+                >
+                  <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
+                    <rect x="1" y="1" width="9" height="9" fill="#F25022" />
+                    <rect x="11" y="1" width="9" height="9" fill="#7FBA00" />
+                    <rect x="1" y="11" width="9" height="9" fill="#00A4EF" />
+                    <rect x="11" y="11" width="9" height="9" fill="#FFB900" />
+                  </svg>
+                  {azureBusy ? 'Signing inâ€¦' : 'Sign in with Microsoft'}
+                </button>
+              ) : (
+                <div className="space-y-2" data-testid="azure-provider-picker">
+                  <p className="text-xs text-zinc-500 mb-2">Choose your organization</p>
+                  {azureProviders.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => startAzureLogin(p.id)}
+                      className="w-full text-left px-4 py-3 border border-zinc-200 rounded-xl hover:bg-zinc-50 text-sm font-medium text-zinc-800"
+                    >
+                      {p.label}
+                      {p.email_domains?.length ? (
+                        <span className="block text-xs text-zinc-400 font-normal mt-0.5">
+                          {(p.email_domains || []).map((d) => `@${d}`).join(', ')}
+                        </span>
+                      ) : null}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setShowAzurePicker(false)}
+                    className="w-full text-center text-xs text-zinc-400 py-2 hover:text-zinc-600"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Footer */}
           <div className="mt-12 pt-6 border-t border-zinc-100 text-center">

@@ -115,7 +115,13 @@ const SCIMSetup = () => {
   };
 
   const triggerSync = async () => {
-    if (!window.confirm('Push all users to Kissflow? This may take a few minutes for large user bases.')) return;
+    if (!window.confirm(
+      'Sync existing Kissflow users only?\n\n' +
+      '• Updates users who already have Kissflow access\n' +
+      '• Does NOT create new Kissflow accounts for everyone\n' +
+                  '• If a user was removed in Kissflow, only their Kissflow app access is removed in RefexOne\n' +
+                  '• RefexOne login and other apps are never removed'
+    )) return;
     setSyncing(true);
     setSyncResult(null);
     try {
@@ -269,10 +275,11 @@ const SCIMSetup = () => {
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="font-heading font-semibold text-slate-800 flex items-center gap-2">
-                  <ArrowUpRight size={18} className="text-emerald-500" /> Push Users to Kissflow
+                  <ArrowUpRight size={18} className="text-emerald-500" /> Sync Existing Kissflow Users
                 </h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  Syncs all IAM users to Kissflow. Runs automatically after each nightly HR sync.
+                  Updates users who already have Kissflow access only — does not create accounts for everyone.
+                  If removed in Kissflow, only the Kissflow app is removed in RefexOne (login and other apps stay).
                 </p>
               </div>
               <button

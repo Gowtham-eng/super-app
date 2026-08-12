@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RefexOne — Azure AD (Entra ID) Setup for AD Team</title>
+  <style>
+    :root {
+      --ink: #0f172a;
+      --muted: #475569;
+      --line: #e2e8f0;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --accent: #0f766e;
+      --accent-soft: #ccfbf1;
+      --warn: #b45309;
+      --warn-bg: #fffbeb;
+      --danger: #b91c1c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.5;
+    }
+    .wrap {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+    header {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 28px 28px 22px;
+      margin-bottom: 20px;
+    }
+    header h1 {
+      margin: 0 0 8px;
+      font-size: 1.55rem;
+      letter-spacing: -0.02em;
+    }
+    header p { margin: 0; color: var(--muted); }
+    .badge-row { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+    .badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .badge.warn { background: var(--warn-bg); color: var(--warn); }
+    section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 22px 24px;
+      margin-bottom: 16px;
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 1.1rem;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 8px;
+    }
+    h3 { margin: 18px 0 8px; font-size: 0.95rem; }
+    p, li { color: var(--ink); }
+    .muted { color: var(--muted); font-size: 0.92rem; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f1f5f9; width: 38%; font-weight: 600; }
+    code, .mono {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.88em;
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      word-break: break-all;
+    }
+    ol { padding-left: 1.25rem; }
+    ol li { margin-bottom: 8px; }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: #f0fdfa;
+      padding: 12px 14px;
+      border-radius: 0 8px 8px 0;
+      margin: 12px 0;
+      font-size: 0.92rem;
+    }
+    .callout.warn {
+      border-left-color: var(--warn);
+      background: var(--warn-bg);
+    }
+    .callout.danger {
+      border-left-color: var(--danger);
+      background: #fef2f2;
+    }
+    .form-grid {
+      display: grid;
+      gap: 12px;
+    }
+    label {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    input, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font: inherit;
+      background: #fff;
+    }
+    textarea { min-height: 72px; resize: vertical; }
+    .checklist label {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 0.92rem;
+      font-weight: 400;
+      color: var(--ink);
+      margin: 0 0 8px;
+      cursor: pointer;
+    }
+    .checklist input { width: auto; margin-top: 3px; }
+    footer {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 0.85rem;
+      text-align: center;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+    button {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font: inherit;
+      cursor: pointer;
+    }
+    button.primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    @media print {
+      body { background: #fff; }
+      .actions { display: none; }
+      section, header { break-inside: avoid; box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>RefexOne Login — Azure AD / Entra ID Setup</h1>
+      <p>
+        Hand this page to the Azure AD (Microsoft Entra ID) team.
+        This is for <strong>RefexOne user login only</strong> using OpenID Connect — <strong>not SAML</strong>.
+      </p>
+      <div class="badge-row">
+        <span class="badge">Protocol: OIDC / OAuth 2.0</span>
+        <span class="badge">App type: Web (confidential client)</span>
+        <span class="badge warn">Not SAML · Not Kissflow SSO</span>
+      </div>
+      <div class="actions">
+        <button class="primary" type="button" onclick="window.print()">Print / Save as PDF</button>
+      </div>
+    </header>
+
+    <section>
+      <h2>1. Goal</h2>
+      <p>
+        Create <strong>one App Registration per company Azure AD tenant</strong> so employees can
+        sign into <strong>RefexOne</strong> with their Microsoft work account.
+      </p>
+      <div class="callout">
+        RefexOne supports <strong>multiple Azure AD configurations</strong>.
+        Each company / subsidiary with its own Entra tenant needs its own App Registration
+        and must return the values in Section 5.
+      </div>
+    </section>
+
+    <section>
+      <h2>2. Values RefexOne provides (use these exactly)</h2>
+      <table>
+        <tr>
+          <th>Application display name</th>
+          <td><code>RefexOne Login</code> &nbsp;(or <code>RefexOne – &lt;Company Name&gt;</code>)</td>
+        </tr>
+        <tr>
+          <th>Supported account types</th>
+          <td><strong>Accounts in this organizational directory only</strong> (Single tenant)</td>
+        </tr>
+        <tr>
+          <th>Platform</th>
+          <td><strong>Web</strong></td>
+        </tr>
+        <tr>
+          <th>Redirect URI (required)</th>
+          <td><code>https://refexone.com/api/auth/azure/callback</code></td>
+        </tr>
+        <tr>
+          <th>Front-channel logout URL (optional)</th>
+          <td><code>https://refexone.com/login</code></td>
+        </tr>
+        <tr>
+          <th>Grant / flow</th>
+          <td>Authorization Code flow (PKCE supported). Do <strong>not</strong> enable SAML SSO on this app.</td>
+        </tr>
+        <tr>
+          <th>API permissions (Delegated) — Login</th>
+          <td>
+            Microsoft Graph:<br />
+            <code>openid</code>, <code>profile</code>, <code>email</code>, <code>User.Read</code>
+          </td>
+        </tr>
+        <tr>
+          <th>API permissions (Application) — User pull</th>
+          <td>
+            Microsoft Graph <strong>Application</strong> permission:<br />
+            <code>User.Read.All</code>
+            <br />
+            <span style="color:#b45309;font-size:0.85em">Required so RefexOne can sync/import users from this AD (Extrovis, Kavipharm, etc.).</span>
+          </td>
+        </tr>
+        <tr>
+          <th>Admin consent</th>
+          <td>Required for <strong>both</strong> Delegated and Application permissions — click <strong>Grant admin consent for &lt;tenant&gt;</strong></td>
+        </tr>
+      </table>
+      <div class="callout warn">
+        Redirect URI must match <strong>exactly</strong> (https, path, no extra slash).
+        A mismatch causes Azure error <code>AADSTS50011</code>.
+      </div>
+    </section>
+
+    <section>
+      <h2>3. Step-by-step in Azure Portal</h2>
+      <ol>
+        <li>Sign in to <a href="https://entra.microsoft.com" target="_blank" rel="noopener">Microsoft Entra admin center</a> (or Azure Portal → Microsoft Entra ID).</li>
+        <li>Go to <strong>App registrations</strong> → <strong>New registration</strong>.</li>
+        <li>Name: <code>RefexOne Login</code>.</li>
+        <li>Supported account types: <strong>Single tenant</strong>.</li>
+        <li>Redirect URI: select <strong>Web</strong> and paste
+          <code>https://refexone.com/api/auth/azure/callback</code> → Register.</li>
+        <li>Open <strong>Certificates &amp; secrets</strong> → <strong>New client secret</strong>.
+          Description: <code>RefexOne production</code>. Expiry: 12–24 months.
+          Copy the <strong>Value</strong> immediately (not the Secret ID).</li>
+        <li>Open <strong>API permissions</strong> → Add a permission → Microsoft Graph →
+          <ul>
+            <li><strong>Delegated</strong>: <code>openid</code>, <code>profile</code>, <code>email</code>, <code>User.Read</code></li>
+            <li><strong>Application</strong>: <code>User.Read.All</code> (needed for RefexOne to pull users)</li>
+          </ul>
+          Then click <strong>Grant admin consent</strong>.</li>
+        <li>(Recommended) <strong>Token configuration</strong> → Add optional claim → ID → <code>email</code> (and <code>upn</code> if used).</li>
+        <li>(Optional) <strong>Enterprise applications</strong> → find <code>RefexOne Login</code> →
+          Assignment required = Yes → assign pilot users/groups.</li>
+        <li>From <strong>Overview</strong>, copy <strong>Application (client) ID</strong> and <strong>Directory (tenant) ID</strong>.</li>
+      </ol>
+      <div class="callout danger">
+        Do <strong>not</strong> configure SAML Single Sign-On, Entity ID, or ACS URL for this registration.
+        Those are for other apps. RefexOne login uses OIDC only.
+      </div>
+    </section>
+
+    <section>
+      <h2>4. AD team checklist</h2>
+      <div class="checklist">
+        <label><input type="checkbox" /> App registration created (single tenant)</label>
+        <label><input type="checkbox" /> Redirect URI added exactly as provided</label>
+        <label><input type="checkbox" /> Client secret created and Value saved securely</label>
+        <label><input type="checkbox" /> Graph delegated permissions added (openid, profile, email, User.Read)</label>
+        <label><input type="checkbox" /> Graph <strong>Application</strong> permission <code>User.Read.All</code> added (for user sync)</label>
+        <label><input type="checkbox" /> Admin consent granted</label>
+        <label><input type="checkbox" /> Optional email claim added on ID token (recommended)</label>
+        <label><input type="checkbox" /> Pilot users/groups assigned (if assignment required)</label>
+        <label><input type="checkbox" /> Section 5 return form completed and sent to RefexOne team</label>
+      </div>
+    </section>
+
+    <section>
+      <h2>5. Return these values to RefexOne team</h2>
+      <p class="muted">Fill this form (or paste into email/ticket). One form per Azure AD tenant.</p>
+      <div class="form-grid">
+        <div>
+          <label>Company / AD display name</label>
+          <input type="text" placeholder="e.g. Refex Group / Partner Co" />
+        </div>
+        <div>
+          <label>Directory (Tenant) ID *</label>
+          <input class="mono" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
+        </div>
+        <div>
+          <label>Application (Client) ID *</label>
+          <input class="mono" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
+        </div>
+        <div>
+          <label>Client Secret Value * (shown only once in Azure)</label>
+          <input class="mono" type="text" placeholder="Paste secret Value — not Secret ID" />
+        </div>
+        <div>
+          <label>Client Secret expiry date</label>
+          <input type="text" placeholder="YYYY-MM-DD" />
+        </div>
+        <div>
+          <label>Allowed email domains * (comma-separated)</label>
+          <input type="text" placeholder="e.g. refex.co.in, refex.group" />
+        </div>
+        <div>
+          <label>Contact person (name + email)</label>
+          <input type="text" placeholder="AD admin contact" />
+        </div>
+        <div>
+          <label>Notes (assignment required, Conditional Access, etc.)</label>
+          <textarea placeholder="Any Conditional Access policies, MFA requirements, or restrictions"></textarea>
+        </div>
+      </div>
+      <div class="callout warn" style="margin-top:14px">
+        Send the client secret through a <strong>secure channel</strong> (password vault / encrypted ticket).
+        Prefer not to leave secrets in long-lived email threads.
+      </div>
+    </section>
+
+    <section>
+      <h2>6. What RefexOne will do next</h2>
+      <ol>
+        <li>Register this tenant as one Azure AD login config in RefexOne.</li>
+        <li>Map your email domains so users are routed to the correct AD.</li>
+        <li>Test with a pilot user from your tenant.</li>
+        <li>Enable <strong>Sign in with Microsoft</strong> for your users.</li>
+      </ol>
+      <p class="muted">
+        Questions: contact the RefexOne / IAM team. Production host:
+        <code>https://refexone.com</code>
+      </p>
+    </section>
+
+    <footer>
+      RefexOne · Azure AD Login Setup (OIDC) · Not for SAML app federation · Multi-AD supported (one registration per tenant)
+    </footer>
+  </div>
+</body>
+</html>
