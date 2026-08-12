@@ -133,7 +133,7 @@ const Login = () => {
   }
 
   return (
-    <div className="min-h-screen flex" data-testid="login-page">
+    <div className="min-h-screen min-h-[100dvh] flex w-full max-w-[100vw] overflow-x-hidden" data-testid="login-page">
       {/* Left: Carousel */}
       <div className="hidden lg:flex lg:w-[55%] relative overflow-hidden bg-zinc-900">
         {/* Background Images */}
@@ -190,8 +190,8 @@ const Login = () => {
         </div>
       </div>
 
-      {/* Right: Login Form */}
-      <div className="flex-1 flex items-center justify-center px-6 py-12 bg-white">
+      {/* Right: Login Form — text-base (16px) avoids iOS input zoom */}
+      <div className="flex-1 flex items-center justify-center px-6 py-12 pb-[max(3rem,env(safe-area-inset-bottom))] bg-white w-full">
         <div className="w-full max-w-md">
           {/* Logo top-right, aligned with form */}
           <div className="flex justify-start mb-10">
@@ -217,9 +217,10 @@ const Login = () => {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="name@refex.co.in"
-                className="w-full px-4 py-3.5 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-zinc-400 focus:bg-white transition-all"
+                className="w-full px-4 py-3.5 bg-zinc-50 border border-zinc-200 rounded-xl text-base focus:outline-none focus:border-zinc-400 focus:bg-white transition-all"
                 data-testid="email-input"
                 autoComplete="email"
+                inputMode="email"
               />
             </div>
 
@@ -233,7 +234,7 @@ const Login = () => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter your password"
-                  className="w-full px-4 py-3.5 pr-12 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-zinc-400 focus:bg-white transition-all"
+                  className="w-full px-4 py-3.5 pr-12 bg-zinc-50 border border-zinc-200 rounded-xl text-base focus:outline-none focus:border-zinc-400 focus:bg-white transition-all"
                   data-testid="password-input"
                   autoComplete="current-password"
                 />

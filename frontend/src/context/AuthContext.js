@@ -35,6 +35,21 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     const initAuth = async () => {
       if (token) {
+        // Restore cached profile so a transient /auth/me failure (common when
+        // returning from Feast/QR SSO) does not bounce the user to /login.
+        try {
+          const cached = localStorage.getItem('iam_user');
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            if (parsed?.id || parsed?.email) {
+              setUser(parsed);
+              setOrganization(parsed.organization || null);
+            }
+          }
+        } catch (e) {
+          // ignore cache parse errors
+        }
+
         try {
           const response = await axios.get(`${API}/auth/me`, {
             headers: { Authorization: `Bearer ${token}` }
@@ -42,10 +57,25 @@ export const AuthProvider = ({ children }) => {
           setUser(response.data);
           setOrganization(response.data.organization);
           persistToken(token);
+          try {
+            localStorage.setItem('iam_user', JSON.stringify(response.data));
+          } catch (e) {
+            // ignore
+          }
         } catch (error) {
-          console.error('Auth check failed:', error);
-          clearToken();
-          setToken(null);
+          const status = error.response?.status;
+          // Only hard-logout on definitive auth failures — not network/5xx blips
+          // after OIDC back-navigation from Feast / RefexQR.
+          if (status === 401 || status === 403) {
+            console.error('Auth check rejected:', status);
+            clearToken();
+            try { localStorage.removeItem('iam_user'); } catch (e) { /* ignore */ }
+            setToken(null);
+            setUser(null);
+            setOrganization(null);
+          } else {
+            console.error('Auth check failed (session kept):', error?.message || error);
+          }
         }
       }
       setLoading(false);
@@ -89,6 +119,7 @@ export const AuthProvider = ({ children }) => {
   const logout = () => {
     clearNativeAppSession();
     clearToken();
+    try { localStorage.removeItem('iam_user'); } catch (e) { /* ignore */ }
     setToken(null);
     setUser(null);
     setOrganization(null);

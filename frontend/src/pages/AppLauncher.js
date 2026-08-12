@@ -160,8 +160,12 @@ const AppLauncher = () => {
     }
   };
 
-  // Detect Capacitor (native Android/iOS wrapper) — display-mode standalone does NOT match in Capacitor
-  const isCapacitor = typeof window !== 'undefined' && !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  // Detect Capacitor / RefexOne native shell (Android BridgeActivity + iOS WKWebView)
+  const isNativeBridge = typeof window !== 'undefined' && !!window.RefexOneBridge;
+  const isCapacitor = typeof window !== 'undefined' && (
+    !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())
+    || isNativeBridge
+  );
   const isPWA = isCapacitor || window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   const isMobile = isCapacitor || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   // Safari (desktop + iOS) — exclude Chrome/CriOS/Edge/Android WebView

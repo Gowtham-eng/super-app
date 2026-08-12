@@ -1,4 +1,4 @@
-/** Clear Kissflow / WebView sessions on Capacitor Android. */
+/** Clear Kissflow / WebView sessions on native Android / iOS (RefexOneBridge). */
 
 export const isCapacitorNative = () =>
   typeof window !== 'undefined' &&

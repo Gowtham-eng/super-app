@@ -4,12 +4,19 @@
 /node_modules
 /.pnp
 .pnp.js
+package-lock.json
 
 # testing
 /coverage
+/test-results/
+/playwright-report/
+/playwright/.cache/
 
 # production
 /build
+
+# iOS local Xcode build products
+/ios-project/DerivedData/
 
 # misc
 .DS_Store

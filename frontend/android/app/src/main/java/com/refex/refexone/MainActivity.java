@@ -554,8 +554,16 @@ public class MainActivity extends BridgeActivity {
         moduleRedirectScheduled = false;
         pendingHistoryClear = true;
         hidePageLoader();
-        clearKissflowSession(webView);
-        webView.loadUrl(LAUNCHER_URL);
+        // Only clear Kissflow when leaving Kissflow. Feast/QR OIDC back must NOT
+        // race cookie/JS cleanup or users land on /login looking logged out.
+        String current = webView != null ? webView.getUrl() : null;
+        if (isKissflowUrl(current)) {
+            clearKissflowSession(webView);
+        }
+        if (webView != null) {
+            webView.stopLoading();
+            webView.loadUrl(LAUNCHER_URL);
+        }
         setCloseBarVisible(webView, false, null);
     }
 
@@ -835,10 +843,42 @@ public class MainActivity extends BridgeActivity {
             }
             return;
         }
+        // Feast / RefexQR (external OIDC): never replay /login?oidc_redirect or authorize
+        if (webView != null && isExternalInAppUrl(url)) {
+            if (webView.canGoBack()) {
+                WebBackForwardList list = webView.copyBackForwardList();
+                int idx = list.getCurrentIndex();
+                if (idx > 0) {
+                    String backUrl = list.getItemAtIndex(idx - 1).getUrl();
+                    if (backUrl != null && (isRefexOneUrl(backUrl)
+                            || backUrl.contains("/api/saml/")
+                            || backUrl.contains("oidc_redirect=")
+                            || backUrl.contains("/api/oidc/")
+                            || (backUrl.contains("/oidc/") && backUrl.contains("/authorize")))) {
+                        returnToLauncher(webView);
+                        return;
+                    }
+                }
+                webView.goBack();
+            } else {
+                returnToLauncher(webView);
+            }
+            return;
+        }
         if (webView != null && webView.canGoBack()) {
             webView.goBack();
         } else {
             super.onBackPressed();
+        }
+    }
+
+    private boolean isExternalInAppUrl(String url) {
+        if (url == null || url.isEmpty() || url.startsWith("about:")) return false;
+        if (isRefexOneUrl(url) || isKissflowUrl(url)) return false;
+        try {
+            return Uri.parse(url).getHost() != null;
+        } catch (Exception e) {
+            return false;
         }
     }
 

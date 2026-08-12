@@ -24,7 +24,7 @@ import Layout from "./components/Layout";
 import "./App.css";
 
 const ProtectedRoute = ({ children }) => {
-  const { user, loading } = useAuth();
+  const { user, token, loading } = useAuth();
   
   if (loading) {
     return (
@@ -34,15 +34,23 @@ const ProtectedRoute = ({ children }) => {
     );
   }
   
-  if (!user) {
+  // Keep session when token exists but /auth/me briefly failed (Feast/QR back).
+  if (!user && !token) {
     return <Navigate to="/login" replace />;
+  }
+  if (!user && token) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#FAFAFA]">
+        <div className="spinner" />
+      </div>
+    );
   }
   
   return <Layout>{children}</Layout>;
 };
 
 const AdminRoute = ({ children }) => {
-  const { user, loading } = useAuth();
+  const { user, token, loading } = useAuth();
   
   if (loading) {
     return (
@@ -52,8 +60,15 @@ const AdminRoute = ({ children }) => {
     );
   }
   
-  if (!user) {
+  if (!user && !token) {
     return <Navigate to="/login" replace />;
+  }
+  if (!user && token) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#FAFAFA]">
+        <div className="spinner" />
+      </div>
+    );
   }
   
   const isAdmin = user.role === 'org_admin' || user.role === 'admin';
@@ -65,7 +80,7 @@ const AdminRoute = ({ children }) => {
 };
 
 const DefaultRedirect = () => {
-  const { user, loading } = useAuth();
+  const { user, token, loading } = useAuth();
   
   if (loading) {
     return (
@@ -75,7 +90,14 @@ const DefaultRedirect = () => {
     );
   }
   
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user && !token) return <Navigate to="/login" replace />;
+  if (!user && token) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#FAFAFA]">
+        <div className="spinner" />
+      </div>
+    );
+  }
   
   const isAdmin = user.role === 'org_admin' || user.role === 'admin';
   return isAdmin
