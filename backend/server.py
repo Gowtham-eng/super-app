@@ -480,6 +480,36 @@ async def check_user_app_access(user: dict, app: dict) -> bool:
     if app.get('restricted'):
         return is_admin_role
     return True
+
+
+def _add_saml_attribute(attr_stmt, name, value, xsi_ns=None):
+    """Add a SAML Attribute if value is present."""
+    if value is None or str(value).strip() == '':
+        return
+    from lxml import etree
+    attr = etree.SubElement(attr_stmt, '{urn:oasis:names:tc:SAML:2.0:assertion}Attribute')
+    attr.set('Name', name)
+    attr.set('NameFormat', 'urn:oasis:names:tc:SAML:2.0:attrname-format:basic')
+    val = etree.SubElement(attr, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue')
+    if xsi_ns:
+        val.set(f'{{{xsi_ns}}}type', 'xs:string')
+    val.text = str(value).strip()
+
+
+def _append_user_saml_attributes(attr_stmt, user: dict, acs_url: str = '', xsi_ns=None):
+    """Email/name for all SPs. Adrenalin also needs EmployeeCode / EmailAddress."""
+    email = (user.get('email') or '').strip()
+    name = (user.get('name') or '').strip()
+    emp_id = (user.get('adrenalin_employee_id') or '').strip()
+    _add_saml_attribute(attr_stmt, 'email', email, xsi_ns)
+    _add_saml_attribute(attr_stmt, 'name', name, xsi_ns)
+    acs = (acs_url or '').lower()
+    if 'adrenalin' in acs or 'myadrenalin' in acs:
+        _add_saml_attribute(attr_stmt, 'EmailAddress', email, xsi_ns)
+        _add_saml_attribute(attr_stmt, 'Email', email, xsi_ns)
+        _add_saml_attribute(attr_stmt, 'EmployeeCode', emp_id, xsi_ns)
+        _add_saml_attribute(attr_stmt, 'EMPLOYEE_ID', emp_id, xsi_ns)
+        _add_saml_attribute(attr_stmt, 'employee_id', emp_id, xsi_ns)
 async def check_access_policies(user: dict, app: dict, request: Request) -> tuple:
     """Check access policies and return (allowed, reason)"""
     org_id = user.get('org_id')
@@ -1484,7 +1514,7 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     assertion_id = f"_{''.join(str(uuid_module.uuid4()).split('-'))}"
     
     acs_url = app.get('acs_url', '')
-    name_id = user.get('email', '')
+    name_id = (user.get('email') or '').strip()
     name_id_format = app.get('name_id_format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress')
     
     # Determine issuer, cert, key - if this app shares entity_id + acs_url with another app,
@@ -1579,20 +1609,7 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     
     # Assertion > AttributeStatement
     attr_stmt = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeStatement')
-    
-    email_attr = etree.SubElement(attr_stmt, '{urn:oasis:names:tc:SAML:2.0:assertion}Attribute')
-    email_attr.set('Name', 'email')
-    email_attr.set('NameFormat', 'urn:oasis:names:tc:SAML:2.0:attrname-format:basic')
-    email_val = etree.SubElement(email_attr, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue')
-    email_val.set(f'{{{XSI_NS}}}type', 'xs:string')
-    email_val.text = user.get('email', '')
-    
-    name_attr = etree.SubElement(attr_stmt, '{urn:oasis:names:tc:SAML:2.0:assertion}Attribute')
-    name_attr.set('Name', 'name')
-    name_attr.set('NameFormat', 'urn:oasis:names:tc:SAML:2.0:attrname-format:basic')
-    name_val = etree.SubElement(name_attr, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue')
-    name_val.set(f'{{{XSI_NS}}}type', 'xs:string')
-    name_val.text = user.get('name', '')
+    _append_user_saml_attributes(attr_stmt, user, acs_url, XSI_NS)
     
     # Sign the SAML Response (cert_pem and key_pem already set above, potentially from parent app)
     signed_response_xml = None
@@ -1911,7 +1928,7 @@ async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_
 
     issuer = f"{base_url}/api/saml/{app_id}"
     acs_url = app.get('acs_url', '')
-    name_id = user.get('email', '')
+    name_id = (user.get('email') or '').strip()
     name_id_format = app.get('name_id_format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress')
     
     # If this app shares entity_id + acs_url with another app, use primary's issuer/cert/key
@@ -1985,14 +2002,7 @@ async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_
     authn_ctx_ref.text = 'urn:oasis:names:tc:SAML:2.0:ac:classes:Password'
 
     attr_stmt = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeStatement')
-    email_attr = etree.SubElement(attr_stmt, '{urn:oasis:names:tc:SAML:2.0:assertion}Attribute')
-    email_attr.set('Name', 'email')
-    email_val = etree.SubElement(email_attr, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue')
-    email_val.text = user.get('email', '')
-    name_attr = etree.SubElement(attr_stmt, '{urn:oasis:names:tc:SAML:2.0:assertion}Attribute')
-    name_attr.set('Name', 'name')
-    name_val = etree.SubElement(name_attr, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue')
-    name_val.text = user.get('name', '')
+    _append_user_saml_attributes(attr_stmt, user, acs_url)
 
     # Sign the assertion (cert_pem and key_pem already set above, potentially from parent app)
     signed = False
