@@ -1208,51 +1208,9 @@ async def saml_sso(app_id: str, request: Request):
         from urllib.parse import quote
         login_url += f"&relay_state={quote(relay_state)}"
 
-    html_content = f'''<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SSO Login - {app.get('name', 'SAML App')}</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ font-family: 'IBM Plex Sans', -apple-system, sans-serif; background: #FAFAFA; min-height: 100vh; display: flex; align-items: center; justify-content: center; }}
-        .card {{ background: white; border: 1px solid #e5e5e5; padding: 48px; max-width: 480px; width: 90%; }}
-        h1 {{ font-size: 24px; font-weight: 800; margin-bottom: 8px; }}
-        p {{ color: #71717a; margin-bottom: 24px; }}
-        .app-info {{ background: #f4f4f5; padding: 16px; margin-bottom: 24px; }}
-        .app-name {{ font-weight: 600; font-size: 18px; }}
-        .app-url {{ font-size: 12px; color: #71717a; font-family: monospace; word-break: break-all; }}
-        .btn {{ display: block; width: 100%; padding: 16px; background: #0051FF; color: white; text-align: center; text-decoration: none; font-weight: 600; margin-bottom: 12px; }}
-        .btn:hover {{ background: #003ECC; }}
-        .btn-secondary {{ background: #f4f4f5; color: #18181b; }}
-        .btn-secondary:hover {{ background: #e5e5e5; }}
-        .info {{ font-size: 12px; color: #a1a1aa; margin-top: 24px; text-align: center; }}
-    </style>
-</head>
-<body>
-    <div class="card">
-        <h1>Single Sign-On</h1>
-        <p>You are about to sign in to:</p>
-        
-        <div class="app-info">
-            <div class="app-name">{app.get('name', 'Application')}</div>
-            <div class="app-url">{app.get('entity_id', '')}</div>
-        </div>
-        
-        <a href="{login_url}" class="btn">Sign In with Kissflow IAM</a>
-        <a href="{app.get('acs_url', '#')}" class="btn btn-secondary">Cancel</a>
-        
-        <p class="info">
-            This is the SAML Identity Provider endpoint.<br>
-            Entity ID: {app.get('entity_id')}<br>
-            ACS URL: {app.get('acs_url')}
-        </p>
-    </div>
-</body>
-</html>'''
-    
-    return Response(content=html_content, media_type="text/html")
+    # Skip the extra "Sign In with Kissflow IAM" click — go straight to RefexOne login.
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=login_url, status_code=302)
 
 @api_router.get("/saml/{app_id}/slo")
 @api_router.post("/saml/{app_id}/slo")
