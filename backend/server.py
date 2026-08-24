@@ -663,15 +663,24 @@ async def change_own_password(payload: ChangePasswordRequest, request: Request, 
 async def upload_logo(file: UploadFile = File(...), request: Request = None, user: dict = Depends(get_current_user)):
     """Upload a logo image and return URL"""
     try:
-        if not file.content_type or not file.content_type.startswith('image/'):
+        # iOS camera/gallery often sends application/octet-stream (or empty) with a .JPG/.HEIC name.
+        content_type = (file.content_type or "").lower().strip()
+        original_name = (file.filename or "").lower()
+        allowed_ext = {'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'heic', 'heif'}
+        ext = (original_name.rsplit('.', 1)[-1] if '.' in original_name else '').lower()
+        is_image = content_type.startswith('image/') or (
+            content_type in ('', 'application/octet-stream') and ext in allowed_ext
+        )
+        if not is_image:
             raise HTTPException(status_code=400, detail="Only image files are allowed")
 
         # Make sure the uploads directory exists (handles fresh deployments)
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-        ext = (file.filename.rsplit('.', 1)[-1] if file.filename and '.' in file.filename else 'png').lower()
-        if ext not in {'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'}:
-            ext = 'png'
+        if ext not in allowed_ext:
+            # Prefer MIME subtype when filename has no usable extension
+            mime_ext = content_type.split('/', 1)[-1] if content_type.startswith('image/') else 'png'
+            ext = 'jpg' if mime_ext in ('jpeg', 'jpg') else (mime_ext if mime_ext in allowed_ext else 'png')
         filename = f"{uuid.uuid4().hex}.{ext}"
         filepath = UPLOAD_DIR / filename
 

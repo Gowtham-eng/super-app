@@ -212,9 +212,7 @@ const SAMLApps = () => {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const response = await axios.post(`${API}/upload/logo`, formData, {
-        headers: { ...getAuthHeader().headers, 'Content-Type': 'multipart/form-data' }
-      });
+      const response = await axios.post(`${API}/upload/logo`, formData, getAuthHeader());
       setForm(prev => ({ ...prev, logo_url: response.data.logo_url }));
       toast.success('Logo uploaded');
     } catch (error) {
