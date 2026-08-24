@@ -329,7 +329,7 @@ const ITSMSetup = () => {
       });
       const host = String(res.data[savedActive]?.kissflow_base_url || '').replace(/\/$/, '');
       toast.success(
-        `Saved. Now using ${savedActive === 'live' ? 'Live' : 'Development'}${host ? ` — ${host}` : ''}`
+        `Active: ${savedActive === 'live' ? 'Live' : 'Development'}${host ? ` — ${host}` : ''}. Dashboard and create ticket now use this host.`
       );
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Failed to save environments'));
@@ -483,9 +483,25 @@ const ITSMSetup = () => {
     const block = envForm[envKey] || emptyConnection();
     return (
       <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-4 space-y-3">
-        <h4 className="text-sm font-semibold text-slate-800">
-          {envKey === 'live' ? 'Live' : 'Development'} credentials
-        </h4>
+        <div className="flex items-center justify-between gap-2">
+          <h4 className="text-sm font-semibold text-slate-800">
+            {envKey === 'live' ? 'Live' : 'Development'} credentials
+          </h4>
+          {activeEnv === envKey ? (
+            <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
+              Active
+            </span>
+          ) : (
+            <button
+              type="button"
+              disabled={envSaving}
+              onClick={() => saveEnvironments(envKey)}
+              className="text-[11px] font-semibold text-blue-700 hover:underline disabled:opacity-50"
+            >
+              Use {envKey === 'live' ? 'Live' : 'Dev'}
+            </button>
+          )}
+        </div>
         <div className="grid gap-3">
           <Field label="Kissflow URL" hint="Host only, no trailing slash">
             <input

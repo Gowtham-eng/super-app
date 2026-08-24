@@ -142,6 +142,8 @@ const ITSMDashboard = () => {
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [activeEnvironment, setActiveEnvironment] = useState('');
+  const [kissflowBaseUrl, setKissflowBaseUrl] = useState('');
   const [reopeningId, setReopeningId] = useState('');
   const [statusTab, setStatusTab] = useState('Open');
   const [reopenTicketTarget, setReopenTicketTarget] = useState(null);
@@ -171,8 +173,15 @@ const ITSMDashboard = () => {
         params: { entity },
       });
       setTickets(res.data.tickets || []);
+      setActiveEnvironment(res.data.activeEnvironment || '');
+      setKissflowBaseUrl(res.data.kissflowBaseUrl || '');
+      if (res.data.reportError) {
+        toast.error(`Kissflow report: ${res.data.reportError}`);
+      }
     } catch (err) {
       setTickets([]);
+      setActiveEnvironment('');
+      setKissflowBaseUrl('');
       setError(getApiErrorMessage(err, 'Unable to load tickets.'));
     } finally {
       setLoading(false);
@@ -181,6 +190,15 @@ const ITSMDashboard = () => {
 
   React.useEffect(() => {
     fetchTickets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entity]);
+
+  React.useEffect(() => {
+    const onFocus = () => {
+      if (entity) fetchTickets();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entity]);
 
@@ -388,9 +406,23 @@ const ITSMDashboard = () => {
               <Headphones size={22} className="text-emerald-600" strokeWidth={2} />
             </div>
             <div className="min-w-0">
-              <h1 className="font-heading text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 tracking-tight">
-                IT Service Desk
-              </h1>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="font-heading text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 tracking-tight">
+                  IT Service Desk
+                </h1>
+                {activeEnvironment && (
+                  <span
+                    className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                      activeEnvironment === 'live'
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : 'bg-amber-100 text-amber-800'
+                    }`}
+                    title={kissflowBaseUrl || activeEnvironment}
+                  >
+                    {activeEnvironment === 'live' ? 'Live' : 'Dev'}
+                  </span>
+                )}
+              </div>
               <p className="text-slate-500 text-sm mt-0.5 font-medium">My tickets</p>
             </div>
           </div>

@@ -813,6 +813,8 @@ REPORT_FIELD_IDS = {
         "assigned_to": ["Column_Vz3Y600Rds", "_current_assigned_to"],
         "assigned_to_user": ["Column_QcF4GcVGi9", "Assigned_To_User"],
         "modified_by": ["Column_2ePerEzuLP", "_modified_by"],
+        "requester_email": ["Column_TNDYy0NHqk", "Email", "Requester_Email", "Requestor_Email"],
+        "created_by": ["Column_qpzG8v9AKq", "_created_by"],
     },
     "extrovis": {
         "request_id": ["Column_y4srngcUo1"],
@@ -842,8 +844,62 @@ REPORT_FIELD_IDS = {
         "assigned_to": ["Column_7Fn1867jLF", "_current_assigned_to"],
         "assigned_to_user": ["Column_9uwhycudkA", "Assigned_To_User"],
         "modified_by": ["Column_FPFvrG0A9c", "_modified_by"],
+        "requester_email": ["Column_Egh9ss0nVO", "Email", "Requester_Email", "Requestor_Email"],
+        "created_by": ["Column_9D6907I8pY", "_created_by"],
     },
 }
+
+
+def _normalize_email(value: Any) -> str:
+    text = _as_string(value).strip().lower()
+    if "@" not in text:
+        return ""
+    return text.split()[0].strip("<>\",;'")
+
+
+def _emails_from_value(value: Any) -> Set[str]:
+    found: Set[str] = set()
+    if value is None or value == "" or value == "—":
+        return found
+    if isinstance(value, str):
+        email = _normalize_email(value)
+        if email:
+            found.add(email)
+        return found
+    if isinstance(value, list):
+        for item in value:
+            found |= _emails_from_value(item)
+        return found
+    if isinstance(value, dict):
+        for key in ("Email", "email", "_email", "UserEmail", "Requester_Email"):
+            found |= _emails_from_value(value.get(key))
+        for key in ("Users", "users", "Members", "members"):
+            found |= _emails_from_value(value.get(key))
+    return found
+
+
+def _row_owner_emails(data: Dict[str, Any], field_ids: Dict[str, Any]) -> Set[str]:
+    found: Set[str] = set()
+    found |= _emails_from_value(
+        _raw_field(
+            data,
+            *field_ids.get("requester_email", []),
+            "Email",
+            "Requester_Email",
+            "Requestor_Email",
+            "RequesterEmail",
+        )
+    )
+    found |= _emails_from_value(
+        _raw_field(
+            data,
+            *field_ids.get("created_by", []),
+            "_created_by",
+            "Created_By",
+            "createdBy",
+        )
+    )
+    return found
 
 
 def _row_dict(row: Any, columns: List[Any]) -> Dict[str, Any]:
@@ -1724,6 +1780,8 @@ def _parse_report_ticket(
     closed_on = _closed_on_iso(
         data, field_ids, status, current_step, workflow_status, reopen_hold
     )
+    owner_emails = _row_owner_emails(data, field_ids)
+    requester_email = next(iter(sorted(owner_emails)), "")
     return {
         "id": instance_id,
         "requestId": request_id or "—",
@@ -1743,6 +1801,8 @@ def _parse_report_ticket(
         "canReopen": _can_reopen_ticket(current_step, workflow_status, data, field_ids),
         "slaBreached": _open_sla_breached(data, field_ids, status),
         "localStatus": "created",
+        "requesterEmail": requester_email,
+        "_ownerEmails": list(owner_emails),
     }
 
 
@@ -1867,7 +1927,30 @@ async def _load_kissflow_report_tickets(
         working_param or "$requestor_email",
         len(collected),
     )
-    return [_parse_report_ticket(row, columns, i, entity) for i, row in enumerate(collected)]
+    parsed = [_parse_report_ticket(row, columns, i, entity) for i, row in enumerate(collected)]
+    want = _normalize_email(email)
+    if not want:
+        return []
+    mine = []
+    for ticket in parsed:
+        owners = {
+            _normalize_email(item)
+            for item in (ticket.get("_ownerEmails") or [])
+            if item
+        }
+        owners.add(_normalize_email(ticket.get("requesterEmail")))
+        owners.discard("")
+        if want in owners:
+            ticket.pop("_ownerEmails", None)
+            mine.append(ticket)
+    logger.info(
+        "ITSM report entity=%s user=%s kept=%s of %s",
+        entity,
+        want,
+        len(mine),
+        len(parsed),
+    )
+    return mine
 
 
 class ReopenTicketRequest(BaseModel):
@@ -1934,19 +2017,34 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             return [d.get("display_name") or d.get("entity_key") for d in docs if d.get("entity_key")]
         return list(ENTITY_OPTIONS_FALLBACK)
 
+    async def _load_environment_doc() -> Optional[Dict[str, Any]]:
+        """One Kissflow env for the whole app — not per logged-in user's org_id."""
+        if db is None:
+            return None
+        doc = await db[ENV_COLLECTION].find_one({"scope": "global"}, {"_id": 0})
+        if doc:
+            return doc
+        docs = await db[ENV_COLLECTION].find({}, {"_id": 0}).sort("updated_at", -1).to_list(20)
+        if not docs:
+            return None
+        return docs[0]
+
     async def _load_environments(org_id: str) -> Dict[str, Any]:
         builtin = _builtin_environments()
         if db is None:
             return builtin
-        doc = await db[ENV_COLLECTION].find_one({"org_id": org_id}, {"_id": 0})
+        doc = await _load_environment_doc()
         if not doc:
             seeded = {
+                "scope": "global",
                 "org_id": org_id,
                 **builtin,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "updated_by": "system",
             }
-            await db[ENV_COLLECTION].update_one({"org_id": org_id}, {"$set": seeded}, upsert=True)
+            await db[ENV_COLLECTION].update_one(
+                {"scope": "global"}, {"$set": seeded}, upsert=True
+            )
             return builtin
         shared_src = doc.get("shared") if isinstance(doc.get("shared"), dict) else {}
         if not shared_src:
@@ -1969,24 +2067,50 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         return out
 
     async def _resolve_config(org_id: str, entity: Optional[str]) -> Dict[str, Any]:
-        """Active connection (URL/account/keys) + shared process/report/webhook IDs."""
+        """Active Kissflow env only — Live never falls back to Development keys/URL."""
         envs = await _load_environments(org_id)
         name = envs.get("active") if envs.get("active") in ("development", "live") else "development"
-        conn = envs.get(name) or envs["development"]
+        builtin = _builtin_environments()
+        same_builtin = builtin.get(name) if isinstance(builtin.get(name), dict) else {}
+        conn = envs.get(name) if isinstance(envs.get(name), dict) else {}
+        # Fill gaps only from the SAME named block (dev→dev defaults, live→live defaults).
+        base_url = (
+            (conn.get("kissflow_base_url") or same_builtin.get("kissflow_base_url") or "")
+            .strip()
+            .rstrip("/")
+        )
+        account_id = (
+            conn.get("account_id") or same_builtin.get("account_id") or ""
+        ).strip()
+        access_key_id = (
+            conn.get("access_key_id") or same_builtin.get("access_key_id") or ""
+        ).strip()
+        access_key_secret = (
+            conn.get("access_key_secret") or same_builtin.get("access_key_secret") or ""
+        ).strip()
+        if not base_url or not account_id or not access_key_id or not access_key_secret:
+            label = "Live" if name == "live" else "Development"
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Kissflow {label} environment is incomplete. "
+                    f"Set base URL, account ID, and access keys in ITSM Setup, then activate {label}."
+                ),
+            )
         shared = envs.get("shared") or {}
         sl = _entity_api_slice(shared, entity)
-        account_id = conn.get("account_id") or KISSFLOW_ACCOUNT_ID
         webhook = sl["webhook_path"] or _webhook_path_for_entity(entity)
         resolved = {
-            "kissflow_base_url": (conn.get("kissflow_base_url") or KISSFLOW_BASE_URL).rstrip("/"),
+            "environment": name,
+            "kissflow_base_url": base_url,
             "account_id": account_id,
             "application_id": shared.get("application_id") or KISSFLOW_APPLICATION_ID,
             "process_id": sl["process_id"] or _process_id_for_entity(entity),
             "report_id": sl["report_id"],
             "approval_matrix_id": shared.get("approval_matrix_id") or KISSFLOW_APPROVAL_MATRIX_ID,
             "webhook_path": _webhook_path_with_account(webhook, account_id),
-            "access_key_id": conn.get("access_key_id") or KISSFLOW_ACCESS_KEY_ID,
-            "access_key_secret": conn.get("access_key_secret") or KISSFLOW_ACCESS_KEY_SECRET,
+            "access_key_id": access_key_id,
+            "access_key_secret": access_key_secret,
             "source": "environment",
         }
         if entity and db is not None:
@@ -2003,6 +2127,13 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                     resolved["entity_key"] = d.get("entity_key")
                     resolved["source"] = "environment+entity"
                     break
+        logger.info(
+            "ITSM resolve env=%s base=%s account=%s entity=%s",
+            name,
+            base_url,
+            account_id,
+            entity or "",
+        )
         return resolved
 
     async def _verify_kissflow_access(user: dict) -> Dict[str, Any]:
@@ -2078,14 +2209,30 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
 
     @api_router.get("/itsm/config")
     async def itsm_config(user: dict = Depends(get_current_user)):
-        entities = await _entity_options(user.get("org_id") or "")
+        org_id = user.get("org_id") or ""
+        entities = await _entity_options(org_id)
+        active_env = "development"
+        base_url = ""
+        try:
+            cfg = await _resolve_config(org_id, None)
+            active_env = cfg.get("environment") or "development"
+            base_url = cfg.get("kissflow_base_url") or ""
+        except HTTPException:
+            envs = await _load_environments(org_id)
+            active_env = (
+                envs.get("active")
+                if envs.get("active") in ("development", "live")
+                else "development"
+            )
         return {
             "entityOptions": entities,
             "criticalityOptions": CRITICALITY_OPTIONS,
             "source": SOURCE_VALUE,
             "processId": KISSFLOW_PROCESS_ID,
+            "activeEnvironment": active_env,
+            "kissflowBaseUrl": base_url,
             "has_entity_configs": bool(
-                await _list_entity_docs(user.get("org_id") or "", enabled_only=True)
+                await _list_entity_docs(org_id, enabled_only=True)
             ),
         }
 
@@ -2107,6 +2254,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "ok": ok,
                 "status_code": response.status_code,
                 "base_url": cfg["kissflow_base_url"],
+                "activeEnvironment": cfg.get("environment") or "development",
                 **user_profile,
             }
         except Exception as exc:
@@ -2115,6 +2263,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "ok": False,
                 "status_code": 0,
                 "base_url": cfg["kissflow_base_url"],
+                "activeEnvironment": cfg.get("environment") or "development",
                 "error": str(exc),
                 **user_profile,
             }
@@ -2130,6 +2279,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         result = await _fetch_matrix(cfg)
         result["entityOptions"] = entities
         result["resolved_entity"] = entity
+        result["activeEnvironment"] = cfg.get("environment") or "development"
+        result["kissflowBaseUrl"] = cfg.get("kissflow_base_url") or ""
         return result
 
     @api_router.post("/itsm/tickets")
@@ -2162,6 +2313,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 status_code=400,
                 detail=f"ITSM webhook is not configured for entity '{entity}'. Ask an admin to set it up.",
             )
+        active_env = cfg.get("environment") or "development"
 
         webhook_body = {
             "process_id": cfg["process_id"],
@@ -2189,6 +2341,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             "criticality": criticality,
             "description": description,
             "local_status": "pending",
+            "kissflow_env": active_env,
             "kissflow_request_id": "",
             "kissflow_instance_id": "",
             "kissflow_status": "",
@@ -2353,7 +2506,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             raise HTTPException(status_code=500, detail="Database unavailable")
         org_id = user.get("org_id") or ""
         builtin = _builtin_environments()
-        existing = await db[ENV_COLLECTION].find_one({"org_id": org_id}, {"_id": 0}) or {}
+        existing = (await _load_environment_doc()) or {}
         active = (body.active or "development").strip().lower()
         if active not in ("development", "live"):
             raise HTTPException(status_code=400, detail="active must be development or live")
@@ -2372,7 +2525,18 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             _merge_connection(builtin["live"], existing.get("live") or {}),
             _dump_model(body.live),
         )
+        if active == "live" and (
+            not live.get("kissflow_base_url")
+            or not live.get("account_id")
+            or not live.get("access_key_id")
+            or not live.get("access_key_secret")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Live is incomplete. Fill Live URL, account ID, and access keys before activating Live.",
+            )
         doc = {
+            "scope": "global",
             "org_id": org_id,
             "active": active,
             "shared": shared,
@@ -2382,9 +2546,16 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             "updated_by": user.get("email"),
         }
         await db[ENV_COLLECTION].update_one(
-            {"org_id": org_id},
+            {"scope": "global"},
             {"$set": doc},
             upsert=True,
+        )
+        logger.info(
+            "ITSM environments saved by=%s org=%s active=%s live_host=%s",
+            user.get("email"),
+            org_id,
+            active,
+            live.get("kissflow_base_url") or "",
         )
         return {
             "ok": True,
@@ -2588,29 +2759,55 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         if db is None:
             raise HTTPException(status_code=500, detail="Database unavailable")
 
+        cfg = await _resolve_config(user.get("org_id") or "", entity)
+        active_env = cfg.get("environment") or "development"
+        report_profile = {
+            "process_id": cfg.get("process_id") or "",
+            "report_id": cfg.get("report_id") or _report_profile(entity)["report_id"],
+        }
+
         user_id = user.get("id") or ""
-        local_docs = await db[LOCAL_TICKETS].find(
-            {
-                "user_id": user_id,
-                "entity": {"$regex": f"^{re.escape(entity.strip())}$", "$options": "i"},
-            },
+        email_rx = {"$regex": f"^{re.escape(email)}$", "$options": "i"}
+        local_query: Dict[str, Any] = {
+            "entity": {"$regex": f"^{re.escape(entity.strip())}$", "$options": "i"},
+        }
+        if user_id:
+            local_query["$or"] = [{"user_id": user_id}, {"email": email_rx}]
+        else:
+            local_query["email"] = email_rx
+        all_local = await db[LOCAL_TICKETS].find(
+            local_query,
             {"_id": 0},
         ).sort("created_at", -1).to_list(500)
 
+        def _local_env(doc: Dict[str, Any]) -> str:
+            return str(doc.get("kissflow_env") or "").strip().lower()
+
+        # Only local rows for the active Kissflow env (pending/failed may be untagged once).
+        local_docs = []
+        for doc in all_local:
+            env = _local_env(doc)
+            status = (doc.get("local_status") or "").lower()
+            if env in ("development", "live"):
+                if env == active_env:
+                    local_docs.append(doc)
+            elif status in ("pending", "failed"):
+                local_docs.append(doc)
+
         report_tickets: List[Dict[str, Any]] = []
-        report_profile = None
+        report_error = ""
         try:
-            cfg = await _resolve_config(user.get("org_id") or "", entity)
-            report_profile = {
-                "process_id": cfg.get("process_id") or "",
-                "report_id": cfg.get("report_id") or _report_profile(entity)["report_id"],
-            }
-            if cfg.get("access_key_secret"):
-                report_tickets = await _load_kissflow_report_tickets(
-                    cfg, report_profile, email, entity
-                )
+            report_tickets = await _load_kissflow_report_tickets(
+                cfg, report_profile, email, entity
+            )
         except Exception as exc:
-            logger.warning("ITSM dashboard Kissflow verify skipped: %s", exc)
+            report_error = str(exc)
+            logger.warning(
+                "ITSM dashboard Kissflow report failed env=%s base=%s: %s",
+                active_env,
+                cfg.get("kissflow_base_url"),
+                exc,
+            )
 
         claimed = {
             str(d.get("kissflow_instance_id") or "")
@@ -2619,6 +2816,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         }
         claimed.discard("")
 
+        matched_local_ids: Set[str] = set()
         for doc in local_docs:
             local_status = (doc.get("local_status") or "").lower()
             inst = str(doc.get("kissflow_instance_id") or "")
@@ -2632,6 +2830,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 matched = _match_report_ticket(report_tickets, doc.get("description") or "", skip_ids)
             if not matched:
                 continue
+            matched_local_ids.add(str(doc.get("id") or ""))
             req_id = matched.get("requestId") or ""
             if req_id in ("", "—"):
                 req_id = doc.get("kissflow_request_id") or ""
@@ -2643,6 +2842,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 matched_reopened = True
             updates = {
                 "local_status": "created",
+                "kissflow_env": active_env,
                 "kissflow_request_id": req_id,
                 "kissflow_instance_id": matched.get("id") or inst,
                 "kissflow_status": matched_status,
@@ -2666,17 +2866,32 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             claimed.add(str(doc.get("kissflow_instance_id") or ""))
             await db[LOCAL_TICKETS].update_one({"id": doc["id"]}, {"$set": updates})
 
-        tickets = [_public_local_ticket(d) for d in local_docs]
+        # Active Kissflow report is the source of truth; only add in-flight local rows
+        # that are not already present in the report.
+        tickets: List[Dict[str, Any]] = list(report_tickets)
         seen_ids = {str(t.get("id") or "") for t in tickets}
-        for remote in report_tickets:
-            rid = str(remote.get("id") or "")
-            if rid and rid not in seen_ids:
-                tickets.append(remote)
-                seen_ids.add(rid)
+        for doc in local_docs:
+            local_status = (doc.get("local_status") or "").lower()
+            inst = str(doc.get("kissflow_instance_id") or "")
+            if inst and inst in seen_ids:
+                continue
+            if local_status in ("pending", "failed"):
+                tickets.append(_public_local_ticket(doc))
+                continue
+            # Created locally for this env but not yet visible in the report.
+            if local_status == "created" and _local_env(doc) == active_env and str(doc.get("id") or "") not in matched_local_ids:
+                pub = _public_local_ticket(doc)
+                rid = str(pub.get("id") or "")
+                if rid and rid not in seen_ids:
+                    tickets.append(pub)
+                    seen_ids.add(rid)
 
         return {
             "entity": entity,
             "requestorEmail": email,
+            "activeEnvironment": active_env,
+            "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
+            "reportError": report_error or None,
             "tickets": tickets,
             "count": len(tickets),
             "pageNumber": page_number,
@@ -2695,6 +2910,27 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             raise HTTPException(status_code=400, detail="Ticket id is required")
         if not note:
             raise HTTPException(status_code=400, detail="Please enter why you need to reopen this ticket.")
+        requester_email = str(user.get("email") or "").strip()
+        requester_name = (
+            str(user.get("name") or "").strip()
+            or " ".join(
+                part
+                for part in (
+                    str(user.get("first_name") or "").strip(),
+                    str(user.get("last_name") or "").strip(),
+                )
+                if part
+            )
+            or requester_email
+        )
+        kissflow_note = note
+        identity_bits = []
+        if requester_name:
+            identity_bits.append(f"Requester: {requester_name}")
+        if requester_email:
+            identity_bits.append(f"Email: {requester_email}")
+        if identity_bits:
+            kissflow_note = f"{note}\n\n" + "\n".join(identity_bits)
         # Frontend may hint ids; backend always resolves to match Kissflow format:
         # POST .../{instance}/{reopen_activity}/sendback?_application_id=...
         # body {"Note":"...","_id":"<IT Agent completed activity>"}
@@ -2725,7 +2961,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             f"{process_id}/{instance_id}/{activity_instance_id}/sendback"
         )
         params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
-        payload = {"Note": note, "_id": sendback_id}
+        payload = {"Note": kissflow_note, "_id": sendback_id}
         logger.info(
             "ITSM reopen Kissflow POST %s?_application_id=%s payload=%s",
             url,
@@ -2776,7 +3012,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                         "kissflow_status": "Reopened",
                         "reopened": True,
                         "can_reopen": False,
-                        "reopen_note": note,
+                        "reopen_note": kissflow_note,
                         "updated_at": now,
                     }},
                 )
