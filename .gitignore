@@ -116,3 +116,7 @@ _find*.py
 _locate*.py
 _gowtham_query.js
 _patch_extract_*.txt
+
+# Local toolchain installs
+.tools/
+*.bak

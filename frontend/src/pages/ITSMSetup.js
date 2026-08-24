@@ -36,6 +36,86 @@ const splitWebhookInput = (raw = '') => {
   return { base: '', path: value.startsWith('/') ? value : `/${value}` };
 };
 
+const SHARED_DEFAULTS = {
+  application_id: 'IT_Service_Management_A00',
+  approval_matrix_id: 'Live_Approval_Matrix_A00',
+  refex: {
+    process_id: 'Live_IT_Service_Request_A00',
+    report_id: 'Service_Items_Refex_A00',
+    webhook_path: '',
+  },
+  extrovis: {
+    process_id: 'Live_IT_Service_Request_Extrovis_A00',
+    report_id: 'All_tickets_A00',
+    webhook_path: '',
+  },
+};
+
+const emptyConnection = () => ({
+  kissflow_base_url: '',
+  account_id: '',
+  access_key_id: '',
+  access_key_secret: '',
+});
+
+const emptyShared = () => ({
+  application_id: SHARED_DEFAULTS.application_id,
+  approval_matrix_id: SHARED_DEFAULTS.approval_matrix_id,
+  refex: { ...SHARED_DEFAULTS.refex },
+  extrovis: { ...SHARED_DEFAULTS.extrovis },
+});
+
+const hydrateConnection = (raw = {}) => ({
+  kissflow_base_url: String(raw.kissflow_base_url || ''),
+  account_id: String(raw.account_id || ''),
+  access_key_id: String(raw.access_key_id || ''),
+  access_key_secret: String(raw.access_key_secret || ''),
+});
+
+const hydrateShared = (raw = {}) => ({
+  application_id: String(raw.application_id || SHARED_DEFAULTS.application_id),
+  approval_matrix_id: String(raw.approval_matrix_id || SHARED_DEFAULTS.approval_matrix_id),
+  refex: {
+    ...SHARED_DEFAULTS.refex,
+    ...(raw.refex || {}),
+    process_id: String(raw.refex?.process_id || SHARED_DEFAULTS.refex.process_id),
+    report_id: String(raw.refex?.report_id || SHARED_DEFAULTS.refex.report_id),
+    webhook_path: String(raw.refex?.webhook_path || ''),
+  },
+  extrovis: {
+    ...SHARED_DEFAULTS.extrovis,
+    ...(raw.extrovis || {}),
+    process_id: String(raw.extrovis?.process_id || SHARED_DEFAULTS.extrovis.process_id),
+    report_id: String(raw.extrovis?.report_id || SHARED_DEFAULTS.extrovis.report_id),
+    webhook_path: String(raw.extrovis?.webhook_path || ''),
+  },
+});
+
+const connectionPayload = (raw = {}) => ({
+  kissflow_base_url: String(raw.kissflow_base_url || '').trim(),
+  account_id: String(raw.account_id || '').trim(),
+  access_key_id: String(raw.access_key_id || '').trim(),
+  access_key_secret: String(raw.access_key_secret || '').trim(),
+});
+
+const sharedPayload = (raw = {}) => {
+  const shared = hydrateShared(raw);
+  return {
+    application_id: shared.application_id.trim(),
+    approval_matrix_id: shared.approval_matrix_id.trim(),
+    refex: {
+      process_id: String(shared.refex.process_id || '').trim(),
+      report_id: String(shared.refex.report_id || '').trim(),
+      webhook_path: String(shared.refex.webhook_path || '').trim(),
+    },
+    extrovis: {
+      process_id: String(shared.extrovis.process_id || '').trim(),
+      report_id: String(shared.extrovis.report_id || '').trim(),
+      webhook_path: String(shared.extrovis.webhook_path || '').trim(),
+    },
+  };
+};
+
 const emptyForm = () => ({
   entity_key: '',
   display_name: '',
@@ -80,6 +160,14 @@ const ITSMSetup = () => {
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState(null);
   const [seeding, setSeeding] = useState(false);
+  const [envLoading, setEnvLoading] = useState(true);
+  const [envSaving, setEnvSaving] = useState(false);
+  const [activeEnv, setActiveEnv] = useState('development');
+  const [envForm, setEnvForm] = useState({
+    shared: emptyShared(),
+    development: emptyConnection(),
+    live: emptyConnection(),
+  });
 
   const webhookDupes = useMemo(() => {
     const map = new Map();
@@ -95,6 +183,24 @@ const ITSMSetup = () => {
     }
     return shared;
   }, [entities]);
+
+  const fetchEnvironments = async () => {
+    setEnvLoading(true);
+    try {
+      const res = await axios.get(`${itsmApi}/itsm/admin/environments`, getAuthHeader());
+      const active = res.data.active === 'live' ? 'live' : 'development';
+      setActiveEnv(active);
+      setEnvForm({
+        shared: hydrateShared(res.data.shared),
+        development: hydrateConnection(res.data.development),
+        live: hydrateConnection(res.data.live),
+      });
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Failed to load Kissflow environments'));
+    } finally {
+      setEnvLoading(false);
+    }
+  };
 
   const fetchEntities = async () => {
     setLoading(true);
@@ -112,6 +218,7 @@ const ITSMSetup = () => {
 
   useEffect(() => {
     fetchEntities();
+    fetchEnvironments();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -152,6 +259,83 @@ const ITSMSetup = () => {
       sort_order: entity.sort_order || 0,
     });
     setEditorOpen(true);
+  };
+
+  const setConnectionField = (envKey, field, value) => {
+    setEnvForm((prev) => ({
+      ...prev,
+      [envKey]: { ...prev[envKey], [field]: value },
+    }));
+  };
+
+  const setSharedField = (field, value) => {
+    setEnvForm((prev) => ({
+      ...prev,
+      shared: { ...prev.shared, [field]: value },
+    }));
+  };
+
+  const setSharedSliceField = (slice, field, value) => {
+    setEnvForm((prev) => ({
+      ...prev,
+      shared: {
+        ...prev.shared,
+        [slice]: { ...prev.shared[slice], [field]: value },
+      },
+    }));
+  };
+
+  const applySharedWebhook = (slice, value) => {
+    const { path } = splitWebhookInput(value);
+    setEnvForm((prev) => ({
+      ...prev,
+      shared: {
+        ...prev.shared,
+        [slice]: { ...prev.shared[slice], webhook_path: path || value },
+      },
+    }));
+  };
+
+  const webhookDisplay = (slice) => {
+    let path = envForm.shared?.[slice]?.webhook_path || '';
+    const conn = envForm[activeEnv] || envForm.development;
+    const account = (conn?.account_id || '').trim();
+    if (path && account) {
+      path = path.replace(/\/integration\/2\/[^/]+\//, `/integration/2/${account}/`);
+    }
+    const base = (conn?.kissflow_base_url || '').replace(/\/$/, '');
+    if (!path) return '';
+    if (path.startsWith('http')) return path;
+    return base ? `${base}${path.startsWith('/') ? path : `/${path}`}` : path;
+  };
+
+  const saveEnvironments = async (nextActive) => {
+    const active = nextActive === 'live' || nextActive === 'development' ? nextActive : activeEnv;
+    setEnvSaving(true);
+    try {
+      const payload = {
+        active,
+        shared: sharedPayload(envForm.shared),
+        development: connectionPayload(envForm.development),
+        live: connectionPayload(envForm.live),
+      };
+      const res = await axios.put(`${itsmApi}/itsm/admin/environments`, payload, getAuthHeader());
+      const savedActive = res.data.active === 'live' ? 'live' : 'development';
+      setActiveEnv(savedActive);
+      setEnvForm({
+        shared: hydrateShared(res.data.shared),
+        development: hydrateConnection(res.data.development),
+        live: hydrateConnection(res.data.live),
+      });
+      const host = String(res.data[savedActive]?.kissflow_base_url || '').replace(/\/$/, '');
+      toast.success(
+        `Saved. Now using ${savedActive === 'live' ? 'Live' : 'Development'}${host ? ` — ${host}` : ''}`
+      );
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Failed to save environments'));
+    } finally {
+      setEnvSaving(false);
+    }
   };
 
   const setField = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
@@ -295,6 +479,118 @@ const ITSMSetup = () => {
     }
   };
 
+  const renderConnectionCard = (envKey) => {
+    const block = envForm[envKey] || emptyConnection();
+    return (
+      <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-4 space-y-3">
+        <h4 className="text-sm font-semibold text-slate-800">
+          {envKey === 'live' ? 'Live' : 'Development'} credentials
+        </h4>
+        <div className="grid gap-3">
+          <Field label="Kissflow URL" hint="Host only, no trailing slash">
+            <input
+              className={monoClass}
+              value={block.kissflow_base_url}
+              onChange={(e) => setConnectionField(envKey, 'kissflow_base_url', e.target.value)}
+              placeholder={
+                envKey === 'live'
+                  ? 'https://refexgroup.kissflow.com'
+                  : 'https://development-refexgroup.kissflow.com'
+              }
+            />
+          </Field>
+          <Field label="Account ID">
+            <input
+              className={monoClass}
+              value={block.account_id}
+              onChange={(e) => setConnectionField(envKey, 'account_id', e.target.value)}
+            />
+          </Field>
+          <Field label="Access key ID">
+            <input
+              className={monoClass}
+              value={block.access_key_id}
+              onChange={(e) => setConnectionField(envKey, 'access_key_id', e.target.value)}
+            />
+          </Field>
+          <Field label="Access key secret" hint="Leave blank when editing to keep the saved secret">
+            <input
+              className={monoClass}
+              value={block.access_key_secret}
+              onChange={(e) => setConnectionField(envKey, 'access_key_secret', e.target.value)}
+              autoComplete="off"
+            />
+          </Field>
+        </div>
+      </div>
+    );
+  };
+
+  const renderSharedApis = () => {
+    const shared = envForm.shared || emptyShared();
+    return (
+      <div className="space-y-4">
+        <p className="text-sm font-semibold text-slate-800">Shared APIs (same for Development and Live)</p>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <Field label="Application ID">
+            <input
+              className={monoClass}
+              value={shared.application_id}
+              onChange={(e) => setSharedField('application_id', e.target.value)}
+            />
+          </Field>
+          <Field label="Approval matrix ID">
+            <input
+              className={monoClass}
+              value={shared.approval_matrix_id}
+              onChange={(e) => setSharedField('approval_matrix_id', e.target.value)}
+            />
+          </Field>
+        </div>
+        {['refex', 'extrovis'].map((slice) => (
+          <div key={slice} className="rounded-lg border border-slate-100 bg-slate-50/70 p-4 space-y-3">
+            <h4 className="text-sm font-semibold text-slate-800">
+              {slice === 'refex' ? 'Refex' : 'Extrovis'} APIs
+            </h4>
+            <p className="text-[11px] text-slate-500">
+              {slice === 'refex'
+                ? 'Used when the logged-in entity is Refex. Same process, report, and webhook for development and live.'
+                : 'Used for Extrovis, ModePro, Kavis, and Pharma Pack. Same IDs for development and live.'}
+            </p>
+            <div className="grid sm:grid-cols-2 gap-4">
+              <Field label="Process ID">
+                <input
+                  className={monoClass}
+                  value={shared[slice].process_id}
+                  onChange={(e) => setSharedSliceField(slice, 'process_id', e.target.value)}
+                />
+              </Field>
+              <Field label="Report ID">
+                <input
+                  className={monoClass}
+                  value={shared[slice].report_id}
+                  onChange={(e) => setSharedSliceField(slice, 'report_id', e.target.value)}
+                />
+              </Field>
+            </div>
+            <Field
+              label="Submit webhook (full URL or path)"
+              hint="Account ID in /integration/2/{account}/ is replaced from the active environment."
+            >
+              <textarea
+                rows={2}
+                className={`${monoClass} resize-y`}
+                value={webhookDisplay(slice)}
+                onChange={(e) => applySharedWebhook(slice, e.target.value)}
+                placeholder="https://…kissflow.com/integration/2/…/webhook/…"
+              />
+            </Field>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -339,6 +635,64 @@ const ITSMSetup = () => {
             <Plus size={14} />
             Add entity
           </button>
+        </div>
+      </div>
+
+      <div className="mb-6 rounded-xl border border-slate-200 bg-white overflow-hidden" data-testid="itsm-environments">
+        <div className="px-5 py-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <h2 className="font-heading font-semibold text-slate-900">Kissflow environments</h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Development vs live differ only by URL, account ID, and access keys. Click Development or
+              Live to switch immediately — create ticket, matrix, and dashboard then call that host.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-500">Active</span>
+            {['development', 'live'].map((key) => (
+              <button
+                key={key}
+                type="button"
+                disabled={envSaving || envLoading}
+                onClick={() => {
+                  if (key !== activeEnv) saveEnvironments(key);
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border disabled:opacity-50 ${
+                  activeEnv === key
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-white text-slate-600 border-slate-200'
+                }`}
+              >
+                {key === 'development' ? 'Development' : 'Live'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="p-5 space-y-5">
+          {envLoading ? (
+            <div className="flex justify-center py-8">
+              <Loader2 className="animate-spin text-blue-600" size={22} />
+            </div>
+          ) : (
+            <>
+              <div className="grid md:grid-cols-2 gap-4">
+                {renderConnectionCard('development')}
+                {renderConnectionCard('live')}
+              </div>
+              {renderSharedApis()}
+            </>
+          )}
+          <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              onClick={() => saveEnvironments()}
+              disabled={envSaving || envLoading}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            >
+              {envSaving && <Loader2 size={14} className="animate-spin" />}
+              Save environments
+            </button>
+          </div>
         </div>
       </div>
 

@@ -62,9 +62,7 @@ const OIDCApps = () => {
     const formData = new FormData();
     formData.append('file', file);
     try {
-      const res = await axios.post(`${API}/upload/logo`, formData, {
-        headers: { ...getAuthHeader().headers, 'Content-Type': 'multipart/form-data' }
-      });
+      const res = await axios.post(`${API}/upload/logo`, formData, getAuthHeader());
       setForm({ ...form, logo_url: res.data.logo_url });
       setLogoPreview(res.data.logo_url);
       toast.success('Logo uploaded');

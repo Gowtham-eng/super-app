@@ -353,13 +353,59 @@ def decode_token(token: str) -> dict:
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+def _decode_external_jwt(token: str) -> dict:
+    """Decode a live RefexOne JWT without our local secret (dev / ITSM proxy only)."""
+    try:
+        return jwt.decode(
+            token,
+            options={
+                "verify_signature": False,
+                "verify_exp": True,
+                "verify_aud": False,
+            },
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
-    payload = decode_token(token)
-    user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0, "password": 0})
+    payload = None
+    try:
+        payload = decode_token(token)
+    except HTTPException:
+        if os.environ.get("ITSM_ACCEPT_EXTERNAL_JWT", "").strip().lower() in ("1", "true", "yes"):
+            payload = _decode_external_jwt(token)
+        else:
+            raise
+    user = await db.users.find_one({"id": payload.get("user_id")}, {"_id": 0, "password": 0})
     if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
+        email = normalize_email(payload.get("email") or "")
+        if email:
+            user = await db.users.find_one({"email": email}, {"_id": 0, "password": 0})
+            if not user:
+                user = await db.users.find_one(
+                    {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}},
+                    {"_id": 0, "password": 0},
+                )
+    if user:
+        return user
+    email = normalize_email(payload.get("email") or "")
+    if (
+        email
+        and os.environ.get("ITSM_ACCEPT_EXTERNAL_JWT", "").strip().lower() in ("1", "true", "yes")
+    ):
+        return {
+            "id": payload.get("user_id") or "",
+            "email": email,
+            "org_id": payload.get("org_id") or "",
+            "role": payload.get("role") or "user",
+            "status": "active",
+            "name": payload.get("name") or email,
+        }
+    raise HTTPException(status_code=401, detail="User not found")
 
 async def log_audit(org_id: str, action: str, resource_type: str, user_id: str = None, 
                    user_email: str = None, resource_id: str = None, details: dict = None,
@@ -663,15 +709,24 @@ async def change_own_password(payload: ChangePasswordRequest, request: Request, 
 async def upload_logo(file: UploadFile = File(...), request: Request = None, user: dict = Depends(get_current_user)):
     """Upload a logo image and return URL"""
     try:
-        if not file.content_type or not file.content_type.startswith('image/'):
+        # iOS camera/gallery often sends application/octet-stream (or empty) with a .JPG/.HEIC name.
+        content_type = (file.content_type or "").lower().strip()
+        original_name = (file.filename or "").lower()
+        allowed_ext = {'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'heic', 'heif'}
+        ext = (original_name.rsplit('.', 1)[-1] if '.' in original_name else '').lower()
+        is_image = content_type.startswith('image/') or (
+            content_type in ('', 'application/octet-stream') and ext in allowed_ext
+        )
+        if not is_image:
             raise HTTPException(status_code=400, detail="Only image files are allowed")
 
         # Make sure the uploads directory exists (handles fresh deployments)
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-        ext = (file.filename.rsplit('.', 1)[-1] if file.filename and '.' in file.filename else 'png').lower()
-        if ext not in {'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'}:
-            ext = 'png'
+        if ext not in allowed_ext:
+            # Prefer MIME subtype when filename has no usable extension
+            mime_ext = content_type.split('/', 1)[-1] if content_type.startswith('image/') else 'png'
+            ext = 'jpg' if mime_ext in ('jpeg', 'jpg') else (mime_ext if mime_ext in allowed_ext else 'png')
         filename = f"{uuid.uuid4().hex}.{ext}"
         filepath = UPLOAD_DIR / filename
 

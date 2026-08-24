@@ -6,6 +6,12 @@ import { ITSM_API } from '../config/api';
 import { toast } from 'sonner';
 import { getApiErrorMessage } from '../utils/apiError';
 import {
+  ITSM_ENTITIES,
+  PROFILE_STORAGE_KEY,
+  mergeEntityOptions,
+  mergeItsmProfile,
+} from '../utils/itsmEntity';
+import {
   AlertCircle,
   ArrowLeft,
   Building2,
@@ -20,10 +26,10 @@ import {
   Pencil,
   Search,
   User,
+  XCircle,
 } from 'lucide-react';
 
-const PROFILE_STORAGE_KEY = 'itsm_personal_details';
-const ENTITY_FALLBACK = ['Refex', 'Extrovis', 'ModePro'];
+const SEARCH_CATALOG_ENTITY = 'Refex';
 
 /** Common office / site locations — dropdown + free-text custom. */
 const LOCATION_OPTIONS = [
@@ -102,45 +108,6 @@ const getSubTypesForEntity = (records, entity) => {
   return result.sort((a, b) => a.localeCompare(b));
 };
 
-const mapEntityFromUser = (user) => {
-  const raw = (
-    user?.company ||
-    user?.legal_entity_code ||
-    user?.organization?.name ||
-    ''
-  ).trim();
-  if (!raw) return '';
-  const lower = raw.toLowerCase();
-  if (lower.includes('extrovis')) return 'Extrovis';
-  if (lower.includes('modepro') || lower.includes('mode pro')) return 'ModePro';
-  if (lower.includes('refex')) return 'Refex';
-  const exact = ENTITY_FALLBACK.find((opt) => opt.toLowerCase() === lower);
-  return exact || raw;
-};
-
-const profileFromUser = (user) => ({
-  name: (user?.name || user?.full_name || '').trim(),
-  email: (user?.email || '').trim(),
-  entity: mapEntityFromUser(user),
-  location: (user?.location || user?.office_location || '').trim(),
-});
-
-const mergeProfile = (user) => {
-  const fromLogin = profileFromUser(user);
-  let stored = {};
-  try {
-    stored = JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) || '{}');
-  } catch {
-    stored = {};
-  }
-  return {
-    name: fromLogin.name || stored.name || '',
-    email: fromLogin.email || stored.email || '',
-    entity: fromLogin.entity || stored.entity || '',
-    location: fromLogin.location || stored.location || '',
-  };
-};
-
 const criticalityBadgeClass = (value = '') => {
   const v = value.toLowerCase();
   if (v === 'critical') return 'bg-red-100 text-red-800 border-red-200';
@@ -160,11 +127,12 @@ const CreateITRequest = () => {
   const [initError, setInitError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [submitStatus, setSubmitStatus] = useState('created');
 
   const [records, setRecords] = useState([]);
-  const [entityOptions, setEntityOptions] = useState(ENTITY_FALLBACK);
+  const [entityOptions, setEntityOptions] = useState(ITSM_ENTITIES);
 
-  const [profile, setProfile] = useState(() => mergeProfile(user));
+  const [profile, setProfile] = useState(() => mergeItsmProfile(user));
   const [editOpen, setEditOpen] = useState(false);
   const [editForm, setEditForm] = useState(profile);
 
@@ -182,11 +150,11 @@ const CreateITRequest = () => {
   const matrixAbortRef = useRef(null);
 
   const subTypeOptions = useMemo(
-    () => getSubTypesForEntity(records, profile.entity),
-    [records, profile.entity]
+    () => getSubTypesForEntity(records, SEARCH_CATALOG_ENTITY),
+    [records]
   );
 
-  const findMatrixForSubType = (subType, entity = profile.entity) => {
+  const findMatrixForSubType = (subType, entity = SEARCH_CATALOG_ENTITY) => {
     const key = normalizeKey(subType);
     const matches = records.filter((record) => normalizeKey(recordServiceLabel(record)) === key);
     if (!matches.length) return null;
@@ -217,7 +185,7 @@ const CreateITRequest = () => {
     const q = debouncedQuery.trim().toLowerCase();
     if (!q) return subTypeOptions;
 
-    const entityRecords = records.filter((record) => matchesEntity(record, profile.entity));
+    const entityRecords = records.filter((record) => matchesEntity(record, SEARCH_CATALOG_ENTITY));
     const matchedLabels = [];
     const seen = new Set();
     for (const record of entityRecords) {
@@ -253,7 +221,7 @@ const CreateITRequest = () => {
       if (label && /^others?$/i.test(label)) return [label];
     }
     return [];
-  }, [debouncedQuery, subTypeOptions, records, profile.entity]);
+  }, [debouncedQuery, subTypeOptions, records]);
 
   const showingOthersFallback =
     !!debouncedQuery.trim() &&
@@ -279,7 +247,7 @@ const CreateITRequest = () => {
       });
       if (controller.signal.aborted) return;
       setRecords(res.data.records || []);
-      setEntityOptions(res.data.entityOptions || ENTITY_FALLBACK);
+      setEntityOptions(mergeEntityOptions(res.data.entityOptions));
       setInitialized(true);
     } catch (err) {
       if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') return;
@@ -296,7 +264,7 @@ const CreateITRequest = () => {
       try {
         const res = await axios.get(`${itsmApi}/itsm/config`, getAuthHeader());
         if (Array.isArray(res.data.entityOptions) && res.data.entityOptions.length) {
-          setEntityOptions(res.data.entityOptions);
+          setEntityOptions(mergeEntityOptions(res.data.entityOptions));
         }
       } catch {
         /* matrix fetch still loads options */
@@ -307,14 +275,14 @@ const CreateITRequest = () => {
   }, []);
 
   useEffect(() => {
-    fetchMatrix(profile.entity);
+    fetchMatrix(SEARCH_CATALOG_ENTITY);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile.entity]);
+  }, []);
 
   useEffect(() => {
     if (!user) return;
     setProfile((prev) => {
-      const next = mergeProfile(user);
+      const next = mergeItsmProfile(user);
       return {
         name: next.name || prev.name,
         email: next.email || prev.email,
@@ -335,7 +303,7 @@ const CreateITRequest = () => {
       setSelectedMatrix(matrix);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile.entity, records]);
+  }, [records]);
 
   useEffect(() => () => {
     if (recognitionRef.current) {
@@ -446,6 +414,7 @@ const CreateITRequest = () => {
     setSelectedMatrix(null);
     setDescription('');
     setSubmitted(false);
+    setSubmitStatus('created');
   };
 
   const handleSubmit = async () => {
@@ -458,7 +427,7 @@ const CreateITRequest = () => {
 
     setSubmitting(true);
     try {
-      await axios.post(
+      const res = await axios.post(
         `${itsmApi}/itsm/tickets`,
         {
           name: profile.name.trim(),
@@ -471,8 +440,14 @@ const CreateITRequest = () => {
         },
         getAuthHeader()
       );
-      toast.success('Ticket submitted successfully');
-      setSubmitted(true);
+      const status = res.data.status || (res.data.success ? 'created' : 'failed');
+      if (status === 'failed') {
+        setSubmitStatus('failed');
+        setSubmitted(true);
+        toast.error(res.data.message || 'Ticket was not created in Kissflow.');
+        return;
+      }
+      navigate('/itsm', { replace: true });
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Unable to submit ticket. Please try again.'));
     } finally {
@@ -488,26 +463,33 @@ const CreateITRequest = () => {
     normalizeKey(searchQuery) !== normalizeKey(selectedSubType);
 
   if (submitted) {
+    const failed = submitStatus === 'failed';
     return (
       <div className="animate-fadeIn w-full max-w-lg mx-auto px-1" data-testid="itsm-success-page">
         <div className="card-default overflow-hidden shadow-md">
-          <div className="bg-gradient-to-br from-emerald-50 via-white to-teal-50/40 px-6 py-8 text-center border-b border-emerald-100/80">
-            <div className="mx-auto w-16 h-16 rounded-2xl bg-emerald-100 border-2 border-emerald-200 flex items-center justify-center mb-4">
-              <CheckCircle2 className="text-emerald-600" size={36} strokeWidth={1.75} />
+          <div className={`px-6 py-8 text-center border-b ${failed ? 'bg-gradient-to-br from-red-50 via-white to-rose-50/40 border-red-100/80' : 'bg-gradient-to-br from-emerald-50 via-white to-teal-50/40 border-emerald-100/80'}`}>
+            <div className={`mx-auto w-16 h-16 rounded-2xl border-2 flex items-center justify-center mb-4 ${failed ? 'bg-red-100 border-red-200' : 'bg-emerald-100 border-emerald-200'}`}>
+              {failed ? (
+                <XCircle className="text-red-600" size={36} strokeWidth={1.75} />
+              ) : (
+                <CheckCircle2 className="text-emerald-600" size={36} strokeWidth={1.75} />
+              )}
             </div>
             <h1 className="font-heading text-2xl font-bold text-slate-900 tracking-tight">
-              Ticket Submitted
+              {failed ? 'Ticket Failed' : 'Ticket Submitted'}
             </h1>
             <p className="text-sm text-slate-500 mt-2 max-w-sm mx-auto">
-              Your IT request has been submitted. The support team will review it shortly.
+              {failed
+                ? 'Kissflow did not create this request. It is saved on your dashboard as Failed.'
+                : 'Your IT request was created in Kissflow. The support team will review it shortly.'}
             </p>
           </div>
           <div className="p-5 space-y-3">
             <button type="button" onClick={resetForm} className="btn-primary w-full" data-testid="itsm-create-another">
               Create Another Ticket
             </button>
-            <button type="button" onClick={() => navigate('/launcher')} className="btn-secondary w-full" data-testid="itsm-done">
-              Back to App Center
+            <button type="button" onClick={() => navigate('/itsm')} className="btn-secondary w-full" data-testid="itsm-done">
+              Back to My Tickets
             </button>
           </div>
         </div>
@@ -516,16 +498,16 @@ const CreateITRequest = () => {
   }
 
   return (
-    <div className="animate-fadeIn w-full max-w-3xl mx-auto pb-8" data-testid="itsm-create-page">
+    <div className="animate-fadeIn w-full pb-8" data-testid="itsm-create-page">
       <div className="relative overflow-hidden rounded-2xl border-2 border-emerald-200/70 bg-gradient-to-br from-emerald-50 via-white to-teal-50/40 mb-5">
         <div className="absolute -top-12 -right-12 w-56 h-56 rounded-full bg-emerald-100/40 blur-3xl pointer-events-none" />
         <div className="absolute -bottom-12 -left-12 w-56 h-56 rounded-full bg-teal-100/30 blur-3xl pointer-events-none" />
-        <div className="relative px-5 py-5 sm:px-7 sm:py-6 flex items-start gap-4">
+        <div className="relative px-5 py-5 sm:px-7 sm:py-6 flex items-center gap-4">
           <button
             type="button"
-            onClick={() => navigate('/launcher')}
-            className="mt-1 p-2 rounded-xl border border-emerald-200/80 bg-white/80 text-slate-600 hover:bg-white hover:border-emerald-300 transition-colors shrink-0"
-            aria-label="Back to launcher"
+            onClick={() => navigate('/itsm')}
+            className="p-2 rounded-xl border border-emerald-200/80 bg-white/80 text-slate-600 hover:bg-white hover:border-emerald-300 transition-colors shrink-0"
+            aria-label="Back to my tickets"
           >
             <ArrowLeft size={18} />
           </button>
@@ -534,12 +516,21 @@ const CreateITRequest = () => {
               <Headphones size={22} className="text-emerald-600" strokeWidth={2} />
             </div>
             <div className="min-w-0">
-              <h1 className="font-heading text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
+              <h1 className="font-heading text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 tracking-tight">
                 Create IT Request
               </h1>
               <p className="text-slate-500 text-sm mt-0.5 font-medium">IT Service Management</p>
             </div>
           </div>
+          {profile.entity && (
+            <div className="hidden md:flex flex-col items-end shrink-0">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Entity</span>
+              <span className="mt-1 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100/80 border border-emerald-200/70 text-emerald-800 text-sm font-medium">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                {profile.entity}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -551,8 +542,8 @@ const CreateITRequest = () => {
           </button>
         </div>
       ) : (
-        <div className="space-y-5">
-          <section className="form-section !mb-0">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          <section className="form-section !mb-0 lg:col-span-12">
             <div className="flex items-center justify-between mb-4">
               <h2 className="form-section-title !mb-0">Personal details</h2>
               <button
@@ -570,7 +561,7 @@ const CreateITRequest = () => {
                 Complete your personal details to search services and submit a ticket.
               </p>
             )}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               <ProfileChip icon={User} label="Name" value={profile.name} />
               <ProfileChip icon={Mail} label="Email" value={profile.email} />
               <ProfileChip icon={Building2} label="Entity" value={profile.entity} highlight />
@@ -578,13 +569,8 @@ const CreateITRequest = () => {
             </div>
           </section>
 
-          <section className="form-section !mb-0">
+          <section className="form-section !mb-0 lg:col-span-7">
             <h2 className="form-section-title">Quick Search</h2>
-            <p className="text-xs text-slate-500 mb-3">
-              {profile.entity
-                ? <>Find a service by <span className="font-medium text-slate-700">sub type</span> for <span className="font-semibold text-emerald-700">{profile.entity}</span></>
-                : 'Set your entity in personal details to search services.'}
-            </p>
             <div className="relative">
               <Search
                 className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-600 pointer-events-none shrink-0"
@@ -596,7 +582,7 @@ const CreateITRequest = () => {
                 value={searchQuery}
                 disabled={loadingMatrix || !profileComplete}
                 onChange={(e) => updateSearchQuery(e.target.value)}
-                placeholder={profile.entity ? `Search ${profile.entity} services…` : 'Complete personal details first'}
+                placeholder="Search Services"
                 className="input-brutalist w-full !pl-12 !pr-12 py-3"
                 data-testid="itsm-quick-search"
               />
@@ -609,7 +595,7 @@ const CreateITRequest = () => {
               )}
             </div>
             {profileComplete && !loadingMatrix && subTypeOptions.length === 0 && (
-              <p className="text-xs text-slate-500 mt-2">No services found for {profile.entity}.</p>
+              <p className="text-xs text-slate-500 mt-2">No services found.</p>
             )}
             {showSuggestions && (
               <div className="mt-2 max-h-52 overflow-auto rounded-xl border border-slate-200 bg-white shadow-md">
@@ -632,43 +618,70 @@ const CreateITRequest = () => {
             )}
           </section>
 
-          {selectedMatrix && (
-            <section className="form-section !mb-0">
-              <div className="flex items-center justify-between gap-3 mb-4">
-                <div className="flex items-center gap-2">
-                  <ClipboardList className="text-emerald-600" size={18} />
-                  <h2 className="form-section-title !mb-0">Request Details</h2>
+          <aside className={`${selectedMatrix ? 'flex' : 'hidden lg:flex'} form-section !mb-0 lg:col-span-5 lg:row-span-3 lg:sticky lg:top-6 flex-col`}>
+            {selectedMatrix ? (
+              <>
+                <div className="flex items-center justify-between gap-3 mb-4">
+                  <div className="flex items-center gap-2">
+                    <ClipboardList className="text-emerald-600" size={18} />
+                    <h2 className="form-section-title !mb-0">Request Details</h2>
+                  </div>
+                  {criticality && (
+                    <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border ${criticalityBadgeClass(criticality)}`}>
+                      {criticality}
+                    </span>
+                  )}
                 </div>
-                {criticality && (
-                  <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border ${criticalityBadgeClass(criticality)}`}>
-                    {criticality}
-                  </span>
-                )}
+                <div className="rounded-xl bg-slate-50 border border-slate-100 p-4 mb-4">
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Details & Scope</p>
+                  <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{selectedMatrix.detailsScope || '—'}</p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+                  <InfoBlock label="Ticket Type" value={selectedMatrix.ticketType} />
+                  <InfoBlock label="Category" value={selectedMatrix.category} />
+                  <InfoBlock label="Sub Category" value={selectedMatrix.subCategory} />
+                  <InfoBlock label="Type" value={selectedMatrix.type} />
+                  <InfoBlock label="Sub Type" value={recordServiceLabel(selectedMatrix)} highlight />
+                  <InfoBlock label="Criticality" value={criticality} />
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-col items-center justify-center text-center py-8 px-4 h-full min-h-[280px]">
+                <div className="w-14 h-14 rounded-2xl bg-emerald-50 border border-emerald-100 flex items-center justify-center mb-4">
+                  <ClipboardList className="text-emerald-600" size={24} />
+                </div>
+                <h2 className="font-heading text-lg font-semibold text-slate-900 mb-1">Request details</h2>
+                <p className="text-sm text-slate-500 max-w-xs mb-6">
+                  Search and pick a service. Category, type, and criticality will appear here.
+                </p>
+                <ol className="w-full max-w-xs text-left space-y-2.5">
+                  {[
+                    'Confirm personal details',
+                    'Search and select a service',
+                    'Describe the issue',
+                    'Submit the ticket',
+                  ].map((step, i) => (
+                    <li key={step} className="flex items-center gap-3 text-sm text-slate-600">
+                      <span className="w-6 h-6 rounded-full bg-emerald-50 border border-emerald-100 text-emerald-700 text-xs font-semibold flex items-center justify-center shrink-0">
+                        {i + 1}
+                      </span>
+                      {step}
+                    </li>
+                  ))}
+                </ol>
               </div>
-              <div className="rounded-xl bg-slate-50 border border-slate-100 p-4 mb-4">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Details & Scope</p>
-                <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{selectedMatrix.detailsScope || '—'}</p>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
-                <InfoBlock label="Ticket Type" value={selectedMatrix.ticketType} />
-                <InfoBlock label="Category" value={selectedMatrix.category} />
-                <InfoBlock label="Sub Category" value={selectedMatrix.subCategory} />
-                <InfoBlock label="Type" value={selectedMatrix.type} />
-                <InfoBlock label="Sub Type" value={recordServiceLabel(selectedMatrix)} highlight />
-                <InfoBlock label="Criticality" value={criticality} />
-              </div>
-            </section>
-          )}
+            )}
+          </aside>
 
-          <section className="form-section !mb-0">
+          <section className="form-section !mb-0 lg:col-span-7">
             <h2 className="form-section-title">Description</h2>
             <div className="relative">
               <textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                rows={5}
+                rows={6}
                 placeholder="Describe your issue or request in detail"
-                className="input-brutalist w-full px-4 py-3 pr-12 resize-y"
+                className="input-brutalist w-full px-4 py-3 pr-12 resize-y min-h-[140px] lg:min-h-[180px]"
                 data-testid="itsm-description"
               />
               <button
@@ -686,16 +699,18 @@ const CreateITRequest = () => {
             </div>
           </section>
 
-          <button
-            type="button"
-            disabled={!canSubmit}
-            onClick={handleSubmit}
-            className={`btn-primary w-full py-3.5 ${!canSubmit ? 'opacity-50 cursor-not-allowed' : ''}`}
-            data-testid="itsm-submit"
-          >
-            {submitting && <Loader2 size={18} className="animate-spin" />}
-            {submitting ? 'Submitting Request…' : 'Submit Request'}
-          </button>
+          <div className="lg:col-span-7">
+            <button
+              type="button"
+              disabled={!canSubmit}
+              onClick={handleSubmit}
+              className={`btn-primary w-full py-3.5 ${!canSubmit ? 'opacity-50 cursor-not-allowed' : ''}`}
+              data-testid="itsm-submit"
+            >
+              {submitting && <Loader2 size={18} className="animate-spin" />}
+              {submitting ? 'Submitting Request…' : 'Submit Request'}
+            </button>
+          </div>
         </div>
       )}
 

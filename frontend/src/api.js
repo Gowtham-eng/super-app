@@ -6,6 +6,7 @@ export const API = BACKEND_URL ? `${BACKEND_URL}/api` : '/api';
 /** ITSM endpoints — same as API unless REACT_APP_ITSM_API_URL overrides the backend host. */
 export const ITSM_API = ITSM_BACKEND ? `${ITSM_BACKEND}/api` : '/api';
 /** Absolute backend origin for browser redirects (SAML complete). */
-export const BACKEND_ORIGIN = BACKEND_URL || ITSM_BACKEND || 'http://localhost:8000';
+export const BACKEND_ORIGIN =
+  process.env.REACT_APP_BACKEND_ORIGIN || BACKEND_URL || ITSM_BACKEND || 'http://localhost:8000';
 
 export { BACKEND_URL };

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { launchUrlAfterKissflowClear } from '../utils/nativeSession';
+import { BACKEND_ORIGIN, ITSM_API } from '../config/api';
 import { toast } from 'sonner';
 import { Search, Lock, MessageCircle, X, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight, Headphones, Loader2 } from 'lucide-react';
 
@@ -172,8 +173,6 @@ const AppLauncher = () => {
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
   const isSafari = /Safari/i.test(ua) && !/Chrome|CriOS|Chromium|Edg|Android/i.test(ua);
 
-  const itsmApi = `${process.env.REACT_APP_ITSM_API_URL || process.env.REACT_APP_BACKEND_URL}/api`;
-
   /**
    * Desktop module SSO (Expense/Travel/etc.):
    * Reuse one dedicated tab (DESKTOP_APP_WINDOW). Safari: open about:blank on
@@ -250,7 +249,7 @@ const AppLauncher = () => {
   };
 
   const launchKissflowApp = (app) => {
-    const baseUrl = process.env.REACT_APP_BACKEND_URL;
+    const baseUrl = BACKEND_ORIGIN;
     const token = localStorage.getItem('iam_token');
 
     if (app.type === 'saml' && token) {
@@ -293,9 +292,8 @@ const AppLauncher = () => {
 
     setItsmChecking(true);
     try {
-      // Previous behavior: user in Kissflow → open Kissflow SSO; otherwise Create IT Request.
-      // Do not gate on approval-matrix API health (itsm entity keys) — that blocked Kissflow users.
-      const res = await axios.get(`${itsmApi}/itsm/kissflow-status`, getAuthHeader());
+      // Kissflow user → open Kissflow. Not in Kissflow → in-app dashboard.
+      const res = await axios.get(`${ITSM_API}/itsm/kissflow-status`, getAuthHeader());
       const userInKissflow = res.data?.user_in_kissflow === true;
 
       if (userInKissflow) {
@@ -334,7 +332,7 @@ const AppLauncher = () => {
       toast.error(app.policy_reason || 'Access blocked by policy');
       return;
     }
-    const baseUrl = process.env.REACT_APP_BACKEND_URL;
+    const baseUrl = BACKEND_ORIGIN;
     const token = localStorage.getItem('iam_token');
 
     if (app.type === 'saml' && token) {

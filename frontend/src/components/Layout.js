@@ -124,18 +124,83 @@ const Layout = ({ children }) => {
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
+  /** Resize/compress camera photos so iOS uploads stay under the 5MB API limit. */
+  const prepareProfileImage = (file) => new Promise((resolve, reject) => {
+    const maxBytes = 5 * 1024 * 1024;
+    const name = (file.name || 'profile.jpg').toLowerCase();
+    const looksImage = (file.type || '').startsWith('image/')
+      || /\.(png|jpe?g|gif|webp|heic|heif)$/i.test(name)
+      || file.type === 'application/octet-stream';
+    if (!looksImage) {
+      reject(new Error('Please choose an image file'));
+      return;
+    }
+    // HEIC/HEIF: keep original bytes; server accepts by extension. Others: downscale to JPEG.
+    if (/heic|heif/i.test(file.type || '') || /\.(heic|heif)$/i.test(name)) {
+      if (file.size > maxBytes) {
+        reject(new Error('Image must be under 5MB'));
+        return;
+      }
+      resolve(file);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const maxSide = 1024;
+      let { width, height } = img;
+      if (width > maxSide || height > maxSide) {
+        const scale = Math.min(maxSide / width, maxSide / height);
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            reject(new Error('Could not process image'));
+            return;
+          }
+          if (blob.size > maxBytes) {
+            reject(new Error('Image must be under 5MB'));
+            return;
+          }
+          resolve(new File([blob], 'profile.jpg', { type: 'image/jpeg' }));
+        },
+        'image/jpeg',
+        0.85
+      );
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      // Fallback: upload original if browser cannot decode (e.g. some HEIC)
+      if (file.size > maxBytes) {
+        reject(new Error('Image must be under 5MB'));
+        return;
+      }
+      resolve(file);
+    };
+    img.src = url;
+  });
+
   const handleProfilePicUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploadingPic(true);
     try {
+      const prepared = await prepareProfileImage(file);
       const formData = new FormData();
-      formData.append('file', file);
-      const uploadRes = await axios.post(`${API}/upload/logo`, formData, {
-        ...getAuthHeader(),
-        headers: { ...getAuthHeader().headers, 'Content-Type': 'multipart/form-data' }
-      });
-      await axios.put(`${API}/users/me/profile-pic`, 
+      formData.append('file', prepared);
+      // Do NOT set Content-Type manually — browser must include multipart boundary.
+      const uploadRes = await axios.post(`${API}/upload/logo`, formData, getAuthHeader());
+      await axios.put(`${API}/users/me/profile-pic`,
         { profile_pic: uploadRes.data.logo_url },
         getAuthHeader()
       );
@@ -143,7 +208,8 @@ const Layout = ({ children }) => {
       toast.success('Profile picture updated');
       setProfileOpen(false);
     } catch (err) {
-      toast.error('Failed to update profile picture');
+      const detail = err?.response?.data?.detail || err?.message || 'Failed to update profile picture';
+      toast.error(typeof detail === 'string' ? detail : 'Failed to update profile picture');
     } finally {
       setUploadingPic(false);
       if (fileInputRef.current) fileInputRef.current.value = '';

@@ -21,6 +21,7 @@ import SCIMSetup from "./pages/SCIMSetup";
 import ITSMSetup from "./pages/ITSMSetup";
 import AzureADSetup from "./pages/AzureADSetup";
 import CreateITRequest from "./pages/CreateITRequest";
+import ITSMDashboard from "./pages/ITSMDashboard";
 import Layout from "./components/Layout";
 import "./App.css";
 
@@ -116,7 +117,8 @@ function App() {
           {/* User-accessible routes */}
           <Route path="/launcher" element={<ProtectedRoute><AppLauncher /></ProtectedRoute>} />
           <Route path="/catalog" element={<ProtectedRoute><AppCatalog /></ProtectedRoute>} />
-          <Route path="/itsm" element={<ProtectedRoute><CreateITRequest /></ProtectedRoute>} />
+          <Route path="/itsm" element={<ProtectedRoute><ITSMDashboard /></ProtectedRoute>} />
+          <Route path="/itsm/new" element={<ProtectedRoute><CreateITRequest /></ProtectedRoute>} />
           {/* Admin-only routes */}
           <Route path="/apps/saml" element={<AdminRoute><SAMLApps /></AdminRoute>} />
           <Route path="/apps/oidc" element={<AdminRoute><OIDCApps /></AdminRoute>} />
