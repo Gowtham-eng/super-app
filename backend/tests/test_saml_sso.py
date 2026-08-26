@@ -57,50 +57,50 @@ class TestAuthentication:
 
 
 class TestSAMLSSORedirect:
-    """Test SAML SSO redirect endpoint returns public URLs"""
+    """Test SAML SSO entry redirects to login or complete (confirmation page skipped)"""
     
-    def test_saml_sso_returns_html(self):
-        """Test GET /api/saml/{app_id}/sso returns HTML"""
-        response = requests.get(f"{BASE_URL}/api/saml/{SAML_APP_ID}/sso")
-        assert response.status_code == 200, f"SAML SSO endpoint failed: {response.text}"
-        assert "text/html" in response.headers.get("content-type", "")
-        print(f"✓ SAML SSO endpoint returns HTML")
-    
-    def test_saml_sso_contains_public_url(self):
-        """Test SAML SSO HTML contains public URL, NOT internal cluster URLs"""
-        response = requests.get(f"{BASE_URL}/api/saml/{SAML_APP_ID}/sso")
-        assert response.status_code == 200
-        html_content = response.text
-        
-        # Check that public URL is present in the Sign In link
-        assert PUBLIC_DOMAIN in html_content, f"Public domain {PUBLIC_DOMAIN} not found in SSO HTML"
-        
-        # Check that internal cluster URLs are NOT present
-        internal_patterns = [
-            "backend-service.default.svc.cluster.local",
-            "localhost:8001",
-            "127.0.0.1:8001",
-            "0.0.0.0:8001"
-        ]
-        for pattern in internal_patterns:
-            assert pattern not in html_content, f"Internal URL pattern '{pattern}' found in SSO HTML - should use public URL"
-        
-        # Verify the login URL format
-        expected_login_url = f"https://{PUBLIC_DOMAIN}/login?sso_app={SAML_APP_ID}"
-        assert expected_login_url in html_content, f"Expected login URL not found: {expected_login_url}"
-        
-        print(f"✓ SAML SSO HTML contains correct public URL: https://{PUBLIC_DOMAIN}")
+    def test_saml_sso_redirects_to_login_when_unauthenticated(self):
+        """GET /api/saml/{app_id}/sso without session → /login?sso_app=…"""
+        response = requests.get(f"{BASE_URL}/api/saml/{SAML_APP_ID}/sso", allow_redirects=False)
+        assert response.status_code in (301, 302, 303, 307, 308), (
+            f"Expected redirect, got {response.status_code}: {response.text[:200]}"
+        )
+        location = response.headers.get("Location", "")
+        assert "login" in location.lower()
+        assert "sso_app" in location
+        assert PUBLIC_DOMAIN in location or location.startswith("/")
+        assert "cluster.local" not in location
+        assert "localhost:8001" not in location
+        print(f"✓ Unauthenticated SSO redirects to login: {location[:160]}")
     
     def test_saml_sso_with_relay_state(self):
-        """Test SAML SSO preserves RelayState parameter"""
+        """Unauthenticated SSO preserves RelayState on login redirect"""
         relay_state = "https://refexgroup.kissflow.com/dashboard"
-        response = requests.get(f"{BASE_URL}/api/saml/{SAML_APP_ID}/sso?RelayState={relay_state}")
-        assert response.status_code == 200
-        html_content = response.text
-        
-        # RelayState should be included in the login URL
-        assert "relay_state=" in html_content, "RelayState not preserved in login URL"
-        print(f"✓ SAML SSO preserves RelayState parameter")
+        response = requests.get(
+            f"{BASE_URL}/api/saml/{SAML_APP_ID}/sso?RelayState={relay_state}",
+            allow_redirects=False,
+        )
+        assert response.status_code in (301, 302, 303, 307, 308)
+        location = response.headers.get("Location", "")
+        assert "relay_state=" in location.lower() or "RelayState" in location
+        print(f"✓ SAML SSO preserves RelayState on login redirect")
+    
+    def test_saml_sso_resume_with_bearer_skips_login(self):
+        """Valid Bearer → redirect to /complete (SP resume)"""
+        login = requests.post(f"{BASE_URL}/api/auth/login", json=REFEX_ADMIN)
+        if login.status_code != 200:
+            pytest.skip("Cannot login for SP resume test")
+        token = login.json()["token"]
+        response = requests.get(
+            f"{BASE_URL}/api/saml/{SAML_APP_ID}/sso",
+            headers={"Authorization": f"Bearer {token}"},
+            allow_redirects=False,
+        )
+        assert response.status_code in (301, 302, 303, 307, 308)
+        location = response.headers.get("Location", "")
+        assert "/complete" in location
+        assert "token=" in location
+        print(f"✓ Authenticated SSO resumes to complete: {location[:160]}")
 
 
 class TestSAMLComplete:
@@ -114,14 +114,24 @@ class TestSAMLComplete:
         return response.json()["token"]
     
     def test_saml_complete_requires_auth(self):
-        """Test SAML complete redirects to login without token"""
+        """Missing token → redirect to launcher?sso_error=missing_token"""
         response = requests.get(f"{BASE_URL}/api/saml/{SAML_APP_ID}/complete", allow_redirects=False)
-        # Should redirect to login
-        assert response.status_code in [302, 307, 200], f"Unexpected status: {response.status_code}"
-        if response.status_code == 200:
-            # Check if it's a redirect HTML or login page
-            assert "login" in response.text.lower() or "redirect" in response.text.lower()
-        print(f"✓ SAML complete requires authentication")
+        assert response.status_code in (301, 302, 303, 307, 308), f"Unexpected status: {response.status_code}"
+        location = response.headers.get("Location", "")
+        assert "sso_error=missing_token" in location
+        assert "launcher" in location
+        print(f"✓ SAML complete missing token → {location[:160]}")
+    
+    def test_saml_complete_invalid_token(self):
+        """Invalid token → redirect launcher?sso_error=invalid_token"""
+        response = requests.get(
+            f"{BASE_URL}/api/saml/{SAML_APP_ID}/complete?token=not-a-valid-jwt",
+            allow_redirects=False,
+        )
+        assert response.status_code in (301, 302, 303, 307, 308)
+        location = response.headers.get("Location", "")
+        assert "sso_error=invalid_token" in location
+        print(f"✓ SAML complete invalid token → {location[:160]}")
     
     def test_saml_complete_returns_html_form(self, refex_token):
         """Test SAML complete returns HTML form with SAMLResponse"""
@@ -234,6 +244,39 @@ class TestSAMLComplete:
         assert expected_email in saml_response_xml, f"User email {expected_email} not found in SAML response NameID"
         
         print(f"✓ SAML response NameID contains user email: {expected_email}")
+    
+    def test_saml_response_is_signed_fail_closed(self, refex_token):
+        """Successful complete must include XML Signature (never unsigned POST)"""
+        response = requests.get(
+            f"{BASE_URL}/api/saml/{SAML_APP_ID}/complete?token={refex_token}",
+            allow_redirects=False,
+        )
+        assert response.status_code == 200, f"SAML complete failed: {response.text[:300]}"
+        value_match = re.search(
+            r"getElementById\('samlResponse'\)\.value = \"([^\"]+)\"",
+            response.text,
+        )
+        if not value_match:
+            value_match = re.search(r'var samlData = "([^"]+)"', response.text)
+        if not value_match:
+            value_match = re.search(r'name="SAMLResponse"\s+value="([^"]+)"', response.text)
+        assert value_match, "Could not extract SAMLResponse from HTML"
+        saml_xml = base64.b64decode(value_match.group(1)).decode('utf-8')
+        assert "Signature" in saml_xml or "ds:Signature" in saml_xml
+        assert "SignatureValue" in saml_xml
+        print("✓ SAML response includes Signature (fail-closed signing path)")
+    
+    def test_saml_complete_module_url_in_html(self, refex_token):
+        """module_url is embedded for post-ACS desktop deep-link"""
+        module = "https://refexgroup.kissflow.com/view/application/EMS_001_A00"
+        response = requests.get(
+            f"{BASE_URL}/api/saml/{SAML_APP_ID}/complete?token={refex_token}&module_url={module}",
+            allow_redirects=False,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"},
+        )
+        assert response.status_code == 200
+        assert "EMS_001_A00" in response.text or "moduleUrl" in response.text or "refexone_pending_module" in response.text
+        print("✓ module_url present in ACS HTML for desktop deep-link")
 
 
 class TestKissflowConfig:

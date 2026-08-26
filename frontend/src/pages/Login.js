@@ -77,8 +77,12 @@ const Login = () => {
   const [azureProviders, setAzureProviders] = useState([]);
   const [showAzurePicker, setShowAzurePicker] = useState(false);
   const [azureBusy, setAzureBusy] = useState(false);
+  const [googleProviders, setGoogleProviders] = useState([]);
+  const [showGooglePicker, setShowGooglePicker] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
   const ssoRedirecting = React.useRef(false);
   const azureHandled = React.useRef(false);
+  const googleHandled = React.useRef(false);
 
   const { login, loginWithToken, token } = useAuth();
   const navigate = useNavigate();
@@ -114,6 +118,14 @@ const Login = () => {
       .catch(() => setAzureProviders([]));
   }, []);
 
+  // Load active Google OAuth providers
+  useEffect(() => {
+    axios
+      .get(`${API}/google-oauth/providers`)
+      .then((res) => setGoogleProviders(res.data || []))
+      .catch(() => setGoogleProviders([]));
+  }, []);
+
   // Handle Azure AD callback (?azure_token= / ?azure_error=)
   useEffect(() => {
     const azureError = searchParams.get('azure_error');
@@ -141,6 +153,37 @@ const Login = () => {
         azureHandled.current = false;
       } finally {
         setAzureBusy(false);
+      }
+    })();
+  }, [searchParams, loginWithToken, setSearchParams]);
+
+  // Handle Google OAuth callback (?google_token= / ?google_error=)
+  useEffect(() => {
+    const googleError = searchParams.get('google_error');
+    if (googleError) {
+      toast.error(googleError);
+      const next = new URLSearchParams(searchParams);
+      next.delete('google_error');
+      setSearchParams(next, { replace: true });
+      return;
+    }
+
+    const googleToken = searchParams.get('google_token');
+    if (!googleToken || googleHandled.current) return;
+    googleHandled.current = true;
+    setGoogleBusy(true);
+    (async () => {
+      try {
+        await loginWithToken(googleToken);
+        toast.success('Signed in with Google');
+        const next = new URLSearchParams(searchParams);
+        next.delete('google_token');
+        setSearchParams(next, { replace: true });
+      } catch (err) {
+        toast.error('Google sign-in failed');
+        googleHandled.current = false;
+      } finally {
+        setGoogleBusy(false);
       }
     })();
   }, [searchParams, loginWithToken, setSearchParams]);
@@ -217,6 +260,31 @@ const Login = () => {
       ? `${BACKEND_ORIGIN}/api/auth/azure/login?config_id=${encodeURIComponent(configId)}`
       : `${BACKEND_ORIGIN}/api/auth/azure/login`;
     window.location.href = url;
+  };
+
+  const startGoogleLogin = (configId) => {
+    const pending = readPendingSso();
+    persistPendingSso({
+      ssoApp: searchParams.get('sso_app') || pending.ssoApp,
+      relayState: searchParams.get('relay_state') || pending.relayState,
+      oidcRedirect: searchParams.get('oidc_redirect') || pending.oidcRedirect,
+    });
+    const url = configId
+      ? `${BACKEND_ORIGIN}/api/auth/google/login?config_id=${encodeURIComponent(configId)}`
+      : `${BACKEND_ORIGIN}/api/auth/google/login`;
+    window.location.href = url;
+  };
+
+  const handleGoogleClick = () => {
+    if (!googleProviders.length) {
+      toast.error('Google login is not configured yet');
+      return;
+    }
+    if (googleProviders.length === 1) {
+      startGoogleLogin(googleProviders[0].id);
+      return;
+    }
+    setShowGooglePicker(true);
   };
 
   const handleMicrosoftClick = () => {
@@ -392,7 +460,7 @@ const Login = () => {
 
             <button
               type="submit"
-              disabled={isLoading || azureBusy}
+              disabled={isLoading || azureBusy || googleBusy}
               className="w-full py-3.5 bg-zinc-900 hover:bg-zinc-800 text-white font-semibold rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
               data-testid="submit-button"
             >
@@ -407,7 +475,7 @@ const Login = () => {
             </button>
           </form>
 
-          {azureProviders.length > 0 && (
+          {(azureProviders.length > 0 || googleProviders.length > 0) && (
             <div className="mt-6">
               <div className="relative flex items-center justify-center mb-4">
                 <div className="absolute inset-0 flex items-center">
@@ -418,48 +486,96 @@ const Login = () => {
                 </span>
               </div>
 
-              {!showAzurePicker ? (
-                <button
-                  type="button"
-                  onClick={handleMicrosoftClick}
-                  disabled={azureBusy}
-                  data-testid="microsoft-login-button"
-                  className="w-full py-3.5 border border-zinc-200 hover:border-zinc-300 bg-white text-zinc-800 font-semibold rounded-xl transition-colors flex items-center justify-center gap-3 disabled:opacity-60"
-                >
-                  <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
-                    <rect x="1" y="1" width="9" height="9" fill="#F25022" />
-                    <rect x="11" y="1" width="9" height="9" fill="#7FBA00" />
-                    <rect x="1" y="11" width="9" height="9" fill="#00A4EF" />
-                    <rect x="11" y="11" width="9" height="9" fill="#FFB900" />
-                  </svg>
-                  {azureBusy ? 'Signing inâ€¦' : 'Sign in with Microsoft'}
-                </button>
-              ) : (
-                <div className="space-y-2" data-testid="azure-provider-picker">
-                  <p className="text-xs text-zinc-500 mb-2">Choose your organization</p>
-                  {azureProviders.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => startAzureLogin(p.id)}
-                      className="w-full text-left px-4 py-3 border border-zinc-200 rounded-xl hover:bg-zinc-50 text-sm font-medium text-zinc-800"
-                    >
-                      {p.label}
-                      {p.email_domains?.length ? (
-                        <span className="block text-xs text-zinc-400 font-normal mt-0.5">
-                          {(p.email_domains || []).map((d) => `@${d}`).join(', ')}
-                        </span>
-                      ) : null}
-                    </button>
-                  ))}
+              {googleProviders.length > 0 && (
+                !showGooglePicker ? (
                   <button
                     type="button"
-                    onClick={() => setShowAzurePicker(false)}
-                    className="w-full text-center text-xs text-zinc-400 py-2 hover:text-zinc-600"
+                    onClick={handleGoogleClick}
+                    disabled={googleBusy}
+                    data-testid="google-login-button"
+                    className="w-full py-3.5 mb-3 border border-zinc-200 hover:border-zinc-300 bg-white text-zinc-800 font-semibold rounded-xl transition-colors flex items-center justify-center gap-3 disabled:opacity-60"
                   >
-                    Cancel
+                    <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+                      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.56 2.95-2.23 5.45-4.76 7.11l7.73 6.01C42.44 39.68 46.98 32.75 46.98 24.55z"/>
+                      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6.01c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                    </svg>
+                    {googleBusy ? 'Signing in…' : 'Sign in with Google'}
                   </button>
-                </div>
+                ) : (
+                  <div className="space-y-2 mb-3" data-testid="google-provider-picker">
+                    <p className="text-xs text-zinc-500 mb-2">Choose your Google organization</p>
+                    {googleProviders.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => startGoogleLogin(p.id)}
+                        className="w-full text-left px-4 py-3 border border-zinc-200 rounded-xl hover:bg-zinc-50 text-sm font-medium text-zinc-800"
+                      >
+                        {p.label}
+                        {p.email_domains?.length ? (
+                          <span className="block text-xs text-zinc-400 font-normal mt-0.5">
+                            {(p.email_domains || []).map((d) => `@${d}`).join(', ')}
+                          </span>
+                        ) : null}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setShowGooglePicker(false)}
+                      className="w-full text-center text-xs text-zinc-400 py-2 hover:text-zinc-600"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )
+              )}
+
+              {azureProviders.length > 0 && (
+                !showAzurePicker ? (
+                  <button
+                    type="button"
+                    onClick={handleMicrosoftClick}
+                    disabled={azureBusy}
+                    data-testid="microsoft-login-button"
+                    className="w-full py-3.5 border border-zinc-200 hover:border-zinc-300 bg-white text-zinc-800 font-semibold rounded-xl transition-colors flex items-center justify-center gap-3 disabled:opacity-60"
+                  >
+                    <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
+                      <rect x="1" y="1" width="9" height="9" fill="#F25022" />
+                      <rect x="11" y="1" width="9" height="9" fill="#7FBA00" />
+                      <rect x="1" y="11" width="9" height="9" fill="#00A4EF" />
+                      <rect x="11" y="11" width="9" height="9" fill="#FFB900" />
+                    </svg>
+                    {azureBusy ? 'Signing in…' : 'Sign in with Microsoft'}
+                  </button>
+                ) : (
+                  <div className="space-y-2" data-testid="azure-provider-picker">
+                    <p className="text-xs text-zinc-500 mb-2">Choose your organization</p>
+                    {azureProviders.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => startAzureLogin(p.id)}
+                        className="w-full text-left px-4 py-3 border border-zinc-200 rounded-xl hover:bg-zinc-50 text-sm font-medium text-zinc-800"
+                      >
+                        {p.label}
+                        {p.email_domains?.length ? (
+                          <span className="block text-xs text-zinc-400 font-normal mt-0.5">
+                            {(p.email_domains || []).map((d) => `@${d}`).join(', ')}
+                          </span>
+                        ) : null}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setShowAzurePicker(false)}
+                      className="w-full text-center text-xs text-zinc-400 py-2 hover:text-zinc-600"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )
               )}
             </div>
           )}

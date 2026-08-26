@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RefexOne — Google Workspace OAuth Setup</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #1e293b; }
+    h1 { font-size: 1.5rem; }
+    h2 { font-size: 1.1rem; margin-top: 1.5rem; }
+    code, pre { background: #f1f5f9; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+    pre { padding: 1rem; overflow-x: auto; }
+    ol { padding-left: 1.25rem; }
+    li { margin: 0.5rem 0; }
+    .note { background: #fef3c7; border: 1px solid #fcd34d; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>Google Workspace OAuth for RefexOne</h1>
+  <p>Give this page to your Google Workspace / Google Cloud admin.</p>
+
+  <div class="note">
+    <strong>Important:</strong> RefexOne does not store Google passwords. Users sign in with Google;
+    their RefexOne account must already exist (HR sync or admin-created).
+  </div>
+
+  <h2>1. Google Cloud Console</h2>
+  <ol>
+    <li>Open <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a>.</li>
+    <li>Create or select a project for RefexOne.</li>
+    <li>Go to <strong>APIs &amp; Services → OAuth consent screen</strong> → Internal (Workspace) or External.</li>
+    <li>Go to <strong>Credentials → Create credentials → OAuth client ID</strong> → <strong>Web application</strong>.</li>
+  </ol>
+
+  <h2>2. Redirect URI (required)</h2>
+  <p>Add this authorized redirect URI exactly:</p>
+  <pre>https://refexone.com/api/auth/google/callback</pre>
+  <p>For local dev:</p>
+  <pre>http://localhost:8000/api/auth/google/callback</pre>
+
+  <h2>3. Scopes</h2>
+  <p>RefexOne uses OpenID Connect scopes only:</p>
+  <ul>
+    <li><code>openid</code></li>
+    <li><code>profile</code></li>
+    <li><code>email</code></li>
+  </ul>
+
+  <h2>4. Return to RefexOne admin</h2>
+  <p>In RefexOne → <strong>Google Login</strong> (<code>/settings/google</code>), add:</p>
+  <ul>
+    <li>Label (e.g. Refex Google Workspace)</li>
+    <li>OAuth Client ID</li>
+    <li>OAuth Client Secret</li>
+    <li>Email domains: <code>refex.co.in</code></li>
+    <li>Hosted domain (optional): <code>refex.co.in</code></li>
+  </ul>
+
+  <h2>5. Test</h2>
+  <ol>
+    <li>Ensure the user exists in RefexOne with the same Google email.</li>
+    <li>Open RefexOne login → <strong>Sign in with Google</strong>.</li>
+  </ol>
+</body>
+</html>
