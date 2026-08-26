@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>RefexOne — Google Workspace OAuth Setup</title>
+  <title>RefexOne — Google Workspace OAuth &amp; User Sync Setup</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #1e293b; }
     h1 { font-size: 1.5rem; }
@@ -13,18 +13,19 @@
     ol { padding-left: 1.25rem; }
     li { margin: 0.5rem 0; }
     .note { background: #fef3c7; border: 1px solid #fcd34d; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.9rem; }
+    .ok { background: #ecfdf5; border: 1px solid #6ee7b7; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.9rem; }
   </style>
 </head>
 <body>
-  <h1>Google Workspace OAuth for RefexOne</h1>
+  <h1>Google Workspace for RefexOne</h1>
   <p>Give this page to your Google Workspace / Google Cloud admin.</p>
 
   <div class="note">
-    <strong>Important:</strong> RefexOne does not store Google passwords. Users sign in with Google;
-    their RefexOne account must already exist (HR sync or admin-created).
+    <strong>Important:</strong> RefexOne does not store Google passwords. Users sign in with Google.
+    Use <strong>Sync users</strong> (like Azure AD sync) to create/update RefexOne accounts from the Workspace directory.
   </div>
 
-  <h2>1. Google Cloud Console</h2>
+  <h2>1. Google Cloud Console — OAuth (login)</h2>
   <ol>
     <li>Open <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a>.</li>
     <li>Create or select a project for RefexOne.</li>
@@ -32,34 +33,54 @@
     <li>Go to <strong>Credentials → Create credentials → OAuth client ID</strong> → <strong>Web application</strong>.</li>
   </ol>
 
-  <h2>2. Redirect URI (required)</h2>
+  <h2>2. Redirect URI (required for login)</h2>
   <p>Add this authorized redirect URI exactly:</p>
   <pre>https://refexone.com/api/auth/google/callback</pre>
   <p>For local dev:</p>
   <pre>http://localhost:8000/api/auth/google/callback</pre>
 
-  <h2>3. Scopes</h2>
-  <p>RefexOne uses OpenID Connect scopes only:</p>
+  <h2>3. Login scopes</h2>
   <ul>
     <li><code>openid</code></li>
     <li><code>profile</code></li>
     <li><code>email</code></li>
   </ul>
 
-  <h2>4. Return to RefexOne admin</h2>
+  <h2>4. User sync (Admin SDK — like Azure AD Graph sync)</h2>
+  <div class="ok">
+    Sync needs a <strong>service account</strong> with <strong>domain-wide delegation</strong>.
+    The OAuth Web client alone cannot list all Workspace users.
+  </div>
+  <ol>
+    <li>In Google Cloud Console, enable <strong>Admin SDK API</strong>.</li>
+    <li>Create a <strong>Service account</strong> → Keys → Add key → JSON → download the key file.</li>
+    <li>Note the service account <strong>Client ID</strong> (unique numeric ID, not the OAuth client).</li>
+    <li>In <a href="https://admin.google.com/" target="_blank" rel="noopener">Google Workspace Admin</a> →
+      <strong>Security → Access and data control → API controls → Domain-wide delegation</strong> →
+      Add new:
+      <ul>
+        <li>Client ID = service account Client ID</li>
+        <li>OAuth scopes =
+          <code>https://www.googleapis.com/auth/admin.directory.user.readonly</code></li>
+      </ul>
+    </li>
+  </ol>
+
+  <h2>5. Return to RefexOne admin</h2>
   <p>In RefexOne → <strong>Google Login</strong> (<code>/settings/google</code>), add:</p>
   <ul>
     <li>Label (e.g. Refex Google Workspace)</li>
-    <li>OAuth Client ID</li>
-    <li>OAuth Client Secret</li>
+    <li>OAuth Client ID + Client Secret (login)</li>
     <li>Email domains: <code>refex.co.in</code></li>
     <li>Hosted domain (optional): <code>refex.co.in</code></li>
+    <li><strong>Sync admin email</strong>: a Workspace admin (e.g. <code>admin@refex.co.in</code>)</li>
+    <li><strong>Service account JSON</strong>: paste the full downloaded key JSON</li>
   </ul>
 
-  <h2>5. Test</h2>
+  <h2>6. Sync &amp; test</h2>
   <ol>
-    <li>Ensure the user exists in RefexOne with the same Google email.</li>
-    <li>Open RefexOne login → <strong>Sign in with Google</strong>.</li>
+    <li>Click <strong>Sync users</strong> on the Google config row (creates/updates RefexOne users).</li>
+    <li>Open RefexOne login → <strong>Sign in with Google</strong> for a synced user.</li>
   </ol>
 </body>
 </html>

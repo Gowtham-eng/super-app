@@ -2,12 +2,15 @@
 Google Workspace / Google OAuth login for RefexOne (OIDC + PKCE).
 
 Mirrors the Azure AD multi-config pattern: one OAuth client per company/domain set.
+User sync uses Admin Directory API via service account + domain-wide delegation.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import secrets
+import time
 import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -23,10 +26,13 @@ logger = logging.getLogger("google_oauth")
 
 COLLECTION = "google_oauth_configs"
 OAUTH_STATES = "google_oauth_states"
+SYNC_LOGS = "google_oauth_sync_logs"
 DEFAULT_SCOPES = ["openid", "profile", "email"]
+DIRECTORY_SCOPE = "https://www.googleapis.com/auth/admin.directory.user.readonly"
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+DIRECTORY_USERS_URL = "https://admin.googleapis.com/admin/directory/v1/users"
 
 
 class GoogleOAuthConfigCreate(BaseModel):
@@ -38,6 +44,8 @@ class GoogleOAuthConfigCreate(BaseModel):
     redirect_uri: Optional[str] = None
     scopes: List[str] = Field(default_factory=lambda: list(DEFAULT_SCOPES))
     status: str = "active"  # active | disabled
+    sync_admin_email: Optional[str] = None
+    service_account_json: Optional[str] = None
 
 
 class GoogleOAuthConfigUpdate(BaseModel):
@@ -49,6 +57,8 @@ class GoogleOAuthConfigUpdate(BaseModel):
     redirect_uri: Optional[str] = None
     scopes: Optional[List[str]] = None
     status: Optional[str] = None
+    sync_admin_email: Optional[str] = None
+    service_account_json: Optional[str] = None
 
 
 def _normalize_domains(domains: Optional[List[str]]) -> List[str]:
@@ -87,8 +97,33 @@ def _sanitize(doc: dict) -> dict:
         return doc
     out = {k: v for k, v in doc.items() if k != "_id"}
     secret = out.pop("client_secret", None)
+    sa = out.pop("service_account_json", None)
     out["has_secret"] = bool(secret)
+    out["has_service_account"] = bool(sa)
+    if out.get("sync_admin_email"):
+        out["sync_admin_email"] = out["sync_admin_email"]
     return out
+
+
+def _parse_service_account(raw) -> dict:
+    if not raw:
+        raise HTTPException(
+            status_code=400,
+            detail="Service account JSON is required for user sync",
+        )
+    if isinstance(raw, dict):
+        sa = raw
+    else:
+        try:
+            sa = json.loads(raw)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid service account JSON: {e}") from e
+    if not sa.get("client_email") or not sa.get("private_key"):
+        raise HTTPException(
+            status_code=400,
+            detail="Service account JSON must include client_email and private_key",
+        )
+    return sa
 
 
 def _pkce_pair():
@@ -139,14 +174,24 @@ def register_google_oauth_routes(
     async def list_google_oauth_configs(user: dict = Depends(get_current_user)):
         _require_admin(user)
         docs = await db[COLLECTION].find(
-            {"org_id": user["org_id"]}, {"_id": 0, "client_secret": 0}
+            {"org_id": user["org_id"]},
+            {"_id": 0, "client_secret": 0, "service_account_json": 0},
         ).sort("created_at", -1).to_list(200)
         full = await db[COLLECTION].find(
-            {"org_id": user["org_id"]}, {"_id": 0, "id": 1, "client_secret": 1}
+            {"org_id": user["org_id"]},
+            {"_id": 0, "id": 1, "client_secret": 1, "service_account_json": 1},
         ).to_list(200)
-        secret_map = {d["id"]: bool(d.get("client_secret")) for d in full}
+        flags = {
+            d["id"]: {
+                "has_secret": bool(d.get("client_secret")),
+                "has_service_account": bool(d.get("service_account_json")),
+            }
+            for d in full
+        }
         for d in docs:
-            d["has_secret"] = secret_map.get(d["id"], False)
+            f = flags.get(d["id"], {})
+            d["has_secret"] = f.get("has_secret", False)
+            d["has_service_account"] = f.get("has_service_account", False)
         return docs
 
     @api_router.post("/google-oauth/configs")
@@ -161,6 +206,12 @@ def register_google_oauth_routes(
 
         redirect = (body.redirect_uri or "").strip() or _default_redirect(public_url, request)
         hosted = (body.hosted_domain or "").strip().lower().lstrip("@") or None
+        sync_admin = normalize_email(body.sync_admin_email or "") or None
+        sa_json = None
+        if body.service_account_json and body.service_account_json.strip():
+            # Validate shape on create
+            _parse_service_account(body.service_account_json.strip())
+            sa_json = body.service_account_json.strip()
         config_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         doc = {
@@ -174,6 +225,8 @@ def register_google_oauth_routes(
             "redirect_uri": redirect,
             "scopes": body.scopes or list(DEFAULT_SCOPES),
             "status": body.status if body.status in ("active", "disabled") else "active",
+            "sync_admin_email": sync_admin,
+            "service_account_json": sa_json,
             "created_at": now,
             "updated_at": now,
             "created_by": user.get("email"),
@@ -232,6 +285,12 @@ def register_google_oauth_routes(
                 domains = update.get("email_domains", existing.get("email_domains") or [])
                 await _domain_conflict(user["org_id"], domains, exclude_id=config_id)
             update["status"] = body.status
+        if body.sync_admin_email is not None:
+            sync_admin = normalize_email(body.sync_admin_email or "") or None
+            update["sync_admin_email"] = sync_admin
+        if body.service_account_json is not None and body.service_account_json.strip():
+            _parse_service_account(body.service_account_json.strip())
+            update["service_account_json"] = body.service_account_json.strip()
 
         await db[COLLECTION].update_one(
             {"id": config_id, "org_id": user["org_id"]}, {"$set": update}
@@ -243,7 +302,13 @@ def register_google_oauth_routes(
             user["id"],
             user.get("email"),
             config_id,
-            {"fields": [k for k in update.keys() if k not in ("updated_at", "client_secret")]},
+            {
+                "fields": [
+                    k
+                    for k in update.keys()
+                    if k not in ("updated_at", "client_secret", "service_account_json")
+                ]
+            },
             request.client.host if request.client else None,
         )
         doc = await db[COLLECTION].find_one({"id": config_id}, {"_id": 0})
@@ -506,3 +571,293 @@ def register_google_oauth_routes(
             f"{login_url}?google_token={urllib.parse.quote(token)}",
             status_code=302,
         )
+
+    # ---------- Pull users from Google Admin Directory ----------
+
+    async def _directory_access_token(cfg: dict) -> str:
+        admin = (cfg.get("sync_admin_email") or "").strip()
+        if not admin:
+            raise HTTPException(
+                status_code=400,
+                detail="Set Sync admin email (Workspace admin to impersonate) on this Google config",
+            )
+        sa = _parse_service_account(cfg.get("service_account_json"))
+        now = int(time.time())
+        assertion = {
+            "iss": sa["client_email"],
+            "scope": DIRECTORY_SCOPE,
+            "aud": GOOGLE_TOKEN_URL,
+            "iat": now,
+            "exp": now + 3600,
+            "sub": admin,
+        }
+        try:
+            signed = pyjwt.encode(assertion, sa["private_key"], algorithm="RS256")
+            if isinstance(signed, bytes):
+                signed = signed.decode("ascii")
+        except Exception as e:
+            logger.exception("Google SA JWT sign failed: %s", e)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to sign service account JWT: {e}",
+            ) from e
+
+        data = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": signed,
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.post(GOOGLE_TOKEN_URL, data=data)
+        if res.status_code != 200:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Failed to get Directory token. Enable Admin SDK API, domain-wide "
+                    "delegation for the service account Client ID with scope "
+                    f"{DIRECTORY_SCOPE}, and use a Workspace admin email. "
+                    f"Google said: {res.text[:240]}"
+                ),
+            )
+        return res.json()["access_token"]
+
+    async def _directory_list_users(access_token: str, cfg: dict) -> List[dict]:
+        headers = {"Authorization": f"Bearer {access_token}"}
+        domain = (
+            (cfg.get("hosted_domain") or "").strip().lower().lstrip("@")
+            or ((cfg.get("email_domains") or [None])[0])
+        )
+        params: Dict[str, Any] = {"maxResults": 500, "orderBy": "email"}
+        if domain:
+            params["domain"] = domain
+        else:
+            params["customer"] = "my_customer"
+
+        users: List[dict] = []
+        page_token = None
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            while True:
+                q = dict(params)
+                if page_token:
+                    q["pageToken"] = page_token
+                res = await client.get(DIRECTORY_USERS_URL, headers=headers, params=q)
+                if res.status_code != 200:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Directory users list failed: {res.text[:300]}",
+                    )
+                payload = res.json()
+                users.extend(payload.get("users") or [])
+                page_token = payload.get("nextPageToken")
+                if not page_token:
+                    break
+        return users
+
+    def _pick_google_email(guser: dict) -> str:
+        primary = (guser.get("primaryEmail") or "").strip().lower()
+        if primary and "@" in primary:
+            return primary
+        for item in guser.get("emails") or []:
+            addr = (item.get("address") or "").strip().lower()
+            if addr and "@" in addr:
+                return addr
+        return ""
+
+    @api_router.post("/google-oauth/configs/{config_id}/sync-users")
+    async def sync_users_from_google_workspace(
+        config_id: str,
+        request: Request,
+        user: dict = Depends(get_current_user),
+    ):
+        """
+        Pull users from Google Workspace Admin Directory into RefexOne.
+        Requires service account JSON + sync_admin_email with domain-wide
+        delegation for admin.directory.user.readonly.
+        """
+        _require_admin(user)
+        cfg = await db[COLLECTION].find_one(
+            {"id": config_id, "org_id": user["org_id"]}, {"_id": 0}
+        )
+        if not cfg:
+            raise HTTPException(status_code=404, detail="Google OAuth config not found")
+        if cfg.get("status") != "active":
+            raise HTTPException(status_code=400, detail="Enable this Google config first")
+
+        import bcrypt as _bcrypt
+        import os as _os
+        import re as _re
+
+        result = {
+            "config_id": config_id,
+            "label": cfg.get("label"),
+            "fetched": 0,
+            "created": 0,
+            "updated": 0,
+            "disabled": 0,
+            "skipped": 0,
+            "errors": [],
+        }
+
+        try:
+            access_token = await _directory_access_token(cfg)
+            directory_users = await _directory_list_users(access_token, cfg)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Google user sync failed: %s", e)
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+        result["fetched"] = len(directory_users)
+        allowed_domains = set(cfg.get("email_domains") or [])
+        default_pw = _os.environ.get("DEFAULT_USER_PASSWORD", "Welcome@2026")
+        password_hash = _bcrypt.hashpw(default_pw.encode(), _bcrypt.gensalt()).decode()
+        now = datetime.now(timezone.utc).isoformat()
+        disable_reason = "Disabled in Google Workspace sync"
+
+        for guser in directory_users:
+            try:
+                email = normalize_email(_pick_google_email(guser))
+                if not email or "@" not in email:
+                    result["skipped"] += 1
+                    continue
+                domain = email.split("@")[-1].lower()
+                if allowed_domains and domain not in allowed_domains:
+                    result["skipped"] += 1
+                    continue
+
+                suspended = bool(guser.get("suspended"))
+                name_info = guser.get("name") or {}
+                given = (name_info.get("givenName") or "").strip()
+                surname = (name_info.get("familyName") or "").strip()
+                display = (name_info.get("fullName") or "").strip()
+                name = display or f"{given} {surname}".strip() or email.split("@")[0]
+                org_unit = (guser.get("orgUnitPath") or "").strip()
+                orgs = guser.get("organizations") or []
+                dept = ""
+                title = ""
+                company = cfg.get("label") or ""
+                if orgs:
+                    primary_org = next((o for o in orgs if o.get("primary")), orgs[0])
+                    dept = (primary_org.get("department") or "")[:200]
+                    title = (primary_org.get("title") or "")[:200]
+                    company = (primary_org.get("name") or company)[:200]
+
+                fields = {
+                    "name": name,
+                    "first_name": given or (name.split(" ", 1)[0] if name else ""),
+                    "last_name": surname
+                    or (name.split(" ", 1)[1] if name and " " in name else ""),
+                    "designation": title,
+                    "department": dept,
+                    "company": company,
+                    "location": org_unit[:200] if org_unit else "",
+                    "google_user_id": guser.get("id"),
+                    "google_sub": guser.get("id"),
+                    "google_config_id": cfg["id"],
+                    "google_hd": cfg.get("hosted_domain") or domain,
+                    "source": "google_workspace",
+                    "google_synced_at": now,
+                }
+
+                existing = await db.users.find_one(
+                    {"email": email, "org_id": user["org_id"]}, {"_id": 0}
+                )
+                if not existing:
+                    existing = await db.users.find_one(
+                        {
+                            "email": {"$regex": f"^{_re.escape(email)}$", "$options": "i"},
+                            "org_id": user["org_id"],
+                        },
+                        {"_id": 0},
+                    )
+                if not existing and guser.get("id"):
+                    existing = await db.users.find_one(
+                        {
+                            "org_id": user["org_id"],
+                            "google_user_id": guser.get("id"),
+                            "google_config_id": cfg["id"],
+                        },
+                        {"_id": 0},
+                    )
+
+                if existing:
+                    update = dict(fields)
+                    update["email"] = email
+                    if suspended and existing.get("status") != "disabled":
+                        update["status"] = "disabled"
+                        update["disabled_at"] = now
+                        update["disabled_reason"] = disable_reason
+                        result["disabled"] += 1
+                    elif (
+                        not suspended
+                        and existing.get("status") == "disabled"
+                        and (existing.get("disabled_reason") or "").startswith(
+                            "Disabled in Google Workspace"
+                        )
+                    ):
+                        update["status"] = "active"
+                        update["disabled_at"] = None
+                        update["disabled_reason"] = None
+                    await db.users.update_one({"id": existing["id"]}, {"$set": update})
+                    result["updated"] += 1
+                else:
+                    if suspended:
+                        result["skipped"] += 1
+                        continue
+                    new_user = {
+                        "id": str(uuid.uuid4()),
+                        "email": email,
+                        "password": password_hash,
+                        "role": "user",
+                        "org_id": user["org_id"],
+                        "group_ids": [],
+                        "role_ids": [],
+                        "status": "active",
+                        "created_at": now,
+                        **fields,
+                    }
+                    await db.users.insert_one(new_user)
+                    result["created"] += 1
+            except Exception as e:
+                result["errors"].append(
+                    f"{guser.get('primaryEmail') or guser.get('id')}: {e}"
+                )
+                if len(result["errors"]) > 50:
+                    result["errors"].append("… truncated")
+                    break
+
+        await db[SYNC_LOGS].insert_one(
+            {
+                "id": str(uuid.uuid4()),
+                "org_id": user["org_id"],
+                "config_id": config_id,
+                "label": cfg.get("label"),
+                "triggered_by": user.get("email"),
+                "timestamp": now,
+                "result": {k: v for k, v in result.items() if k != "errors"}
+                | {"error_count": len(result["errors"])},
+            }
+        )
+        await log_audit(
+            user["org_id"],
+            "google_users_synced",
+            "google_oauth",
+            user["id"],
+            user.get("email"),
+            config_id,
+            {
+                "created": result["created"],
+                "updated": result["updated"],
+                "disabled": result["disabled"],
+                "fetched": result["fetched"],
+            },
+            request.client.host if request.client else None,
+        )
+        return result
+
+    @api_router.get("/google-oauth/sync-logs")
+    async def list_google_sync_logs(user: dict = Depends(get_current_user)):
+        _require_admin(user)
+        logs = await db[SYNC_LOGS].find(
+            {"org_id": user["org_id"]}, {"_id": 0}
+        ).sort("timestamp", -1).to_list(50)
+        return logs

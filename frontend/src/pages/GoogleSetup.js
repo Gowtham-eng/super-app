@@ -11,6 +11,7 @@ import {
   Pencil,
   Plus,
   Power,
+  RefreshCw,
   Trash2,
   X,
 } from 'lucide-react';
@@ -23,6 +24,8 @@ const emptyForm = () => ({
   hosted_domain: '',
   redirect_uri: '',
   status: 'active',
+  sync_admin_email: '',
+  service_account_json: '',
 });
 
 const Field = ({ label, hint, children, required }) => (
@@ -49,6 +52,8 @@ const GoogleSetup = () => {
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
+  const [syncingId, setSyncingId] = useState(null);
+  const [lastSync, setLastSync] = useState(null);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -90,6 +95,8 @@ const GoogleSetup = () => {
       hosted_domain: cfg.hosted_domain || '',
       redirect_uri: cfg.redirect_uri || meta?.redirect_uri || '',
       status: cfg.status || 'active',
+      sync_admin_email: cfg.sync_admin_email || '',
+      service_account_json: '',
     });
     setEditorOpen(true);
   };
@@ -125,9 +132,13 @@ const GoogleSetup = () => {
         redirect_uri: form.redirect_uri.trim() || meta?.redirect_uri,
         status: form.status,
         scopes: ['openid', 'profile', 'email'],
+        sync_admin_email: form.sync_admin_email.trim() || null,
       };
       if (form.client_secret.trim()) {
         payload.client_secret = form.client_secret.trim();
+      }
+      if (form.service_account_json.trim()) {
+        payload.service_account_json = form.service_account_json.trim();
       }
 
       if (editingId) {
@@ -172,6 +183,33 @@ const GoogleSetup = () => {
     }
   };
 
+  const syncUsers = async (cfg) => {
+    if (
+      !window.confirm(
+        `Pull users from "${cfg.label}" Google Workspace into RefexOne?\n\nRequires Admin SDK + service account with domain-wide delegation (admin.directory.user.readonly).`
+      )
+    ) {
+      return;
+    }
+    setSyncingId(cfg.id);
+    setLastSync(null);
+    try {
+      const res = await axios.post(
+        `${API}/google-oauth/configs/${cfg.id}/sync-users`,
+        {},
+        getAuthHeader()
+      );
+      setLastSync(res.data);
+      toast.success(
+        `${cfg.label}: ${res.data.created || 0} created, ${res.data.updated || 0} updated, ${res.data.disabled || 0} disabled`
+      );
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'User sync failed');
+    } finally {
+      setSyncingId(null);
+    }
+  };
+
   const copy = (text) => {
     navigator.clipboard.writeText(text);
     toast.success('Copied');
@@ -211,9 +249,10 @@ const GoogleSetup = () => {
         <div>
           <p className="text-sm font-medium text-slate-800 mb-1">Google Workspace setup</p>
           <p className="text-xs text-slate-500">
-            Create an OAuth client in Google Cloud Console (Web application). Users must already
-            exist in RefexOne (HR sync or admin-created). Google passwords are never copied —
-            users sign in with Google on the login page.
+            Add <strong>one Google config per Workspace</strong>. Use <strong>Sync users</strong> to pull
+            directory users into RefexOne (like Azure AD sync). Requires Admin SDK API + a service
+            account with domain-wide delegation. Google passwords are never copied — users sign in
+            with Google on the login page.
           </p>
         </div>
         <div className="space-y-2 text-sm">
@@ -243,6 +282,19 @@ const GoogleSetup = () => {
           </div>
         </div>
       </div>
+
+      {lastSync && (
+        <div className="mb-4 p-3 bg-emerald-50 border border-emerald-100 rounded-lg text-sm text-emerald-900">
+          Last sync (<strong>{lastSync.label}</strong>): fetched {lastSync.fetched}, created{' '}
+          {lastSync.created}, updated {lastSync.updated}, disabled {lastSync.disabled}, skipped{' '}
+          {lastSync.skipped}
+          {lastSync.errors?.length ? (
+            <span className="block text-amber-800 mt-1">
+              {lastSync.errors.length} error(s): {lastSync.errors[0]}
+            </span>
+          ) : null}
+        </div>
+      )}
 
       {configs.length === 0 ? (
         <div className="border border-dashed border-slate-200 rounded-xl p-10 text-center">
@@ -279,6 +331,11 @@ const GoogleSetup = () => {
                       Disabled
                     </span>
                   )}
+                  {cfg.has_service_account ? (
+                    <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
+                      Sync ready
+                    </span>
+                  ) : null}
                 </div>
                 <p className="text-xs text-slate-400 font-mono truncate mb-1">
                   Client ID: {cfg.client_id}
@@ -286,9 +343,24 @@ const GoogleSetup = () => {
                 <p className="text-xs text-slate-500">
                   Domains: {(cfg.email_domains || []).map((d) => `@${d}`).join(', ')}
                   {cfg.hosted_domain ? ` · Workspace: @${cfg.hosted_domain}` : ''}
+                  {cfg.sync_admin_email ? ` · Sync admin: ${cfg.sync_admin_email}` : ''}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  title="Pull users from Google Workspace"
+                  onClick={() => syncUsers(cfg)}
+                  disabled={syncingId === cfg.id || cfg.status !== 'active'}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50"
+                >
+                  {syncingId === cfg.id ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <RefreshCw size={14} />
+                  )}
+                  Sync users
+                </button>
                 <button
                   type="button"
                   onClick={() => toggleStatus(cfg)}
@@ -362,7 +434,7 @@ const GoogleSetup = () => {
               <Field
                 label="Email domains"
                 required
-                hint="Comma-separated. Users with these domains can use this Google login."
+                hint="Comma-separated. Users with these domains can use this Google login / sync."
               >
                 <input
                   className={inputClass}
@@ -388,6 +460,33 @@ const GoogleSetup = () => {
                   value={form.redirect_uri}
                   onChange={(e) => setForm({ ...form, redirect_uri: e.target.value })}
                   placeholder={meta?.redirect_uri}
+                />
+              </Field>
+              <Field
+                label="Sync admin email"
+                hint="Workspace admin to impersonate for Directory sync (domain-wide delegation)."
+              >
+                <input
+                  className={inputClass}
+                  value={form.sync_admin_email}
+                  onChange={(e) => setForm({ ...form, sync_admin_email: e.target.value })}
+                  placeholder="admin@refex.co.in"
+                />
+              </Field>
+              <Field
+                label="Service account JSON"
+                hint={
+                  editingId
+                    ? 'Paste full SA key JSON for Sync users. Leave blank to keep existing.'
+                    : 'Paste full service account key JSON (for Sync users / Admin SDK).'
+                }
+              >
+                <textarea
+                  className={`${monoClass} min-h-[120px]`}
+                  value={form.service_account_json}
+                  onChange={(e) => setForm({ ...form, service_account_json: e.target.value })}
+                  placeholder={editingId ? '(unchanged)' : '{ "type": "service_account", ... }'}
+                  spellCheck={false}
                 />
               </Field>
               <Field label="Status">

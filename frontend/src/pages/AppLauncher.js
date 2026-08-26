@@ -197,15 +197,14 @@ const AppLauncher = () => {
   const isSafari = /Safari/i.test(ua) && !/Chrome|CriOS|Chromium|Edg|Android/i.test(ua);
 
   /**
-   * Desktop SAML SSO: open only the ACS complete URL. Module deep-link is handled
-   * by the backend (module_url after ACS) — never timer-navigate the opener window.
+   * Desktop SAML SSO: open ACS complete URL in the shared app tab.
    */
-  const launchDesktopSamlSso = (completeUrl) => {
+  const openSsoWindow = (completeUrl) => {
     if (isSafari) {
       const ssoWindow = window.open('about:blank', DESKTOP_APP_WINDOW);
       if (!ssoWindow) {
         window.location.href = completeUrl;
-        return;
+        return null;
       }
       try {
         ssoWindow.opener = null;
@@ -213,9 +212,83 @@ const AppLauncher = () => {
         // ignore
       }
       ssoWindow.location.href = completeUrl;
-      return;
+      return ssoWindow;
     }
-    openDesktopAppTab(completeUrl);
+    const ssoWindow = window.open(completeUrl, DESKTOP_APP_WINDOW);
+    if (!ssoWindow) {
+      window.location.href = completeUrl;
+      return null;
+    }
+    try {
+      ssoWindow.focus();
+    } catch (e) {
+      // ignore
+    }
+    return ssoWindow;
+  };
+
+  const launchDesktopSamlSso = (completeUrl) => {
+    openSsoWindow(completeUrl);
+  };
+
+  /**
+   * Kissflow desktop modules (Expense / Travel / Project Tracker):
+   * 1) Top-level ACS POST (first-party Kissflow cookies — no iframe)
+   * 2) Wait until the SSO tab leaves our /complete page (cross-origin = ACS done)
+   * 3) Navigate THAT same tab to home_url so user lands in the module, not Kissflow home
+   * Do not use a blind short timer (that caused /view/login).
+   */
+  const launchDesktopKissflowModuleSso = (completeUrl, homeUrl) => {
+    const ssoWindow = openSsoWindow(completeUrl);
+    if (!homeUrl || !ssoWindow) return;
+
+    const started = Date.now();
+    let navigated = false;
+    const goModule = () => {
+      if (navigated) return;
+      navigated = true;
+      try {
+        if (!ssoWindow.closed) {
+          ssoWindow.location.href = homeUrl;
+          return;
+        }
+      } catch (e) {
+        // fall through
+      }
+      openDesktopAppTab(homeUrl);
+    };
+
+    const poll = setInterval(() => {
+      if (navigated || ssoWindow.closed) {
+        clearInterval(poll);
+        return;
+      }
+      try {
+        const href = ssoWindow.location.href || '';
+        if (!href || href === 'about:blank') return;
+        if (/\/api\/saml\/[^/]+\/complete/i.test(href)) return;
+        if (/kissflow\.com/i.test(href) && !/\/view\/login/i.test(href)) {
+          clearInterval(poll);
+          setTimeout(goModule, 400);
+          return;
+        }
+      } catch (e) {
+        // SecurityError: tab is on Kissflow after ACS — cookies should be set
+        if (Date.now() - started >= 1000) {
+          clearInterval(poll);
+          setTimeout(goModule, 600);
+        }
+      }
+      if (Date.now() - started > 15000) {
+        clearInterval(poll);
+        goModule();
+      }
+    }, 250);
+  };
+
+  const isKissflowApp = (app) => {
+    const blob = `${app?.name || ''} ${app?.description || ''} ${app?.home_url || ''} ${app?.acs_url || ''}`.toLowerCase();
+    return /kissflow/.test(blob);
   };
 
   const buildSamlCompleteUrl = (appId, token, homeUrl) => {
@@ -277,6 +350,12 @@ const AppLauncher = () => {
           ? `${completeUrl}&mobile_module=${encodeURIComponent(app.home_url)}`
           : completeUrl;
         launchUrlAfterKissflowClear(targetUrl);
+      } else if (isKissflowApp(app) && app.home_url) {
+        // ACS first, then deep-link to Expense/Travel/etc. in the same tab
+        launchDesktopKissflowModuleSso(
+          buildSamlCompleteUrl(app.id, token, null),
+          app.home_url
+        );
       } else {
         launchDesktopSamlSso(buildSamlCompleteUrl(app.id, token, app.home_url));
       }
@@ -361,8 +440,14 @@ const AppLauncher = () => {
           ? `${completeUrl}&mobile_module=${encodeURIComponent(app.home_url)}`
           : completeUrl;
         launchUrlAfterKissflowClear(targetUrl);
+      } else if (isKissflowApp(app) && app.home_url) {
+        // Desktop Kissflow modules: ACS then navigate to that app's home_url
+        launchDesktopKissflowModuleSso(
+          buildSamlCompleteUrl(app.id, token, null),
+          app.home_url
+        );
       } else {
-        // Desktop: ACS only; module_url handled post-ACS by backend (no opener timer)
+        // Adrenalin / other SAML: ACS only (no module deep-link)
         launchDesktopSamlSso(buildSamlCompleteUrl(app.id, token, app.home_url));
       }
     } else if (app.type === 'oidc') {
