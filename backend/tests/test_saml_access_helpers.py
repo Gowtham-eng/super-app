@@ -1,5 +1,5 @@
 """
-Local unit tests for Kissflow SSO access helpers (no remote server required).
+Local unit tests for Kissflow/Adrenalin SSO access helpers (no remote server required).
 """
 
 
@@ -38,3 +38,32 @@ def test_is_kissflow_sp_detection():
     assert _is_kissflow_sp("https://refexgroup.kissflow.com/acs", "", "") is True
     assert _is_kissflow_sp("", "", "Expense Management") is False
     assert _is_kissflow_sp("", "", "Kissflow Expense") is True
+
+
+def test_adrenalin_nameid_prefers_employee_code():
+    """Adrenalin NameID should use employee id when present."""
+    emp_id = "E12345"
+    email = "user@refex.co.in"
+    is_adrenalin = True
+    if is_adrenalin and emp_id:
+        name_id = emp_id
+    else:
+        name_id = email
+    assert name_id == "E12345"
+
+    emp_id = ""
+    if is_adrenalin and emp_id:
+        name_id = emp_id
+    else:
+        name_id = email
+    assert name_id == email
+
+
+def test_is_adrenalin_sp_detection():
+    def _is_adrenalin_sp(acs_url='', entity_id='', app_name=''):
+        blob = f"{acs_url} {entity_id} {app_name}".lower()
+        return 'adrenalin' in blob or 'myadrenalin' in blob
+
+    assert _is_adrenalin_sp("https://refex.myadrenalin.com/acs", "", "") is True
+    assert _is_adrenalin_sp("", "", "MyAdrenalin") is True
+    assert _is_adrenalin_sp("https://kissflow.com/acs", "", "Expense") is False

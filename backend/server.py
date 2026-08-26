@@ -1637,15 +1637,31 @@ async def saml_complete_sso(
     assertion_id = f"_{''.join(str(uuid_module.uuid4()).split('-'))}"
     
     acs_url = app.get('acs_url', '')
-    name_id = (user.get('email') or '').strip()
-    name_id_format = app.get('name_id_format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress')
-    if not name_id or '@' not in name_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Your RefexOne account has no valid email for SSO. Contact your administrator.",
-        )
+    email = (user.get('email') or '').strip()
+    emp_id = (user.get('adrenalin_employee_id') or '').strip()
+    is_adrenalin = _is_adrenalin_sp(acs_url, app.get('entity_id', ''), app.get('name', ''))
 
-    is_kissflow = _is_kissflow_sp(acs_url, app.get('entity_id', ''), app.get('name', ''))
+    # Kissflow: NameID = email. Adrenalin: prefer EmployeeCode (HRMS login key), else email.
+    name_id_format = app.get(
+        'name_id_format',
+        'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
+    )
+    if is_adrenalin and emp_id:
+        name_id = emp_id
+        if 'emailaddress' in (name_id_format or '').lower():
+            name_id_format = 'urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified'
+    else:
+        name_id = email
+        if not name_id or '@' not in name_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Your RefexOne account has no valid email for SSO. Contact your administrator.",
+            )
+        if is_adrenalin and not emp_id:
+            logging.warning(
+                "Adrenalin SSO for %s without adrenalin_employee_id — using email NameID only",
+                email,
+            )
     
     # Determine issuer, cert, key - if this app shares entity_id + acs_url with another app,
     # use the original (parent) app's issuer/cert/key so the SP can validate our response
@@ -1935,67 +1951,19 @@ diag.innerHTML = lines.join("<br>");
 </body>
 </html>'''
             else:
-                # DESKTOP: Top-level ACS POST (first-party cookies). When module_url is set,
-                # chain a same-window navigation to the module only after the ACS iframe
-                # reports load — avoids the opener timer race. Safari ITP often blocks
-                # third-party iframe cookies, so Safari uses top-level POST only.
-                ua = (request.headers.get('user-agent') or '').lower()
-                is_safari = (
-                    'safari' in ua
-                    and 'chrome' not in ua
-                    and 'crios' not in ua
-                    and 'chromium' not in ua
-                    and 'edg/' not in ua
-                    and 'android' not in ua
-                )
+                # DESKTOP: Always top-level ACS POST so Kissflow can set first-party
+                # session cookies. Do NOT POST ACS in an iframe — Chrome blocks those
+                # cookies as third-party, then any follow-up navigation to module_url
+                # hits https://…kissflow.com/view/login.
+                # Module deep-link: Kissflow rejects IdP RelayState; after ACS the SP
+                # lands on its default home. sessionStorage keeps module_url for
+                # clients that can continue (native); desktop relies on authenticated
+                # Kissflow session from this top-level POST.
                 module_target_js = (
                     module_target.replace('\\', '\\\\').replace('"', '\\"').replace('<', '\\u003c')
                     if module_target else ''
                 )
-                if module_target and not is_safari and not sp_relay:
-                    html_content = f'''<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Signing in to {escape(app.get('name', 'Application'))}...</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #f9fafb; }}
-        .loader {{ text-align: center; }}
-        .spinner {{ width: 36px; height: 36px; border: 3px solid #e2e8f0; border-top-color: #10b981; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }}
-        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-        p {{ color: #64748b; font-size: 14px; }}
-        iframe {{ position: absolute; width: 0; height: 0; border: 0; }}
-    </style>
-</head>
-<body>
-    <div class="loader">
-        <div class="spinner"></div>
-        <p>Signing in to {escape(app.get('name', 'Application'))}...</p>
-    </div>
-    <iframe name="samlAcsFrame" title="SAML ACS"></iframe>
-    <form id="samlForm" method="POST" action="{escape(acs_url)}" target="samlAcsFrame">
-        <input type="hidden" name="SAMLResponse" id="samlResponse"/>
-    </form>
-    <script>
-        var moduleUrl = "{module_target_js}";
-        var done = false;
-        function goModule() {{
-            if (done || !moduleUrl) return;
-            done = true;
-            window.location.replace(moduleUrl);
-        }}
-        var frame = document.getElementsByName('samlAcsFrame')[0];
-        frame.onload = function() {{ setTimeout(goModule, 500); }};
-        // Fallback if ACS response never fires onload (opaque / blocked)
-        setTimeout(goModule, 6000);
-        document.getElementById('samlResponse').value = "{saml_response_b64}";
-        document.getElementById('samlForm').submit();
-    </script>
-</body>
-</html>'''
-                else:
-                    # Safari / SP RelayState / no module: pure top-level ACS (reliable session)
-                    html_content = f'''<!DOCTYPE html>
+                html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">

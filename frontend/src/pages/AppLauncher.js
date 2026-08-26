@@ -232,6 +232,13 @@ const AppLauncher = () => {
     toast.message('Kissflow account may not be synced. If login fails, contact IT.', { duration: 5000 });
   };
 
+  const warnIfAdrenalinIdentityMissing = (app) => {
+    const blob = `${app?.name || ''} ${app?.description || ''} ${app?.home_url || ''} ${app?.acs_url || ''}`.toLowerCase();
+    if (!/adrenalin|myadrenalin/.test(blob)) return;
+    if (user?.adrenalin_employee_id) return;
+    toast.message('Employee ID missing for Adrenalin SSO. If login fails, contact HR/IT.', { duration: 6000 });
+  };
+
   /** Find a SAML/Kissflow app to SSO into when the ITSM tile itself is the virtual in-app tile. */
   const resolveKissflowLaunchApp = (tappedApp) => {
     if (tappedApp?.type === 'saml' || tappedApp?.home_url) return tappedApp;
@@ -261,6 +268,7 @@ const AppLauncher = () => {
 
     if (app.type === 'saml' && token) {
       warnIfKissflowIdentityMissing(app);
+      warnIfAdrenalinIdentityMissing(app);
       const mobileFlow = isCapacitor || (isPWA && isMobile);
 
       if (mobileFlow) {
@@ -343,6 +351,7 @@ const AppLauncher = () => {
 
     if (app.type === 'saml' && token) {
       warnIfKissflowIdentityMissing(app);
+      warnIfAdrenalinIdentityMissing(app);
       const mobileFlow = isCapacitor || (isPWA && isMobile);
 
       if (mobileFlow) {

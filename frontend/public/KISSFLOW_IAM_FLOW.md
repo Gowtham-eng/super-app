@@ -126,7 +126,7 @@ Step 6: Backend signs the assertion (RSA-SHA256). Signing failure → HTTP 500 (
             |
 Step 7: Backend returns HTML with auto-submit form to Kissflow ACS
             - No IdP RelayState for module deep-links (Kissflow rejects non-SP RelayState)
-            - Desktop + module_url: ACS iframe then navigate to module_url after load
+            - Desktop: top-level ACS POST only (iframe ACS blocked by Chrome cookies → Kissflow login)
             - Safari / no module: top-level ACS POST only
             - Mobile + mobile_module: top-level ACS + native setPendingModule
             |
