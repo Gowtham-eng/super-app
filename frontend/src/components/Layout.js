@@ -29,7 +29,8 @@ import {
   EyeOff,
   Download,
   Headphones,
-  Cloud
+  Cloud,
+  Mail
 } from 'lucide-react';
 
 const REFEX_LOGO = '/refexone-logo.png';
@@ -92,6 +93,7 @@ const Layout = ({ children }) => {
         { path: '/scim', label: 'SCIM Setup', icon: KeyRound },
         { path: '/itsm-setup', label: 'ITSM Setup', icon: Headphones },
         { path: '/settings/azure-ad', label: 'Azure AD Login', icon: Cloud },
+        { path: '/settings/google', label: 'Google Login', icon: Mail },
         { path: '/settings/app-update', label: 'App Updates', icon: Download },
         { path: '/settings', label: 'Settings', icon: Settings },
       ]

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { launchUrlAfterKissflowClear } from '../utils/nativeSession';
@@ -125,8 +125,9 @@ const CATEGORY_LABEL = {
 };
 
 const AppLauncher = () => {
-  const { API, getAuthHeader, user } = useAuth();
+  const { API, getAuthHeader, user, logout } = useAuth();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [apps, setApps] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -140,6 +141,28 @@ const AppLauncher = () => {
     const t = setInterval(() => setNow(new Date()), 30000); // refresh every 30s
     return () => clearInterval(t);
   }, []);
+
+  // SSO error redirects from /api/saml/.../complete (missing/invalid token, etc.)
+  useEffect(() => {
+    const ssoError = searchParams.get('sso_error');
+    if (!ssoError) return;
+
+    const messages = {
+      missing_token: 'Your session expired. Please sign in again to open this app.',
+      invalid_token: 'Your session is invalid. Please sign in again.',
+      not_in_kissflow: 'Your account is not linked in Kissflow. Contact IT support.',
+    };
+    toast.error(messages[ssoError] || 'SSO failed. Please try again or sign in again.', { duration: 6000 });
+
+    const next = new URLSearchParams(searchParams);
+    next.delete('sso_error');
+    setSearchParams(next, { replace: true });
+
+    if (ssoError === 'missing_token' || ssoError === 'invalid_token') {
+      logout();
+      navigate('/login', { replace: true });
+    }
+  }, [searchParams, setSearchParams, logout, navigate]);
 
   const formatDate = (d) => d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
   const formatTime = (d) => d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
@@ -174,28 +197,13 @@ const AppLauncher = () => {
   const isSafari = /Safari/i.test(ua) && !/Chrome|CriOS|Chromium|Edg|Android/i.test(ua);
 
   /**
-   * Desktop module SSO (Expense/Travel/etc.):
-   * Reuse one dedicated tab (DESKTOP_APP_WINDOW). Safari: open about:blank on
-   * the user gesture, then navigate that same window (avoids a second tab without cookies).
+   * Desktop SAML SSO: open only the ACS complete URL. Module deep-link is handled
+   * by the backend (module_url after ACS) — never timer-navigate the opener window.
    */
-  const navigateSsoWindowToModule = (ssoWindow, homeUrl) => {
-    try {
-      if (ssoWindow && !ssoWindow.closed) {
-        ssoWindow.location.href = homeUrl;
-        return;
-      }
-    } catch (e) {
-      // ignore — fall through
-    }
-    openDesktopAppTab(homeUrl);
-  };
-
-  const launchDesktopModuleSso = (completeUrl, homeUrl) => {
-    // Safari ITP: open about:blank on the user gesture, then navigate that same window
+  const launchDesktopSamlSso = (completeUrl) => {
     if (isSafari) {
       const ssoWindow = window.open('about:blank', DESKTOP_APP_WINDOW);
       if (!ssoWindow) {
-        // Popup blocked — same-tab SSO (lands on Kissflow after ACS)
         window.location.href = completeUrl;
         return;
       }
@@ -205,23 +213,23 @@ const AppLauncher = () => {
         // ignore
       }
       ssoWindow.location.href = completeUrl;
-      // Dual delays: ACS + Kissflow session cookie settle can be slow on Safari
-      setTimeout(() => navigateSsoWindowToModule(ssoWindow, homeUrl), 1500);
-      setTimeout(() => navigateSsoWindowToModule(ssoWindow, homeUrl), 2500);
       return;
     }
+    openDesktopAppTab(completeUrl);
+  };
 
-    const ssoWindow = window.open(completeUrl, DESKTOP_APP_WINDOW);
-    if (!ssoWindow) {
-      window.location.href = completeUrl;
-      return;
-    }
-    try {
-      ssoWindow.focus();
-    } catch (e) {
-      // ignore
-    }
-    setTimeout(() => navigateSsoWindowToModule(ssoWindow, homeUrl), 500);
+  const buildSamlCompleteUrl = (appId, token, homeUrl) => {
+    const base = `${BACKEND_ORIGIN}/api/saml/${appId}/complete?token=${encodeURIComponent(token)}`;
+    if (!homeUrl) return base;
+    return `${base}&module_url=${encodeURIComponent(homeUrl)}`;
+  };
+
+  const warnIfKissflowIdentityMissing = (app) => {
+    const blob = `${app?.name || ''} ${app?.description || ''} ${app?.home_url || ''}`.toLowerCase();
+    if (!/kissflow/.test(blob)) return;
+    if (user?.kissflow_user_id) return;
+    // Soft check only — SSO still proceeds with email NameID
+    toast.message('Kissflow account may not be synced. If login fails, contact IT.', { duration: 5000 });
   };
 
   /** Find a SAML/Kissflow app to SSO into when the ITSM tile itself is the virtual in-app tile. */
@@ -249,22 +257,20 @@ const AppLauncher = () => {
   };
 
   const launchKissflowApp = (app) => {
-    const baseUrl = BACKEND_ORIGIN;
     const token = localStorage.getItem('iam_token');
 
     if (app.type === 'saml' && token) {
-      const completeUrl = `${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
+      warnIfKissflowIdentityMissing(app);
       const mobileFlow = isCapacitor || (isPWA && isMobile);
 
       if (mobileFlow) {
+        const completeUrl = `${BACKEND_ORIGIN}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
         const targetUrl = app.home_url
           ? `${completeUrl}&mobile_module=${encodeURIComponent(app.home_url)}`
           : completeUrl;
         launchUrlAfterKissflowClear(targetUrl);
-      } else if (app.home_url) {
-        launchDesktopModuleSso(completeUrl, app.home_url);
       } else {
-        openDesktopAppTab(completeUrl);
+        launchDesktopSamlSso(buildSamlCompleteUrl(app.id, token, app.home_url));
       }
       return;
     }
@@ -336,21 +342,19 @@ const AppLauncher = () => {
     const token = localStorage.getItem('iam_token');
 
     if (app.type === 'saml' && token) {
-      const completeUrl = `${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
+      warnIfKissflowIdentityMissing(app);
       const mobileFlow = isCapacitor || (isPWA && isMobile);
 
       if (mobileFlow) {
         // Step 1: SAML SSO → Kissflow. Step 2: native redirect to module (Expense, Solar, etc.)
+        const completeUrl = `${baseUrl}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
         const targetUrl = app.home_url
           ? `${completeUrl}&mobile_module=${encodeURIComponent(app.home_url)}`
           : completeUrl;
         launchUrlAfterKissflowClear(targetUrl);
-      } else if (app.home_url) {
-        // Desktop + module app: one shared tab for SSO, then navigate to module
-        launchDesktopModuleSso(completeUrl, app.home_url);
       } else {
-        // Desktop + primary app: direct SSO in shared app tab
-        openDesktopAppTab(completeUrl);
+        // Desktop: ACS only; module_url handled post-ACS by backend (no opener timer)
+        launchDesktopSamlSso(buildSamlCompleteUrl(app.id, token, app.home_url));
       }
     } else if (app.type === 'oidc') {
       // Feast/QR: open home_url so the RP starts OIDC with its own state.

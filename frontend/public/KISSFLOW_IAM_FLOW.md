@@ -2,7 +2,7 @@
 
 ## Refex Super App x Kissflow SSO & User Provisioning
 
-**Version**: 3.0 | **Last Updated**: May 19, 2026 | **Classification**: Confidential
+**Version**: 3.1 | **Last Updated**: Aug 26, 2026 | **Classification**: Confidential
 
 ---
 
@@ -108,43 +108,42 @@ This is the **primary flow** when users click apps from the Super App Launcher.
 ```
 Step 1: User clicks "Expense Management" in App Launcher
             |
-Step 2: Browser calls GET /api/saml/{app_id}/complete?token={jwt}
+Step 2: Browser opens GET /api/saml/{app_id}/complete?token={jwt}&module_url={home_url}
             |
 Step 3: Backend validates JWT token
             |
-Step 4: Backend checks user has access to app (or sibling app with same ACS)
+Step 4: Backend checks restricted-flag access + access policies
             |
 Step 5: Backend generates SAML Response XML:
-            - Issuer = Primary Kissflow app's Entity ID
-            - NameID = user's email
+            - Issuer = Primary Kissflow app's Issuer URL
+            - NameID = user's email (required; empty email → 400)
+            - Attributes = email, name (Adrenalin-only apps also get EmployeeCode etc.)
             - Certificate/Key = Primary app's certificate
             - AudienceRestriction = Kissflow's Entity ID
+            - AuthnContextClassRef = Password
             |
-Step 6: Backend signs the SAML Response (RSA-SHA256)
+Step 6: Backend signs the assertion (RSA-SHA256). Signing failure → HTTP 500 (never unsigned)
             |
-Step 7: Backend returns HTML with auto-submit form:
-            - action = Kissflow ACS URL
-            - SAMLResponse = base64-encoded signed XML
-            - RelayState = Module's home_url (e.g., /view/application/EMS_001_A00)
+Step 7: Backend returns HTML with auto-submit form to Kissflow ACS
+            - No IdP RelayState for module deep-links (Kissflow rejects non-SP RelayState)
+            - Desktop + module_url: ACS iframe then navigate to module_url after load
+            - Safari / no module: top-level ACS POST only
+            - Mobile + mobile_module: top-level ACS + native setPendingModule
             |
-Step 8: Browser auto-submits form to Kissflow
+Step 8: Browser posts SAMLResponse to Kissflow ACS
             |
-Step 9: Kissflow validates SAML signature against stored certificate
+Step 9: Kissflow validates signature and creates session
             |
-Step 10: Kissflow creates session for user
-            |
-Step 11: Kissflow reads RelayState and redirects to the specific module
-            |
-Step 12: User lands directly in Expense Management module
+Step 10: User lands in Kissflow (module via post-ACS navigation or native bridge)
 ```
 
-### Key Design Decision: RelayState for Module Deep-Linking
+### Key Design Decision: Module deep-link WITHOUT IdP RelayState
 
-All Kissflow modules share a **single SAML connection** (same Entity ID, same ACS URL). To route users to the correct module after SSO:
+All Kissflow modules share a **single SAML connection** (same Entity ID, same ACS URL). Kissflow's ACS cannot decode IdP-invented RelayState for module routing.
 
-- The Super App sets `RelayState` to the module's `home_url`
-- Kissflow processes SAML, authenticates the user, then uses RelayState to redirect to the specific module
-- This eliminates the need for iframe-based authentication hacks
+- Mobile: pass `mobile_module` → native bridge opens the module after ACS
+- Desktop: pass `module_url` → backend HTML chains module navigation after ACS completes
+- SP-initiated RelayState from Kissflow is always passed through unchanged
 
 ## 2.2 SP-Initiated SSO (Kissflow -> Super App -> Kissflow)
 
@@ -158,13 +157,14 @@ Step 2: Kissflow detects SSO is configured
 Step 3: Kissflow sends SAMLRequest to Super App SSO endpoint
             - Includes RelayState (for Kissflow's own redirect needs)
             |
-Step 4: Super App receives SAMLRequest at /api/saml/{app_id}/sso
+Step 4: Super App receives request at /api/saml/{app_id}/sso
             |
-Step 5: If user has active JWT session:
-            -> Generate SAML Response immediately
+Step 5: If valid iam_token cookie / Bearer is present:
+            -> Redirect to /api/saml/{app_id}/complete?token=…&relay_state=…
+            (skips login confirmation page)
         If NOT:
-            -> Redirect to /login?sso_app={app_id}
-            -> After login, redirect back to SSO endpoint
+            -> Redirect to /login?sso_app={app_id}&relay_state=…
+            -> After login, complete SSO
             |
 Step 6: Submit SAML Response to Kissflow ACS URL
             - RelayState passed through EXACTLY as received from Kissflow
@@ -322,23 +322,27 @@ User clicks app in Launcher
     v
 Does app have home_url?
     |
-    +-- YES: Submit SAML with RelayState = home_url
-    |        -> Kissflow authenticates -> Redirects to module via RelayState
+    +-- YES (mobile): complete?token&mobile_module=home_url
+    |        -> Top-level ACS POST; native opens module after Kissflow lands
     |
-    +-- NO:  Submit SAML without RelayState
-             -> Kissflow authenticates -> Lands on Kissflow homepage
+    +-- YES (desktop): complete?token&module_url=home_url
+    |        -> ACS then backend-chained navigation to module (no FE timer)
+    |
+    +-- NO:  complete?token only
+             -> ACS → Kissflow default landing
 ```
 
 ## 4.3 Access Check Logic
 
 ```python
-# Simplified access check flow
-1. Check: Is user an org_admin? -> YES = access granted
-2. Check: Is user in app's approved_user_ids? -> YES = access granted
-3. Check: Is user in a group that has access? -> YES = access granted
-4. If app shares ACS URL with siblings:
-   - Check siblings for access (any match = access granted)
-5. All checks failed -> Access denied
+# Restricted-flag model (launch + saml_complete_sso)
+1. If app.restricted is True:
+   - Allow only org_admin / owner / admin
+2. Else:
+   - Allow all authenticated org users
+3. Enforce check_access_policies (IP/time/etc.)
+4. Sibling ACS apps: used only when the clicked app is restricted and a sibling grants access
+5. approved_user_ids are display/audit only (Access Requests) — they do NOT grant SSO
 ```
 
 ---
@@ -554,16 +558,16 @@ A floating chat widget in the bottom-right corner branded as "Refexions" (AI Ass
 
 | Role | Launcher | Admin Pages | User Mgmt | SAML Config | SCIM |
 |---|---|---|---|---|---|
-| `org_admin` | All apps | Full access | Full CRUD | Full CRUD | Full |
-| `user` | Assigned apps only | No access | Self only | No | No |
+| `org_admin` | All apps (incl. restricted) | Full access | Full CRUD | Full CRUD | Full |
+| `user` | Unrestricted apps; blocked from restricted | No access | Self only | No | No |
 
 ## 9.2 App Access Rules
 
-A user can access an app if ANY of these are true:
-1. User role is `org_admin`
-2. User's ID is in `app.approved_user_ids`
-3. User belongs to a group with access
-4. User has access to a **sibling app** (same ACS URL)
+Launch and SSO use the **restricted flag** only:
+1. `restricted=False` → any authenticated org user may launch / complete SSO
+2. `restricted=True` → only `org_admin` / `owner` / `admin`
+3. Access policies (`check_access_policies`) still apply on launcher and `/complete`
+4. `approved_user_ids` from Access Requests are **display/audit only** and do not grant SSO
 
 ## 9.3 Access Request Flow
 
@@ -571,8 +575,8 @@ A user can access an app if ANY of these are true:
 User -> Requests access in App Catalog
     -> Admin receives email notification
     -> Admin approves in Access Requests page
-    -> User's ID added to app.approved_user_ids
-    -> App appears in user's Launcher
+    -> User's ID recorded on app.approved_user_ids (audit/UI)
+    -> Does NOT change restricted-flag launch/SSO decisions
 ```
 
 ---
@@ -593,13 +597,21 @@ User -> Requests access in App Catalog
 Mobile: User taps app in Launcher
     |
     v
-Detect: isPWA || isNativeApp?
+complete?token&mobile_module={home_url}
     |
-    +-- YES (Mobile): window.location.href = /api/saml/{id}/complete?token=...
-    |   (Opens in same window for native app feel)
+    v
+Top-level ACS POST (includes SP RelayState if present)
     |
-    +-- NO (Desktop): window.open(..., '_blank')
-        (Opens in new tab)
+    v
+Native bridge setPendingModule → opens module after Kissflow session
+
+Desktop: User clicks app
+    |
+    v
+complete?token&module_url={home_url}  (no FE timer to home_url)
+    |
+    v
+Backend ACS HTML chains module open after ACS (or top-level ACS on Safari)
 ```
 
 ## 10.3 Kissflow Native App Return Flow
@@ -706,7 +718,7 @@ The Super App also acts as IdP for Extrovis via Microsoft Entra ID.
 | Cause | Fix |
 |---|---|
 | `home_url` points to development instance | Update to `refexgroup.kissflow.com/...` in SAML Apps config |
-| Iframe auth timing race | Fixed: now uses direct POST with RelayState |
+| Iframe / desktop timer race to home_url | Fixed: module_url post-ACS; FE timer removed |
 | SAML certificate mismatch | Re-upload IdP certificate in Kissflow SAML config |
 | Issuer mismatch | Ensure primary app's issuer matches what Kissflow expects |
 | Clock skew > 5 minutes | Sync server time with NTP |

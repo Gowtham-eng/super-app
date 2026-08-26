@@ -23,6 +23,7 @@ from services.oidc_crypto import get_jwks, sign_oidc_jwt, normalize_issuer, deco
 from routes import scim as scim_router_module
 from routes.itsm import register_itsm_routes
 from routes.azure_ad import register_azure_ad_routes
+from routes.google_oauth import register_google_oauth_routes
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env', override=True)
@@ -521,7 +522,12 @@ def generate_saml_metadata(app: dict, base_url: str) -> str:
 #    
 #    return False
 async def check_user_app_access(user: dict, app: dict) -> bool:
-    """Check if user has access to an application (aligned with launcher resolve_access)."""
+    """Restricted-flag access model (aligned with launcher resolve_access).
+
+    - restricted=True  → org_admin / owner / admin only
+    - restricted=False → all org users
+    approved_user_ids / group assignments are NOT consulted for launch or SSO.
+    """
     is_admin_role = user.get('role') in ('org_admin', 'owner', 'admin')
     if app.get('restricted'):
         return is_admin_role
@@ -531,6 +537,26 @@ async def check_user_app_access(user: dict, app: dict) -> bool:
 def _is_adrenalin_sp(acs_url: str = '', entity_id: str = '', app_name: str = '') -> bool:
     blob = f"{acs_url} {entity_id} {app_name}".lower()
     return 'adrenalin' in blob or 'myadrenalin' in blob
+
+
+def _is_kissflow_sp(acs_url: str = '', entity_id: str = '', app_name: str = '') -> bool:
+    blob = f"{acs_url} {entity_id} {app_name}".lower()
+    return 'kissflow' in blob
+
+
+def _extract_iam_token_from_request(request: Request) -> Optional[str]:
+    """Bearer header, query token, or iam_token cookie (SP-initiated resume)."""
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        return auth_header[7:].strip() or None
+    q = (request.query_params.get('token') or '').strip()
+    if q:
+        return q
+    cookie = (request.cookies.get('iam_token') or '').strip()
+    if cookie:
+        from urllib.parse import unquote
+        return unquote(cookie)
+    return None
 
 
 def _add_saml_attribute(attr_stmt, name, value, xsi_ns=None):
@@ -1448,6 +1474,9 @@ async def get_kissflow_config(app_id: str, request: Request):
 @api_router.post("/saml/{app_id}/sso")
 async def saml_sso(app_id: str, request: Request):
     """SAML Single Sign-On endpoint - handles both IdP-initiated and SP-initiated SSO"""
+    from fastapi.responses import RedirectResponse
+    from urllib.parse import quote
+
     app = await db.saml_apps.find_one({"id": app_id}, {"_id": 0})
     if not app:
         raise HTTPException(status_code=404, detail="SAML App not found")
@@ -1457,16 +1486,37 @@ async def saml_sso(app_id: str, request: Request):
     
     # Capture RelayState if present (SP-initiated flow)
     params = dict(request.query_params)
-    relay_state = params.get('RelayState', '')
+    if request.method == "POST":
+        try:
+            form = await request.form()
+            if not params.get('RelayState') and form.get('RelayState'):
+                params['RelayState'] = form.get('RelayState')
+        except Exception:
+            pass
+    relay_state = params.get('RelayState', '') or ''
+
+    # Already signed in → skip login and complete SSO (cookie / Bearer)
+    auth_token = _extract_iam_token_from_request(request)
+    if auth_token:
+        try:
+            payload = decode_token(auth_token)
+            user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0, "password": 0})
+            if user and user.get('status') == 'active':
+                complete_url = f"{base_url}/api/saml/{app_id}/complete?token={quote(auth_token)}"
+                if relay_state:
+                    complete_url += f"&relay_state={quote(relay_state)}"
+                return RedirectResponse(url=complete_url, status_code=302)
+        except HTTPException:
+            pass
+        except Exception:
+            logging.debug("SP-initiated SSO: session token not usable, falling back to login", exc_info=True)
     
     # Build login URL with SSO app and optional relay state
     login_url = f"{frontend_url}/login?sso_app={app_id}"
     if relay_state:
-        from urllib.parse import quote
         login_url += f"&relay_state={quote(relay_state)}"
 
     # Skip the extra "Sign In with Kissflow IAM" click — go straight to RefexOne login.
-    from fastapi.responses import RedirectResponse
     return RedirectResponse(url=login_url, status_code=302)
 
 @api_router.get("/saml/{app_id}/slo")
@@ -1508,7 +1558,15 @@ async def saml_slo(app_id: str, request: Request):
     return Response(content=html_content, media_type="text/html")
 
 @api_router.get("/saml/{app_id}/complete")
-async def saml_complete_sso(app_id: str, request: Request, token: str = None, relay_state: str = None, debug: int = 0, mobile_module: str = None):
+async def saml_complete_sso(
+    app_id: str,
+    request: Request,
+    token: str = None,
+    relay_state: str = None,
+    debug: int = 0,
+    mobile_module: str = None,
+    module_url: str = None,
+):
     """Complete SAML SSO - Generate signed SAML Response and POST to ACS URL"""
     import base64
     import uuid as uuid_module
@@ -1521,12 +1579,8 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     
     base_url = get_public_base_url(request)
     
-    # Get token from query param or Authorization header
-    auth_token = token
-    if not auth_token:
-        auth_header = request.headers.get('Authorization', '')
-        if auth_header.startswith('Bearer '):
-            auth_token = auth_header[7:]
+    # Get token from query param, Authorization header, or cookie
+    auth_token = token or _extract_iam_token_from_request(request)
     
     if not auth_token:
         from fastapi.responses import RedirectResponse
@@ -1538,7 +1592,10 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     # Decode token and get user
     try:
         payload = decode_token(auth_token)
-    except:
+    except HTTPException:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=f"{base_url}/launcher?sso_error=invalid_token")
+    except Exception:
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url=f"{base_url}/launcher?sso_error=invalid_token")
     
@@ -1567,6 +1624,11 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     
     if not has_access:
         raise HTTPException(status_code=403, detail="You don't have access to this application")
+
+    # Enforce org access policies (IP/time/etc.) — same rules as launcher
+    allowed, policy_reason = await check_access_policies(user, app, request)
+    if not allowed:
+        raise HTTPException(status_code=403, detail=policy_reason or "Access blocked by policy")
     
     # Generate SAML Response timestamps
     now = datetime.now(timezone.utc)
@@ -1577,6 +1639,13 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     acs_url = app.get('acs_url', '')
     name_id = (user.get('email') or '').strip()
     name_id_format = app.get('name_id_format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress')
+    if not name_id or '@' not in name_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Your RefexOne account has no valid email for SSO. Contact your administrator.",
+        )
+
+    is_kissflow = _is_kissflow_sp(acs_url, app.get('entity_id', ''), app.get('name', ''))
     
     # Determine issuer, cert, key - if this app shares entity_id + acs_url with another app,
     # use the original (parent) app's issuer/cert/key so the SP can validate our response
@@ -1679,59 +1748,71 @@ async def saml_complete_sso(app_id: str, request: Request, token: str = None, re
     # Sign the SAML Response (cert_pem and key_pem already set above, potentially from parent app)
     signed_response_xml = None
     
-    if key_pem and cert_pem:
-        try:
-            import signxml
-            from signxml import XMLSigner
-            
-            # Sign the assertion using signxml (enveloped signature)
-            signer = XMLSigner(
-                method=signxml.methods.enveloped,
-                signature_algorithm="rsa-sha256",
-                digest_algorithm="sha256",
-                c14n_algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"
-            )
-            
-            # Sign the assertion element
-            signed_assertion = signer.sign(
-                assertion_elem, 
-                key=key_pem, 
-                cert=cert_pem, 
-                reference_uri=f'#{assertion_id}'
-            )
-            
-            # Replace the unsigned assertion with the signed one in the response
-            # Find and remove old assertion, add signed one
-            for child in list(response_elem):
-                if child.tag == '{urn:oasis:names:tc:SAML:2.0:assertion}Assertion':
-                    response_elem.remove(child)
-            response_elem.append(signed_assertion)
-            
-            # Move Signature to correct position per SAML schema: right after Issuer (index 1)
-            # signxml appends Signature at the end; SAML requires Issuer, Signature, Subject, ...
-            ds_ns = 'http://www.w3.org/2000/09/xmldsig#'
-            sig_elem = signed_assertion.find(f'{{{ds_ns}}}Signature')
-            if sig_elem is not None:
-                signed_assertion.remove(sig_elem)
-                # Insert after Issuer (position 1)
-                signed_assertion.insert(1, sig_elem)
-            
-            # Clean base64 text content in signature elements (remove PEM newlines)
-            # Kissflow's strict parser rejects newlines inside X509Certificate, SignatureValue, DigestValue
-            for tag in ['X509Certificate', 'SignatureValue', 'DigestValue']:
-                for elem in response_elem.iter(f'{{{ds_ns}}}{tag}'):
-                    if elem.text:
-                        elem.text = elem.text.replace('\n', '').replace('\r', '').replace(' ', '')
-            
-            signed_response_xml = etree.tostring(response_elem, xml_declaration=False, encoding='unicode', pretty_print=False)
-            logging.info(f"SAML Response signed successfully for app {app_id}, user {name_id}")
-        except Exception as e:
-            logging.error(f"SAML signing failed: {e}")
-            signed_response_xml = None
-    
-    if not signed_response_xml:
+    if not (key_pem and cert_pem):
+        logging.error(f"SAML signing unavailable for app {app_id}: missing certificate or private key")
+        raise HTTPException(
+            status_code=500,
+            detail="SAML signing is not configured for this application. Contact your administrator.",
+        )
+
+    try:
+        import signxml
+        from signxml import XMLSigner
+        
+        # Sign the assertion using signxml (enveloped signature)
+        signer = XMLSigner(
+            method=signxml.methods.enveloped,
+            signature_algorithm="rsa-sha256",
+            digest_algorithm="sha256",
+            c14n_algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"
+        )
+        
+        # Sign the assertion element
+        signed_assertion = signer.sign(
+            assertion_elem, 
+            key=key_pem, 
+            cert=cert_pem, 
+            reference_uri=f'#{assertion_id}'
+        )
+        
+        # Replace the unsigned assertion with the signed one in the response
+        # Find and remove old assertion, add signed one
+        for child in list(response_elem):
+            if child.tag == '{urn:oasis:names:tc:SAML:2.0:assertion}Assertion':
+                response_elem.remove(child)
+        response_elem.append(signed_assertion)
+        
+        # Move Signature to correct position per SAML schema: right after Issuer (index 1)
+        # signxml appends Signature at the end; SAML requires Issuer, Signature, Subject, ...
+        ds_ns = 'http://www.w3.org/2000/09/xmldsig#'
+        sig_elem = signed_assertion.find(f'{{{ds_ns}}}Signature')
+        if sig_elem is not None:
+            signed_assertion.remove(sig_elem)
+            # Insert after Issuer (position 1)
+            signed_assertion.insert(1, sig_elem)
+        
+        # Clean base64 text content in signature elements (remove PEM newlines)
+        # Kissflow's strict parser rejects newlines inside X509Certificate, SignatureValue, DigestValue
+        for tag in ['X509Certificate', 'SignatureValue', 'DigestValue']:
+            for elem in response_elem.iter(f'{{{ds_ns}}}{tag}'):
+                if elem.text:
+                    elem.text = elem.text.replace('\n', '').replace('\r', '').replace(' ', '')
+        
         signed_response_xml = etree.tostring(response_elem, xml_declaration=False, encoding='unicode', pretty_print=False)
-        logging.warning(f"Sending UNSIGNED SAML response for app {app_id}")
+        logging.info(f"SAML Response signed successfully for app {app_id}, user {name_id}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"SAML signing failed for app {app_id}: {e}")
+        await log_audit(
+            user['org_id'], "saml_sso_sign_failed", "app", user['id'], user['email'], app_id,
+            {"app_name": app.get('name'), "error": str(e)[:300]},
+            request.client.host if request.client else None,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to sign SAML response. Contact your administrator.",
+        )
 
     # Base64 encode the SAML Response - ensure clean encoding
     xml_clean = signed_response_xml.strip()
@@ -1793,32 +1874,27 @@ diag.innerHTML = lines.join("<br>");
 </script>
 </body></html>'''
     else:
-        # Kissflow's SAML parser cannot handle RelayState (it tries to base64/JSON decode it).
-        # Omit RelayState entirely.
-        # If the app has a home_url, submit SAML via iframe to authenticate,
-        # then redirect browser to the specific module URL.
+        # Kissflow's SAML parser cannot handle IdP RelayState for module deep-links
+        # (it tries to base64/JSON decode it). Omit IdP-invented RelayState for Kissflow.
+        # Always pass through SP-initiated RelayState unchanged.
         home_url = app.get('home_url', '')
+        pending_module = (mobile_module or module_url or '').strip()
+        if pending_module and not (pending_module.startswith('http://') or pending_module.startswith('https://')):
+            pending_module = ''
+
+        # SP-initiated RelayState must always be returned unchanged
+        sp_relay = (relay_state or '').strip()
+        relay_field = (
+            f'<input type="hidden" name="RelayState" value="{escape(sp_relay)}"/>'
+            if sp_relay else ''
+        )
         
-        if home_url or mobile_module:
-            module_target = mobile_module or home_url
-            # Module app (Expense, Travel, etc.)
-            # For SP-initiated flow: pass RelayState through directly
-            if relay_state:
-                relay_field = f'<input type="hidden" name="RelayState" value="{escape(relay_state)}"/>'
-            else:
-                relay_field = ''
+        if pending_module or home_url:
+            module_target = pending_module or home_url
             
             if mobile_module:
                 # MOBILE FIX: Top-level POST to Kissflow ACS (NOT iframe).
-                # Why: Modern Android WebView/Chrome 80+ blocks cookies set inside cross-site iframes
-                # (SameSite=Lax default). The iframe approach silently failed — Kissflow's session
-                # cookie was never persisted, so subsequent navigation to the module URL got bounced
-                # back to login. Top-level POST keeps the cookie context first-party for Kissflow.
-                #
-                # Then we tell our MainActivity (via window.RefexOneBridge) the target module URL.
-                # When Kissflow finishes processing SAML and lands the user on its home page,
-                # MainActivity sees the kissflow.com page and redirects the WebView to the
-                # specific module URL (which now has a valid session cookie).
+                # Native bridge redirects to module after Kissflow lands post-SSO.
                 module_target_js = module_target.replace('\\', '\\\\').replace('"', '\\"')
                 html_content = f'''<!DOCTYPE html>
 <html lang="en">
@@ -1843,27 +1919,83 @@ diag.innerHTML = lines.join("<br>");
     </div>
     <form id="samlForm" method="POST" action="{escape(acs_url)}">
         <input type="hidden" name="SAMLResponse" id="samlResponse"/>
+        {relay_field}
     </form>
     <script>
         var moduleUrl = "{module_target_js}";
-        // 1. Notify native Android bridge of the pending module URL.
-        //    MainActivity will redirect the WebView to this URL after Kissflow lands post-SSO.
         try {{
             if (window.RefexOneBridge && typeof window.RefexOneBridge.setPendingModule === 'function') {{
                 window.RefexOneBridge.setPendingModule(moduleUrl);
             }}
         }} catch (e) {{}}
-        // 2. Also persist to sessionStorage so any in-page web fallback can use it.
         try {{ sessionStorage.setItem('refexone_pending_module', moduleUrl); }} catch (e) {{}}
-        // 3. Submit SAML top-level so Kissflow's session cookie is set first-party.
         document.getElementById('samlResponse').value = "{saml_response_b64}";
         document.getElementById('samlForm').submit();
     </script>
 </body>
 </html>'''
             else:
-                # DESKTOP: Direct SAML POST (frontend handles two-step named window redirect)
-                html_content = f'''<!DOCTYPE html>
+                # DESKTOP: Top-level ACS POST (first-party cookies). When module_url is set,
+                # chain a same-window navigation to the module only after the ACS iframe
+                # reports load — avoids the opener timer race. Safari ITP often blocks
+                # third-party iframe cookies, so Safari uses top-level POST only.
+                ua = (request.headers.get('user-agent') or '').lower()
+                is_safari = (
+                    'safari' in ua
+                    and 'chrome' not in ua
+                    and 'crios' not in ua
+                    and 'chromium' not in ua
+                    and 'edg/' not in ua
+                    and 'android' not in ua
+                )
+                module_target_js = (
+                    module_target.replace('\\', '\\\\').replace('"', '\\"').replace('<', '\\u003c')
+                    if module_target else ''
+                )
+                if module_target and not is_safari and not sp_relay:
+                    html_content = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Signing in to {escape(app.get('name', 'Application'))}...</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #f9fafb; }}
+        .loader {{ text-align: center; }}
+        .spinner {{ width: 36px; height: 36px; border: 3px solid #e2e8f0; border-top-color: #10b981; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }}
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+        p {{ color: #64748b; font-size: 14px; }}
+        iframe {{ position: absolute; width: 0; height: 0; border: 0; }}
+    </style>
+</head>
+<body>
+    <div class="loader">
+        <div class="spinner"></div>
+        <p>Signing in to {escape(app.get('name', 'Application'))}...</p>
+    </div>
+    <iframe name="samlAcsFrame" title="SAML ACS"></iframe>
+    <form id="samlForm" method="POST" action="{escape(acs_url)}" target="samlAcsFrame">
+        <input type="hidden" name="SAMLResponse" id="samlResponse"/>
+    </form>
+    <script>
+        var moduleUrl = "{module_target_js}";
+        var done = false;
+        function goModule() {{
+            if (done || !moduleUrl) return;
+            done = true;
+            window.location.replace(moduleUrl);
+        }}
+        var frame = document.getElementsByName('samlAcsFrame')[0];
+        frame.onload = function() {{ setTimeout(goModule, 500); }};
+        // Fallback if ACS response never fires onload (opaque / blocked)
+        setTimeout(goModule, 6000);
+        document.getElementById('samlResponse').value = "{saml_response_b64}";
+        document.getElementById('samlForm').submit();
+    </script>
+</body>
+</html>'''
+                else:
+                    # Safari / SP RelayState / no module: pure top-level ACS (reliable session)
+                    html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1889,15 +2021,14 @@ diag.innerHTML = lines.join("<br>");
         </noscript>
     </form>
     <script>
+        try {{ sessionStorage.setItem('refexone_pending_module', "{module_target_js}"); }} catch (e) {{}}
         document.getElementById('samlResponse').value = "{saml_response_b64}";
         document.getElementById('samlForm').submit();
     </script>
 </body>
 </html>'''
         else:
-            # No home_url: direct SAML form submit (lands on Kissflow homepage)
-            # Include RelayState if present (critical for SP-initiated SSO / mobile return)
-            relay_field = f'<input type="hidden" name="RelayState" value="{escape(relay_state)}"/>' if relay_state else ''
+            # No home_url / module: direct SAML form submit
             html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3081,7 +3212,9 @@ async def update_access_request(request_id: str, body: dict, user: dict = Depend
         }}
     )
 
-    # If approved, add user to the app's approved_user_ids
+    # Display/audit only: approved_user_ids do NOT grant SSO under the restricted-flag
+    # model (see check_user_app_access / launcher resolve_access). Keep writing for
+    # Access Requests UI and admin visibility; launch access is restricted=on → admins only.
     if new_status == "approved":
         collection = "saml_apps" if req.get("app_type") == "saml" else "oidc_apps"
         await db[collection].update_one(
@@ -3349,6 +3482,18 @@ register_itsm_routes(api_router, get_current_user, db)
 
 # Azure AD / Entra ID login (multi-tenant App Registrations for RefexOne login)
 register_azure_ad_routes(
+    api_router,
+    get_current_user,
+    db,
+    create_token=create_token,
+    log_audit=log_audit,
+    normalize_email=normalize_email,
+    jwt_secret=JWT_SECRET,
+    public_url=PUBLIC_URL,
+)
+
+# Google Workspace OAuth login (multi-config, same pattern as Azure AD)
+register_google_oauth_routes(
     api_router,
     get_current_user,
     db,

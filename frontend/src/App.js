@@ -20,6 +20,7 @@ import HRSync from "./pages/HRSync";
 import SCIMSetup from "./pages/SCIMSetup";
 import ITSMSetup from "./pages/ITSMSetup";
 import AzureADSetup from "./pages/AzureADSetup";
+import GoogleSetup from "./pages/GoogleSetup";
 import CreateITRequest from "./pages/CreateITRequest";
 import ITSMDashboard from "./pages/ITSMDashboard";
 import Layout from "./components/Layout";
@@ -134,6 +135,7 @@ function App() {
           <Route path="/scim" element={<AdminRoute><SCIMSetup /></AdminRoute>} />
           <Route path="/itsm-setup" element={<AdminRoute><ITSMSetup /></AdminRoute>} />
           <Route path="/settings/azure-ad" element={<AdminRoute><AzureADSetup /></AdminRoute>} />
+          <Route path="/settings/google" element={<AdminRoute><GoogleSetup /></AdminRoute>} />
           <Route path="/settings" element={<AdminRoute><Settings /></AdminRoute>} />
           <Route path="/access-requests" element={<ProtectedRoute><AccessRequests /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />

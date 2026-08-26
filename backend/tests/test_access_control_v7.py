@@ -1,17 +1,12 @@
 """
-Test Access Control & New Features - Iteration 7
-Tests:
-1. Access control: User without app assignment sees NO apps in launcher (raghul.je@refex.co.in)
-2. Access control: User with app assignment sees Kissflow in launcher (suriya.v@refex.co.in)
-3. App Catalog: Unassigned user (raghul) sees 'Request Access' button, NOT 'Access Granted'
-4. App Catalog: Assigned user (suriya) sees 'Access Granted'
-5. Logo upload: POST /api/upload/logo accepts image file and returns logo_url
-6. Users page: Shows app badges per user in the table
-7. User creation form: Has app assignment checkboxes
-8. User edit form: Has app assignment checkboxes
-9. POST /api/apps/saml/{app_id}/users assigns user, DELETE removes user
-10. Admin dashboard shows all stat cards and quick actions
-11. Refex logo visible in sidebar
+Test Access Control & New Features - Iteration 7 (updated for restricted-flag model)
+
+Access model:
+- restricted=False → all authenticated users can launch / SSO
+- restricted=True  → org_admin / owner / admin only
+- approved_user_ids are display/audit only (Access Requests UI)
+
+Legacy assignment ACL tests are retained only for the assignment API endpoints.
 """
 import pytest
 import requests
@@ -22,8 +17,8 @@ BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://kissflow-access-hub.
 
 # Test credentials
 ADMIN = {"email": "gowtham.s@refex.co.in", "password": "Admin123!"}
-ASSIGNED_USER = {"email": "suriya.v@refex.co.in", "password": "Admin123!"}  # Has Kissflow access
-UNASSIGNED_USER = {"email": "raghul.je@refex.co.in", "password": "Admin123!"}  # NO Kissflow access
+ASSIGNED_USER = {"email": "suriya.v@refex.co.in", "password": "Admin123!"}
+UNASSIGNED_USER = {"email": "raghul.je@refex.co.in", "password": "Admin123!"}
 SAML_APP_ID = "e5a4c999-65fd-4301-9ebd-8948893eea0d"
 
 
@@ -39,7 +34,7 @@ class TestAuthentication:
         print(f"PASS: Admin login OK - {data['user']['email']}")
     
     def test_assigned_user_login(self):
-        """Assigned user (suriya) login works"""
+        """Regular user (suriya) login works"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json=ASSIGNED_USER)
         assert response.status_code == 200, f"Assigned user login failed: {response.text}"
         data = response.json()
@@ -47,7 +42,7 @@ class TestAuthentication:
         print(f"PASS: Assigned user login OK - {data['user']['email']}")
     
     def test_unassigned_user_login(self):
-        """Unassigned user (raghul) login works"""
+        """Regular user (raghul) login works"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json=UNASSIGNED_USER)
         assert response.status_code == 200, f"Unassigned user login failed: {response.text}"
         data = response.json()
@@ -56,7 +51,7 @@ class TestAuthentication:
 
 
 class TestAccessControlLauncher:
-    """Test access control in App Launcher - users only see assigned apps"""
+    """Launcher access follows restricted flag, not approved_user_ids"""
     
     @pytest.fixture
     def admin_token(self):
@@ -73,43 +68,42 @@ class TestAccessControlLauncher:
         response = requests.post(f"{BASE_URL}/api/auth/login", json=UNASSIGNED_USER)
         return response.json()["token"]
     
-    def test_unassigned_user_sees_no_apps(self, unassigned_user_token):
-        """Raghul (unassigned) should see NO apps in launcher"""
-        headers = {"Authorization": f"Bearer {unassigned_user_token}"}
+    def _kissflow(self, token):
+        headers = {"Authorization": f"Bearer {token}"}
         response = requests.get(f"{BASE_URL}/api/launcher/apps", headers=headers)
         assert response.status_code == 200, f"Failed: {response.text}"
         apps = response.json()
-        
-        # Raghul should see NO apps (not assigned to any)
-        kissflow = next((a for a in apps if a.get('id') == SAML_APP_ID), None)
-        assert kissflow is None, f"Unassigned user should NOT see Kissflow app! Found: {[a.get('name') for a in apps]}"
-        print(f"PASS: Unassigned user (raghul) sees {len(apps)} apps - Kissflow NOT visible")
+        return apps, next((a for a in apps if a.get('id') == SAML_APP_ID), None)
     
-    def test_assigned_user_sees_kissflow(self, assigned_user_token):
-        """Suriya (assigned) should see Kissflow in launcher"""
-        headers = {"Authorization": f"Bearer {assigned_user_token}"}
-        response = requests.get(f"{BASE_URL}/api/launcher/apps", headers=headers)
-        assert response.status_code == 200, f"Failed: {response.text}"
-        apps = response.json()
-        
-        kissflow = next((a for a in apps if a.get('id') == SAML_APP_ID), None)
-        assert kissflow is not None, f"Assigned user should see Kissflow app! Apps: {[a.get('name') for a in apps]}"
-        print(f"PASS: Assigned user (suriya) sees Kissflow in launcher")
+    def test_regular_user_access_matches_restricted_flag(self, unassigned_user_token):
+        """Non-admin: has_access iff app is not restricted"""
+        apps, kissflow = self._kissflow(unassigned_user_token)
+        assert kissflow is not None, f"Kissflow should appear in launcher list. Apps: {[a.get('name') for a in apps]}"
+        if kissflow.get('restricted'):
+            assert kissflow.get('has_access') is False
+            print("PASS: Restricted Kissflow → non-admin has_access=false")
+        else:
+            assert kissflow.get('has_access') is True
+            print("PASS: Unrestricted Kissflow → non-admin has_access=true")
     
-    def test_admin_always_sees_apps(self, admin_token):
-        """Admin (org_admin) should always see all apps"""
-        headers = {"Authorization": f"Bearer {admin_token}"}
-        response = requests.get(f"{BASE_URL}/api/launcher/apps", headers=headers)
-        assert response.status_code == 200, f"Failed: {response.text}"
-        apps = response.json()
-        
-        kissflow = next((a for a in apps if a.get('id') == SAML_APP_ID), None)
+    def test_assigned_user_same_restricted_model(self, assigned_user_token):
+        """approved_user_ids do not change launch access under restricted model"""
+        _, kissflow = self._kissflow(assigned_user_token)
+        assert kissflow is not None
+        expected = not bool(kissflow.get('restricted'))
+        assert kissflow.get('has_access') is expected
+        print(f"PASS: Suriya has_access={kissflow.get('has_access')} (restricted={kissflow.get('restricted')})")
+    
+    def test_admin_always_has_access(self, admin_token):
+        """Admin can launch even when restricted"""
+        apps, kissflow = self._kissflow(admin_token)
         assert kissflow is not None, "Admin should always see Kissflow app"
-        print(f"PASS: Admin sees {len(apps)} apps including Kissflow")
+        assert kissflow.get('has_access') is True
+        print(f"PASS: Admin sees {len(apps)} apps including Kissflow with has_access=true")
 
 
 class TestAppCatalogAccessStatus:
-    """Test App Catalog shows correct access status"""
+    """Catalog has_access follows restricted flag"""
     
     @pytest.fixture
     def assigned_user_token(self):
@@ -121,8 +115,8 @@ class TestAppCatalogAccessStatus:
         response = requests.post(f"{BASE_URL}/api/auth/login", json=UNASSIGNED_USER)
         return response.json()["token"]
     
-    def test_unassigned_user_sees_request_access(self, unassigned_user_token):
-        """Raghul should see 'Request Access' for Kissflow (has_access=false)"""
+    def test_regular_user_catalog_access(self, unassigned_user_token):
+        """Catalog has_access matches restricted flag for raghul"""
         headers = {"Authorization": f"Bearer {unassigned_user_token}"}
         response = requests.get(f"{BASE_URL}/api/catalog/apps", headers=headers)
         assert response.status_code == 200, f"Failed: {response.text}"
@@ -130,11 +124,12 @@ class TestAppCatalogAccessStatus:
         
         kissflow = next((a for a in apps if a.get('id') == SAML_APP_ID), None)
         assert kissflow is not None, "Kissflow should appear in catalog"
-        assert kissflow.get('has_access') == False, f"Unassigned user should have has_access=false, got: {kissflow.get('has_access')}"
-        print(f"PASS: Unassigned user sees Kissflow with has_access=false (Request Access)")
+        expected = not bool(kissflow.get('restricted'))
+        assert kissflow.get('has_access') is expected
+        print(f"PASS: Catalog has_access={kissflow.get('has_access')} (restricted={kissflow.get('restricted')})")
     
-    def test_assigned_user_sees_access_granted(self, assigned_user_token):
-        """Suriya should see 'Access Granted' for Kissflow (has_access=true)"""
+    def test_assigned_user_catalog_same_model(self, assigned_user_token):
+        """Suriya catalog access also follows restricted, not assignment list"""
         headers = {"Authorization": f"Bearer {assigned_user_token}"}
         response = requests.get(f"{BASE_URL}/api/catalog/apps", headers=headers)
         assert response.status_code == 200, f"Failed: {response.text}"
@@ -142,8 +137,9 @@ class TestAppCatalogAccessStatus:
         
         kissflow = next((a for a in apps if a.get('id') == SAML_APP_ID), None)
         assert kissflow is not None, "Kissflow should appear in catalog"
-        assert kissflow.get('has_access') == True, f"Assigned user should have has_access=true, got: {kissflow.get('has_access')}"
-        print(f"PASS: Assigned user sees Kissflow with has_access=true (Access Granted)")
+        expected = not bool(kissflow.get('restricted'))
+        assert kissflow.get('has_access') is expected
+        print(f"PASS: Assigned user catalog has_access={kissflow.get('has_access')}")
 
 
 class TestLogoUpload:
