@@ -75,10 +75,8 @@ const Login = () => {
   const [currentSlide, setCurrentSlide] = useState(0);
   const [ssoAppId, setSsoAppId] = useState(null);
   const [azureProviders, setAzureProviders] = useState([]);
-  const [showAzurePicker, setShowAzurePicker] = useState(false);
   const [azureBusy, setAzureBusy] = useState(false);
   const [googleProviders, setGoogleProviders] = useState([]);
-  const [showGooglePicker, setShowGooglePicker] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
   const ssoRedirecting = React.useRef(false);
   const azureHandled = React.useRef(false);
@@ -275,28 +273,46 @@ const Login = () => {
     window.location.href = url;
   };
 
+  const emailDomain = () => {
+    const raw = (email || '').trim().toLowerCase();
+    if (!raw.includes('@')) return '';
+    return raw.split('@').pop() || '';
+  };
+
+  /** Prefer domain match from email field; else prefer Refex-labeled config; else first. No 2nd-tap picker. */
+  const pickProvider = (providers) => {
+    if (!providers?.length) return null;
+    if (providers.length === 1) return providers[0];
+    const domain = emailDomain();
+    if (domain) {
+      const byDomain = providers.find((p) =>
+        (p.email_domains || []).some(
+          (d) => String(d).toLowerCase().replace(/^@/, '') === domain
+        )
+      );
+      if (byDomain) return byDomain;
+    }
+    const refex = providers.find((p) => /refex/i.test(p.label || ''));
+    if (refex) return refex;
+    return providers[0];
+  };
+
   const handleGoogleClick = () => {
-    if (!googleProviders.length) {
+    const provider = pickProvider(googleProviders);
+    if (!provider) {
       toast.error('Google login is not configured yet');
       return;
     }
-    if (googleProviders.length === 1) {
-      startGoogleLogin(googleProviders[0].id);
-      return;
-    }
-    setShowGooglePicker(true);
+    startGoogleLogin(provider.id);
   };
 
   const handleMicrosoftClick = () => {
-    if (!azureProviders.length) {
+    const provider = pickProvider(azureProviders);
+    if (!provider) {
       toast.error('Microsoft login is not configured yet');
       return;
     }
-    if (azureProviders.length === 1) {
-      startAzureLogin(azureProviders[0].id);
-      return;
-    }
-    setShowAzurePicker(true);
+    startAzureLogin(provider.id);
   };
 
   const handleLogin = async (e) => {
@@ -487,95 +503,39 @@ const Login = () => {
               </div>
 
               {googleProviders.length > 0 && (
-                !showGooglePicker ? (
-                  <button
-                    type="button"
-                    onClick={handleGoogleClick}
-                    disabled={googleBusy}
-                    data-testid="google-login-button"
-                    className="w-full py-3.5 mb-3 border border-zinc-200 hover:border-zinc-300 bg-white text-zinc-800 font-semibold rounded-xl transition-colors flex items-center justify-center gap-3 disabled:opacity-60"
-                  >
-                    <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
-                      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-                      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.56 2.95-2.23 5.45-4.76 7.11l7.73 6.01C42.44 39.68 46.98 32.75 46.98 24.55z"/>
-                      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-                      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6.01c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-                    </svg>
-                    {googleBusy ? 'Signing in…' : 'Sign in with Google'}
-                  </button>
-                ) : (
-                  <div className="space-y-2 mb-3" data-testid="google-provider-picker">
-                    <p className="text-xs text-zinc-500 mb-2">Choose your Google organization</p>
-                    {googleProviders.map((p) => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => startGoogleLogin(p.id)}
-                        className="w-full text-left px-4 py-3 border border-zinc-200 rounded-xl hover:bg-zinc-50 text-sm font-medium text-zinc-800"
-                      >
-                        {p.label}
-                        {p.email_domains?.length ? (
-                          <span className="block text-xs text-zinc-400 font-normal mt-0.5">
-                            {(p.email_domains || []).map((d) => `@${d}`).join(', ')}
-                          </span>
-                        ) : null}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => setShowGooglePicker(false)}
-                      className="w-full text-center text-xs text-zinc-400 py-2 hover:text-zinc-600"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                )
+                <button
+                  type="button"
+                  onClick={handleGoogleClick}
+                  disabled={googleBusy}
+                  data-testid="google-login-button"
+                  className="w-full py-3.5 mb-3 border border-zinc-200 hover:border-zinc-300 bg-white text-zinc-800 font-semibold rounded-xl transition-colors flex items-center justify-center gap-3 disabled:opacity-60"
+                >
+                  <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+                    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.56 2.95-2.23 5.45-4.76 7.11l7.73 6.01C42.44 39.68 46.98 32.75 46.98 24.55z"/>
+                    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6.01c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                  </svg>
+                  {googleBusy ? 'Signing in…' : 'Sign in with Google'}
+                </button>
               )}
 
               {azureProviders.length > 0 && (
-                !showAzurePicker ? (
-                  <button
-                    type="button"
-                    onClick={handleMicrosoftClick}
-                    disabled={azureBusy}
-                    data-testid="microsoft-login-button"
-                    className="w-full py-3.5 border border-zinc-200 hover:border-zinc-300 bg-white text-zinc-800 font-semibold rounded-xl transition-colors flex items-center justify-center gap-3 disabled:opacity-60"
-                  >
-                    <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
-                      <rect x="1" y="1" width="9" height="9" fill="#F25022" />
-                      <rect x="11" y="1" width="9" height="9" fill="#7FBA00" />
-                      <rect x="1" y="11" width="9" height="9" fill="#00A4EF" />
-                      <rect x="11" y="11" width="9" height="9" fill="#FFB900" />
-                    </svg>
-                    {azureBusy ? 'Signing in…' : 'Sign in with Microsoft'}
-                  </button>
-                ) : (
-                  <div className="space-y-2" data-testid="azure-provider-picker">
-                    <p className="text-xs text-zinc-500 mb-2">Choose your organization</p>
-                    {azureProviders.map((p) => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => startAzureLogin(p.id)}
-                        className="w-full text-left px-4 py-3 border border-zinc-200 rounded-xl hover:bg-zinc-50 text-sm font-medium text-zinc-800"
-                      >
-                        {p.label}
-                        {p.email_domains?.length ? (
-                          <span className="block text-xs text-zinc-400 font-normal mt-0.5">
-                            {(p.email_domains || []).map((d) => `@${d}`).join(', ')}
-                          </span>
-                        ) : null}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => setShowAzurePicker(false)}
-                      className="w-full text-center text-xs text-zinc-400 py-2 hover:text-zinc-600"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                )
+                <button
+                  type="button"
+                  onClick={handleMicrosoftClick}
+                  disabled={azureBusy}
+                  data-testid="microsoft-login-button"
+                  className="w-full py-3.5 border border-zinc-200 hover:border-zinc-300 bg-white text-zinc-800 font-semibold rounded-xl transition-colors flex items-center justify-center gap-3 disabled:opacity-60"
+                >
+                  <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
+                    <rect x="1" y="1" width="9" height="9" fill="#F25022" />
+                    <rect x="11" y="1" width="9" height="9" fill="#7FBA00" />
+                    <rect x="1" y="11" width="9" height="9" fill="#00A4EF" />
+                    <rect x="11" y="11" width="9" height="9" fill="#FFB900" />
+                  </svg>
+                  {azureBusy ? 'Signing in…' : 'Sign in with Microsoft'}
+                </button>
               )}
             </div>
           )}
