@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { launchUrlAfterKissflowClear } from '../utils/nativeSession';
 import { BACKEND_ORIGIN, ITSM_API } from '../config/api';
 import { toast } from 'sonner';
-import { Search, Lock, MessageCircle, X, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight, Headphones, Loader2 } from 'lucide-react';
+import { Search, Lock, MessageCircle, X, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight, Headphones, Loader2, BarChart3 } from 'lucide-react';
 
 const isItsmApp = (app = {}) => {
   const name = (app.name || '').toLowerCase();
@@ -101,6 +101,7 @@ const pickAppIcon = (name = '') => {
   if (/canteen|food|meal/.test(n)) return Utensils;
   if (/mobility|mobile|phone/.test(n)) return Smartphone;
   if (/itsm|tech support|helpdesk|it support/.test(n)) return Headphones;
+  if (/report|analytics|dashboard|bi\b/.test(n)) return BarChart3;
   return Briefcase;
 };
 
@@ -111,15 +112,17 @@ const CATEGORY_META = {
   Facility: { icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', dot: '#3B82F6' },
   Support: { icon: Heart, color: 'text-rose-600', bg: 'bg-rose-50', dot: '#F43F5E' },
   HR: { icon: Heart, color: 'text-rose-600', bg: 'bg-rose-50', dot: '#F43F5E' },
+  Reports: { icon: BarChart3, color: 'text-teal-600', bg: 'bg-teal-50', dot: '#14B8A6' },
 };
 
-const CATEGORY_ORDER = ['Expense', 'Productivity', 'Facility', 'Support', 'HR'];
+const CATEGORY_ORDER = ['Expense', 'Productivity', 'Facility', 'Reports', 'Support', 'HR'];
 
 const CATEGORY_LABEL = {
   All: 'All Applications',
   Expense: 'Expense Management',
   Productivity: 'Productivity',
   Facility: 'Facility Management',
+  Reports: 'Reports & Analytics',
   Support: 'HR & People',
   HR: 'HR & People',
 };
@@ -403,7 +406,7 @@ const AppLauncher = () => {
       (a.description || '').toLowerCase().includes(search.toLowerCase()) ||
       (a.category || '').toLowerCase().includes(search.toLowerCase());
     if (!matchesSearch) return false;
-    if (activeFilter === 'All') return true;
+    if (activeFilter === 'All') return a.category !== 'Reports';
     return a.category === activeFilter;
   });
 
@@ -524,6 +527,7 @@ const AppLauncher = () => {
           { key: 'Expense', label: 'Expense', icon: FileText, dot: '#F59E0B' },
           { key: 'Productivity', label: 'Productivity', icon: Zap, dot: '#8B5CF6' },
           { key: 'Facility', label: 'Facility', icon: Building2, dot: '#3B82F6' },
+          { key: 'Reports', label: 'Reports', icon: BarChart3, dot: '#14B8A6' },
           { key: 'Support', label: 'HR', icon: Heart, dot: '#F43F5E' },
         ].map(f => {
           const FilterIcon = f.icon;

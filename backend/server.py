@@ -2973,7 +2973,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
         })
     
     # Sort by category order, then sort_order within category
-    category_order = {"Expense": 0, "Productivity": 1, "Facility": 2, "Support": 3}
+    category_order = {"Expense": 0, "Productivity": 1, "Facility": 2, "Reports": 3, "Support": 4}
     accessible_apps.sort(key=lambda a: (category_order.get(a.get("category", ""), 99), a.get("sort_order", 99)))
     
     return accessible_apps

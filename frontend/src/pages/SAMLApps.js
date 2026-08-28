@@ -361,6 +361,7 @@ const SAMLApps = () => {
                     <option value="Expense">Expense</option>
                     <option value="Productivity">Productivity</option>
                     <option value="Facility">Facility</option>
+                    <option value="Reports">Reports</option>
                     <option value="Support">HR / Support</option>
                     <option value="HR">HR</option>
                   </select>

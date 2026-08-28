@@ -247,6 +247,7 @@ const OIDCApps = () => {
       Expense: 'from-amber-100 to-orange-50',
       Productivity: 'from-violet-100 to-indigo-50',
       Facility: 'from-sky-100 to-cyan-50',
+      Reports: 'from-teal-100 to-emerald-50',
       Support: 'from-emerald-100 to-teal-50',
       HR: 'from-rose-100 to-pink-50',
     };
@@ -257,6 +258,7 @@ const OIDCApps = () => {
       Expense: 'bg-amber-50 text-amber-700 border-amber-200',
       Productivity: 'bg-violet-50 text-violet-700 border-violet-200',
       Facility: 'bg-sky-50 text-sky-700 border-sky-200',
+      Reports: 'bg-teal-50 text-teal-700 border-teal-200',
       Support: 'bg-emerald-50 text-emerald-700 border-emerald-200',
       HR: 'bg-rose-50 text-rose-700 border-rose-200',
     };
@@ -702,6 +704,7 @@ const OIDCApps = () => {
                   <option value="Expense">Expense</option>
                   <option value="Productivity">Productivity</option>
                   <option value="Facility">Facility</option>
+                  <option value="Reports">Reports</option>
                   <option value="Support">HR / Support</option>
                   <option value="HR">HR</option>
                 </select>
