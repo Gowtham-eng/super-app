@@ -38,3 +38,42 @@ def test_is_kissflow_sp_detection():
     assert _is_kissflow_sp("https://refexgroup.kissflow.com/acs", "", "") is True
     assert _is_kissflow_sp("", "", "Expense Management") is False
     assert _is_kissflow_sp("", "", "Kissflow Expense") is True
+
+
+def test_is_adrenalin_sp_detection():
+    def _is_adrenalin_sp(acs_url='', entity_id='', app_name='', home_url=''):
+        blob = f"{acs_url} {entity_id} {app_name} {home_url}".lower()
+        return 'adrenalin' in blob or 'myadrenalin' in blob
+
+    assert _is_adrenalin_sp("https://refex.myadrenalin.com/saml", "", "") is True
+    assert _is_adrenalin_sp("", "", "Adrenalin ESS") is True
+    assert _is_adrenalin_sp("", "", "ESS", "https://refex.myadrenalin.com/") is True
+    assert _is_adrenalin_sp("https://refexgroup.kissflow.com/acs", "", "") is False
+
+
+def test_resolve_saml_name_id_adrenalin():
+    def _resolve_saml_name_id(
+        user,
+        acs_url='',
+        entity_id='',
+        app_name='',
+        home_url='',
+        default_format='urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
+    ):
+        email = (user.get('email') or '').strip()
+        if email and '@' in email:
+            return email, default_format
+        return '', default_format
+
+    acs = "https://refex.myadrenalin.com/saml/acs"
+    user = {"email": "murugesh.k@refex.co.in", "adrenalin_employee_id": "RXIL002027"}
+    name_id, fmt = _resolve_saml_name_id(user, acs, "", "Adrenalin ESS")
+    assert name_id == "murugesh.k@refex.co.in"
+    assert "emailAddress" in fmt
+
+    user_no_email = {"adrenalin_employee_id": "RXIL002027"}
+    name_id2, fmt2 = _resolve_saml_name_id(user_no_email, acs, "", "Adrenalin ESS")
+    assert name_id2 == ""
+
+    kf = _resolve_saml_name_id(user, "https://kissflow.com/acs", "", "Expense")
+    assert kf[0] == "murugesh.k@refex.co.in"

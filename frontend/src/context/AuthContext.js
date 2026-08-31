@@ -11,13 +11,16 @@ export const AuthProvider = ({ children }) => {
   const [token, setToken] = useState(localStorage.getItem('iam_token'));
   const [loading, setLoading] = useState(true);
 
-  // Cookie lets /api/oidc/.../authorize silent-SSO when Feast/QR call authorize without ?token=
+  // Cookie for SP-initiated SAML (Kissflow POST to /sso) and OIDC silent authorize.
+  // SameSite=None is required when Kissflow (cross-site) POSTs to refexone.com.
   const persistToken = (newToken) => {
     if (!newToken) return;
     localStorage.setItem('iam_token', newToken);
     try {
-      const secure = window.location.protocol === 'https:' ? '; Secure' : '';
-      document.cookie = `iam_token=${encodeURIComponent(newToken)}; Path=/; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}${secure}`;
+      const isHttps = window.location.protocol === 'https:';
+      const sameSite = isHttps ? 'None' : 'Lax';
+      const secure = isHttps ? '; Secure' : '';
+      document.cookie = `iam_token=${encodeURIComponent(newToken)}; Path=/; SameSite=${sameSite}; Max-Age=${60 * 60 * 24 * 30}${secure}`;
     } catch (e) {
       // ignore
     }
@@ -26,7 +29,10 @@ export const AuthProvider = ({ children }) => {
   const clearToken = () => {
     localStorage.removeItem('iam_token');
     try {
-      document.cookie = 'iam_token=; Path=/; Max-Age=0; SameSite=Lax';
+      const isHttps = window.location.protocol === 'https:';
+      const sameSite = isHttps ? 'None' : 'Lax';
+      const secure = isHttps ? '; Secure' : '';
+      document.cookie = `iam_token=; Path=/; Max-Age=0; SameSite=${sameSite}${secure}`;
     } catch (e) {
       // ignore
     }

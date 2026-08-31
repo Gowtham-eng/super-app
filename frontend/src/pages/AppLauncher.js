@@ -199,9 +199,109 @@ const AppLauncher = () => {
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
   const isSafari = /Safari/i.test(ua) && !/Chrome|CriOS|Chromium|Edg|Android/i.test(ua);
 
+  const isKissflowApp = (app = {}) => {
+    const blob = `${app.name || ''} ${app.description || ''} ${app.home_url || ''}`.toLowerCase();
+    return /kissflow/.test(blob);
+  };
+
+  const isAdrenalinApp = (app = {}) => {
+    const blob = `${app.name || ''} ${app.description || ''} ${app.home_url || ''} ${app.acs_url || ''}`.toLowerCase();
+    return /adrenalin|myadrenalin/.test(blob);
+  };
+
+  /** Adrenalin: top-level ACS POST only — never pass module_url (iframe ACS breaks Adrenalin session). */
+  const launchDesktopAdrenalinSso = (appId, token) => {
+    const completeUrl = `${BACKEND_ORIGIN}/api/saml/${appId}/complete?token=${encodeURIComponent(token)}`;
+    if (isSafari) {
+      const ssoWindow = window.open('about:blank', DESKTOP_APP_WINDOW);
+      if (!ssoWindow) {
+        window.location.href = completeUrl;
+        return;
+      }
+      try {
+        ssoWindow.opener = null;
+      } catch (e) {
+        // ignore
+      }
+      ssoWindow.location.href = completeUrl;
+      return;
+    }
+    openDesktopAppTab(completeUrl);
+  };
+
   /**
-   * Desktop SAML SSO: open only the ACS complete URL. Module deep-link is handled
-   * by the backend (module_url after ACS) — never timer-navigate the opener window.
+   * Kissflow desktop: top-level ACS POST (no iframe — iframe breaks session cookies),
+   * then navigate the same tab to the module once Kissflow loads.
+   */
+  const launchDesktopKissflowModuleSso = (appId, token, homeUrl) => {
+    const acsOnly = `${BACKEND_ORIGIN}/api/saml/${appId}/complete?token=${encodeURIComponent(token)}`;
+
+    const watchAndDeepLink = (ssoWindow) => {
+      if (!ssoWindow) {
+        window.location.href = acsOnly;
+        return;
+      }
+      ssoWindow.location.href = acsOnly;
+      if (!homeUrl) return;
+
+      let attempts = 0;
+      const maxAttempts = 120;
+      const poll = setInterval(() => {
+        attempts += 1;
+        try {
+          const href = ssoWindow.location.href || '';
+          if (/kissflow\.com/i.test(href)) {
+            clearInterval(poll);
+            ssoWindow.location.href = homeUrl;
+          }
+        } catch (e) {
+          // Cross-origin — ACS finished on Kissflow; session is in this top-level window
+          clearInterval(poll);
+          try {
+            ssoWindow.location.href = homeUrl;
+          } catch (err) {
+            // ignore
+          }
+        }
+        if (attempts >= maxAttempts) clearInterval(poll);
+      }, 500);
+    };
+
+    if (isSafari) {
+      const ssoWindow = window.open('about:blank', DESKTOP_APP_WINDOW);
+      if (!ssoWindow) {
+        window.location.href = acsOnly;
+        return;
+      }
+      try {
+        ssoWindow.opener = null;
+      } catch (e) {
+        // ignore
+      }
+      watchAndDeepLink(ssoWindow);
+      return;
+    }
+
+    let ssoWindow = null;
+    try {
+      ssoWindow = window.open('about:blank', DESKTOP_APP_WINDOW);
+    } catch (e) {
+      ssoWindow = null;
+    }
+    if (!ssoWindow) {
+      window.location.href = acsOnly;
+      return;
+    }
+    try {
+      ssoWindow.focus();
+    } catch (e) {
+      // ignore
+    }
+    watchAndDeepLink(ssoWindow);
+  };
+
+  /**
+   * Desktop SAML SSO: open ACS complete URL (non-Kissflow or Kissflow without module).
    */
   const launchDesktopSamlSso = (completeUrl) => {
     if (isSafari) {
@@ -272,8 +372,10 @@ const AppLauncher = () => {
           ? `${completeUrl}&mobile_module=${encodeURIComponent(app.home_url)}`
           : completeUrl;
         launchUrlAfterKissflowClear(targetUrl);
+      } else if (app.home_url) {
+        launchDesktopKissflowModuleSso(app.id, token, app.home_url);
       } else {
-        launchDesktopSamlSso(buildSamlCompleteUrl(app.id, token, app.home_url));
+        launchDesktopSamlSso(buildSamlCompleteUrl(app.id, token, ''));
       }
       return;
     }
@@ -356,8 +458,13 @@ const AppLauncher = () => {
           : completeUrl;
         launchUrlAfterKissflowClear(targetUrl);
       } else {
-        // Desktop: ACS only; module_url handled post-ACS by backend (no opener timer)
-        launchDesktopSamlSso(buildSamlCompleteUrl(app.id, token, app.home_url));
+        if (isAdrenalinApp(app)) {
+          launchDesktopAdrenalinSso(app.id, token);
+        } else if (isKissflowApp(app) && app.home_url) {
+          launchDesktopKissflowModuleSso(app.id, token, app.home_url);
+        } else {
+          launchDesktopSamlSso(buildSamlCompleteUrl(app.id, token, app.home_url));
+        }
       }
     } else if (app.type === 'oidc') {
       // Feast/QR: open home_url so the RP starts OIDC with its own state.

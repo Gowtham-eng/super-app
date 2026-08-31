@@ -534,14 +534,34 @@ async def check_user_app_access(user: dict, app: dict) -> bool:
     return True
 
 
-def _is_adrenalin_sp(acs_url: str = '', entity_id: str = '', app_name: str = '') -> bool:
-    blob = f"{acs_url} {entity_id} {app_name}".lower()
+def _is_adrenalin_sp(
+    acs_url: str = '',
+    entity_id: str = '',
+    app_name: str = '',
+    home_url: str = '',
+) -> bool:
+    blob = f"{acs_url} {entity_id} {app_name} {home_url}".lower()
     return 'adrenalin' in blob or 'myadrenalin' in blob
 
 
 def _is_kissflow_sp(acs_url: str = '', entity_id: str = '', app_name: str = '') -> bool:
     blob = f"{acs_url} {entity_id} {app_name}".lower()
     return 'kissflow' in blob
+
+
+def _resolve_saml_name_id(
+    user: dict,
+    acs_url: str = '',
+    entity_id: str = '',
+    app_name: str = '',
+    home_url: str = '',
+    default_format: str = 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
+) -> tuple:
+    """Return (name_id, name_id_format). Adrenalin uses email NameID; EmployeeCode goes in attributes."""
+    email = (user.get('email') or '').strip()
+    if email and '@' in email:
+        return email, default_format
+    return '', default_format
 
 
 def _extract_iam_token_from_request(request: Request) -> Optional[str]:
@@ -573,19 +593,33 @@ def _add_saml_attribute(attr_stmt, name, value, xsi_ns=None):
     val.text = str(value).strip()
 
 
-def _append_user_saml_attributes(attr_stmt, user: dict, acs_url: str = '', xsi_ns=None, entity_id: str = '', app_name: str = ''):
+def _append_user_saml_attributes(
+    attr_stmt,
+    user: dict,
+    acs_url: str = '',
+    xsi_ns=None,
+    entity_id: str = '',
+    app_name: str = '',
+    home_url: str = '',
+):
     """Email/name for all SPs. Adrenalin also needs EmployeeCode / EmailAddress."""
     email = (user.get('email') or '').strip()
     name = (user.get('name') or '').strip()
     emp_id = (user.get('adrenalin_employee_id') or '').strip()
     _add_saml_attribute(attr_stmt, 'email', email, xsi_ns)
     _add_saml_attribute(attr_stmt, 'name', name, xsi_ns)
-    if _is_adrenalin_sp(acs_url, entity_id, app_name):
+    if _is_adrenalin_sp(acs_url, entity_id, app_name, home_url):
         _add_saml_attribute(attr_stmt, 'EmailAddress', email, xsi_ns)
         _add_saml_attribute(attr_stmt, 'Email', email, xsi_ns)
+        _add_saml_attribute(attr_stmt, 'OfficialEmail', email, xsi_ns)
+        _add_saml_attribute(attr_stmt, 'UserName', email, xsi_ns)
         _add_saml_attribute(attr_stmt, 'EmployeeCode', emp_id, xsi_ns)
+        _add_saml_attribute(attr_stmt, 'EmployeeNumber', emp_id, xsi_ns)
         _add_saml_attribute(attr_stmt, 'EMPLOYEE_ID', emp_id, xsi_ns)
         _add_saml_attribute(attr_stmt, 'employee_id', emp_id, xsi_ns)
+        _add_saml_attribute(attr_stmt, 'Employee_ID', emp_id, xsi_ns)
+        if emp_id:
+            _add_saml_attribute(attr_stmt, 'LoginName', emp_id, xsi_ns)
 
 
 async def check_access_policies(user: dict, app: dict, request: Request) -> tuple:
@@ -1637,15 +1671,40 @@ async def saml_complete_sso(
     assertion_id = f"_{''.join(str(uuid_module.uuid4()).split('-'))}"
     
     acs_url = app.get('acs_url', '')
-    name_id = (user.get('email') or '').strip()
+    app_entity_id = app.get('entity_id', '')
+    app_name = app.get('name', '')
+    app_home_url = app.get('home_url', '')
     name_id_format = app.get('name_id_format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress')
-    if not name_id or '@' not in name_id:
+    name_id, name_id_format = _resolve_saml_name_id(
+        user,
+        acs_url,
+        app_entity_id,
+        app_name,
+        app_home_url,
+        name_id_format,
+    )
+    if not name_id:
         raise HTTPException(
             status_code=400,
             detail="Your RefexOne account has no valid email for SSO. Contact your administrator.",
         )
+    is_adrenalin = _is_adrenalin_sp(acs_url, app_entity_id, app_name, app_home_url)
+    if is_adrenalin:
+        emp_id = (user.get('adrenalin_employee_id') or '').strip()
+        if not emp_id:
+            logging.warning(
+                "Adrenalin SSO for %s without adrenalin_employee_id — EmployeeCode missing; run HR sync",
+                user.get('email'),
+            )
+        else:
+            logging.info(
+                "Adrenalin SSO for %s name_id=%s employee_code=%s",
+                user.get('email'),
+                name_id,
+                emp_id,
+            )
 
-    is_kissflow = _is_kissflow_sp(acs_url, app.get('entity_id', ''), app.get('name', ''))
+    is_kissflow = _is_kissflow_sp(acs_url, app_entity_id, app_name)
     
     # Determine issuer, cert, key - if this app shares entity_id + acs_url with another app,
     # use the original (parent) app's issuer/cert/key so the SP can validate our response
@@ -1741,8 +1800,9 @@ async def saml_complete_sso(
     attr_stmt = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeStatement')
     _append_user_saml_attributes(
         attr_stmt, user, acs_url, XSI_NS,
-        entity_id=app.get('entity_id', ''),
-        app_name=app.get('name', ''),
+        entity_id=app_entity_id,
+        app_name=app_name,
+        home_url=app_home_url,
     )
     
     # Sign the SAML Response (cert_pem and key_pem already set above, potentially from parent app)
@@ -1952,7 +2012,7 @@ diag.innerHTML = lines.join("<br>");
                     module_target.replace('\\', '\\\\').replace('"', '\\"').replace('<', '\\u003c')
                     if module_target else ''
                 )
-                if module_target and not is_safari and not sp_relay:
+                if module_target and not is_safari and not sp_relay and not is_kissflow and not is_adrenalin:
                     html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2105,7 +2165,12 @@ async def saml_debug_receive(request: Request):
 
 
 @api_router.get("/saml/{app_id}/test")
-async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_current_user)):
+async def saml_test_sso(
+    app_id: str,
+    request: Request,
+    user_email: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
     """Test SAML SSO - Returns decoded SAML assertion details as JSON for inspection"""
     import base64
     import uuid as uuid_module
@@ -2114,6 +2179,18 @@ async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_
     app = await db.saml_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
     if not app:
         raise HTTPException(status_code=404, detail="SAML App not found")
+
+    sso_user = user
+    if user_email:
+        if user.get('role') not in ('org_admin', 'owner', 'admin'):
+            raise HTTPException(status_code=403, detail="Only admins can preview SSO for other users")
+        target_email = user_email.strip().lower()
+        sso_user = await db.users.find_one(
+            {"email": target_email, "org_id": user['org_id']},
+            {"_id": 0, "password": 0},
+        )
+        if not sso_user:
+            raise HTTPException(status_code=404, detail=f"No user found with email {target_email}")
 
     base_url = get_public_base_url(request)
 
@@ -2124,8 +2201,18 @@ async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_
 
     issuer = f"{base_url}/api/saml/{app_id}"
     acs_url = app.get('acs_url', '')
-    name_id = (user.get('email') or '').strip()
+    app_entity_id = app.get('entity_id', '')
+    app_name = app.get('name', '')
+    app_home_url = app.get('home_url', '')
     name_id_format = app.get('name_id_format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress')
+    name_id, name_id_format = _resolve_saml_name_id(
+        sso_user,
+        acs_url,
+        app_entity_id,
+        app_name,
+        app_home_url,
+        name_id_format,
+    )
     
     # If this app shares entity_id + acs_url with another app, use primary's issuer/cert/key
     cert_pem = app.get('certificate', '')
@@ -2199,9 +2286,10 @@ async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_
 
     attr_stmt = etree.SubElement(assertion_elem, '{urn:oasis:names:tc:SAML:2.0:assertion}AttributeStatement')
     _append_user_saml_attributes(
-        attr_stmt, user, acs_url,
-        entity_id=app.get('entity_id', ''),
-        app_name=app.get('name', ''),
+        attr_stmt, sso_user, acs_url,
+        entity_id=app_entity_id,
+        app_name=app_name,
+        home_url=app_home_url,
     )
 
     # Sign the assertion (cert_pem and key_pem already set above, potentially from parent app)
@@ -2247,9 +2335,26 @@ async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_
         "audience": app.get('entity_id', ''),
         "name_id": name_id,
         "name_id_format": name_id_format,
+        "adrenalin_sp": _is_adrenalin_sp(acs_url, app_entity_id, app_name, app_home_url),
+        "adrenalin_employee_id": sso_user.get('adrenalin_employee_id', ''),
+        "preview_user_email": sso_user.get('email', ''),
         "issue_instant": now_str,
         "not_on_or_after": not_on_or_after_str,
-        "attributes": {"email": user.get('email', ''), "name": user.get('name', '')},
+        "attributes": {
+            "email": sso_user.get('email', ''),
+            "name": sso_user.get('name', ''),
+            **(
+                {
+                    "EmailAddress": sso_user.get('email', ''),
+                    "Email": sso_user.get('email', ''),
+                    "OfficialEmail": sso_user.get('email', ''),
+                    "EmployeeCode": sso_user.get('adrenalin_employee_id', ''),
+                    "EmployeeNumber": sso_user.get('adrenalin_employee_id', ''),
+                }
+                if _is_adrenalin_sp(acs_url, app_entity_id, app_name, app_home_url)
+                else {}
+            ),
+        },
         "saml_response_b64": saml_b64,
         "saml_response_xml": pretty_xml,
         "acs_url": acs_url,
