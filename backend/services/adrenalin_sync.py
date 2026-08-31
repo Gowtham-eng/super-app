@@ -172,7 +172,7 @@ def _extract_all_hr_fields(emp: dict, lookup: dict) -> dict:
         # Employment status
         "employee_status": (emp.get("EMPLOYEE_STATUS") or "").strip(),
         "employee_status_description": (emp.get("EMPLOYEE_STATUS_DESCRIPTION") or "").strip(),
-        "employment_status": (emp.get("EMPLOYMENT_STATUS") or ""),
+        "employment_status": str(emp.get("EMPLOYMENT_STATUS") or "").strip(),
         "employment_status_description": (emp.get("EMPLOYMENT_STATUS_DESCRIPTION") or "").strip(),
 
         # Dates
@@ -192,11 +192,18 @@ def _extract_all_hr_fields(emp: dict, lookup: dict) -> dict:
     }
 
 
+def _is_employment_active(hr: dict) -> bool:
+    """Active when Adrenalin EMPLOYMENT_STATUS=1 and EMPLOYMENT_STATUS_DESCRIPTION=Active."""
+    status_code = str(hr.get("employment_status") or "").strip()
+    status_desc = (hr.get("employment_status_description") or "").strip().lower()
+    return status_code == "1" and status_desc == "active"
+
+
 async def sync_employees(db, org_id: str, *, skip_kissflow: bool = False) -> dict:
     """
     Sync ALL employee fields from Adrenalin HR to IAM system.
     - New employees -> create user with default password
-    - Exited employees -> disable user (keep existing app access)
+    - Exited employees -> disable user (EMPLOYMENT_STATUS != 1 or description != Active)
     - Existing employees -> update ALL HR fields
     - Resolves L1 Manager (supervisor) and L2 Manager (supervisor's supervisor) emails
     """
@@ -226,8 +233,7 @@ async def sync_employees(db, org_id: str, *, skip_kissflow: bool = False) -> dic
                 continue
 
             full_name = f"{hr['first_name']} {hr['last_name']}".strip()
-            status_desc = hr["employment_status_description"].lower()
-            date_of_exit = hr["date_of_exit"]
+            is_active = _is_employment_active(hr)
 
             existing_user = None
             emp_id = hr["adrenalin_employee_id"]
@@ -292,9 +298,7 @@ async def sync_employees(db, org_id: str, *, skip_kissflow: bool = False) -> dic
                 hr_update["email"] = email
 
             if existing_user:
-                is_exited = status_desc != "active" or bool(date_of_exit)
-
-                if is_exited and existing_user.get("status") != "disabled":
+                if not is_active and existing_user.get("status") != "disabled":
                     hr_update["status"] = "disabled"
                     hr_update["disabled_at"] = datetime.now(timezone.utc).isoformat()
                     hr_update["disabled_reason"] = "Employee exited (Adrenalin sync)"
@@ -305,7 +309,6 @@ async def sync_employees(db, org_id: str, *, skip_kissflow: bool = False) -> dic
                     await db.users.update_one({"id": existing_user["id"]}, {"$set": hr_update})
                     result["updated"] += 1
             else:
-                is_active = status_desc == "active" and not date_of_exit
                 if is_active:
                     new_user = {
                         "id": str(uuid.uuid4()),
