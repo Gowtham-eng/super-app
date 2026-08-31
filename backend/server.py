@@ -3553,6 +3553,76 @@ async def trigger_manager_resolution(background_tasks: BackgroundTasks, user: di
 
 # ---- Native App Update Control ----
 
+@api_router.get("/app-download/links")
+async def get_app_download_links():
+    """Public iOS/Android store URLs for RefexOne web (login + launcher)."""
+    config = await get_app_update_config(db)
+    ios_url = (config.get("ios") or {}).get("store_url") or ""
+    android_url = (config.get("android") or {}).get("store_url") or ""
+
+    refex_mobile = await db.mobile_apps.find_one(
+        {
+            "status": "active",
+            "$or": [
+                {"name": {"$regex": "refexone", "$options": "i"}},
+                {"play_store_url": {"$regex": "com\\.refex\\.refexone", "$options": "i"}},
+            ],
+        },
+        {"_id": 0, "app_store_url": 1, "play_store_url": 1, "name": 1},
+        sort=[("sort_order", 1)],
+    )
+    if refex_mobile:
+        if not ios_url:
+            ios_url = (refex_mobile.get("app_store_url") or "").strip()
+        if not android_url:
+            android_url = (refex_mobile.get("play_store_url") or "").strip()
+
+    return {
+        "app_store_url": ios_url,
+        "play_store_url": android_url,
+        "ios_store_url": ios_url,
+        "android_store_url": android_url,
+        "download_page_path": "/download",
+        "qr_image_path": "/mobile-app-qr.png",
+    }
+
+
+@api_router.get("/app-download/go")
+async def app_download_go(request: Request):
+    """Instant store redirect for QR codes (no SPA required)."""
+    from fastapi.responses import RedirectResponse
+
+    config = await get_app_update_config(db)
+    ios_url = (config.get("ios") or {}).get("store_url") or ""
+    android_url = (config.get("android") or {}).get("store_url") or ""
+
+    refex_mobile = await db.mobile_apps.find_one(
+        {
+            "status": "active",
+            "$or": [
+                {"name": {"$regex": "refexone", "$options": "i"}},
+                {"play_store_url": {"$regex": "com\\.refex\\.refexone", "$options": "i"}},
+            ],
+        },
+        {"_id": 0, "app_store_url": 1, "play_store_url": 1},
+        sort=[("sort_order", 1)],
+    )
+    if refex_mobile:
+        if not ios_url:
+            ios_url = (refex_mobile.get("app_store_url") or "").strip()
+        if not android_url:
+            android_url = (refex_mobile.get("play_store_url") or "").strip()
+
+    ua = (request.headers.get("user-agent") or "").lower()
+    if any(x in ua for x in ("iphone", "ipad", "ipod")) and ios_url:
+        return RedirectResponse(url=ios_url, status_code=302)
+    if "android" in ua and android_url:
+        return RedirectResponse(url=android_url, status_code=302)
+
+    base = get_public_base_url(request).rstrip("/")
+    return RedirectResponse(url=f"{base}/download", status_code=302)
+
+
 @api_router.get("/app-update/check")
 async def check_app_update(
     platform: str = Query("android"),

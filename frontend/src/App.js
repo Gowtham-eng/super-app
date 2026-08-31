@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "./components/ui/sonner";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import Login from "./pages/Login";
+import AppDownload from "./pages/AppDownload";
 import Dashboard from "./pages/Dashboard";
 import AppLauncher from "./pages/AppLauncher";
 import AppCatalog from "./pages/AppCatalog";
@@ -114,6 +115,7 @@ function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/download" element={<AppDownload />} />
           <Route path="/" element={<DefaultRedirect />} />
           {/* User-accessible routes */}
           <Route path="/launcher" element={<ProtectedRoute><AppLauncher /></ProtectedRoute>} />

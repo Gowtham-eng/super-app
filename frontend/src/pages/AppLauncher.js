@@ -4,6 +4,7 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { launchUrlAfterKissflowClear } from '../utils/nativeSession';
 import { BACKEND_ORIGIN, ITSM_API } from '../config/api';
+import RefexOneAppDownload from '../components/RefexOneAppDownload';
 import { toast } from 'sonner';
 import { Search, Lock, MessageCircle, X, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight, Headphones, Loader2, BarChart3 } from 'lucide-react';
 
@@ -551,6 +552,10 @@ const AppLauncher = () => {
         <p className="text-sm text-slate-400">{filtered.length} application{filtered.length !== 1 ? 's' : ''} available</p>
       </div>
 
+      <div className="sm:hidden mb-4">
+        <RefexOneAppDownload variant="launcher" />
+      </div>
+
       {/* Mobile search bar */}
       <div className="sm:hidden mb-6">
         <div className="relative" data-testid="app-search-mobile">
@@ -572,16 +577,8 @@ const AppLauncher = () => {
           <div className="absolute -bottom-16 -left-16 w-72 h-72 rounded-full bg-teal-100/30 blur-3xl pointer-events-none" />
 
           <div className="relative px-8 py-7 flex items-center justify-between gap-6">
-            {/* Left: Icon + Title + Subtitle */}
-            <div className="flex items-center gap-4">
-              <div className="w-14 h-14 rounded-2xl bg-white border-2 border-emerald-200 flex items-center justify-center shadow-sm">
-                <LayoutGrid size={24} className="text-emerald-600" strokeWidth={2} />
-              </div>
-              <div>
-                <h1 className="font-heading text-2xl lg:text-3xl font-bold text-slate-900 tracking-tight leading-none">App Center</h1>
-                <p className="text-slate-500 text-sm mt-1.5 font-medium">Enterprise Application Hub</p>
-              </div>
-            </div>
+            {/* Left: Mobile app download (QR + stores) */}
+            <RefexOneAppDownload variant="hero" />
 
             {/* Center: Greeting */}
             <div className="hidden lg:flex flex-col items-center flex-1 px-6">
