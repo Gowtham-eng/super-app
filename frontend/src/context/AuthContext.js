@@ -5,6 +5,9 @@ import { API } from '../config/api';
 
 const AuthContext = createContext(null);
 
+// Match backend: session cookie does not expire (10 years; browser max practical limit).
+const TOKEN_COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 365 * 10;
+
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [organization, setOrganization] = useState(null);
@@ -20,7 +23,7 @@ export const AuthProvider = ({ children }) => {
       const isHttps = window.location.protocol === 'https:';
       const sameSite = isHttps ? 'None' : 'Lax';
       const secure = isHttps ? '; Secure' : '';
-      document.cookie = `iam_token=${encodeURIComponent(newToken)}; Path=/; SameSite=${sameSite}; Max-Age=${60 * 60 * 24 * 30}${secure}`;
+      document.cookie = `iam_token=${encodeURIComponent(newToken)}; Path=/; SameSite=${sameSite}; Max-Age=${TOKEN_COOKIE_MAX_AGE_SEC}${secure}`;
     } catch (e) {
       // ignore
     }

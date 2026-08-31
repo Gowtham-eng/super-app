@@ -36,7 +36,8 @@ db = client[os.environ['DB_NAME']]
 # JWT Configuration
 JWT_SECRET = os.environ.get('JWT_SECRET', 'kissflow-iam-secret-key-2024')
 JWT_ALGORITHM = 'HS256'
-JWT_EXPIRATION_HOURS = 720  # 30 days
+# 0 or unset = tokens never expire. Set JWT_EXPIRATION_HOURS=720 for 30-day sessions.
+JWT_EXPIRATION_HOURS = int(os.environ.get('JWT_EXPIRATION_HOURS', '0') or '0')
 
 # Public URL - MUST be set for SAML SSO to work in Kubernetes
 PUBLIC_URL = os.environ.get('PUBLIC_URL', '').rstrip('/')
@@ -341,14 +342,20 @@ def create_token(user_id: str, email: str, org_id: str, role: str) -> str:
         'email': email,
         'org_id': org_id,
         'role': role,
-        'exp': datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS),
-        'iat': datetime.now(timezone.utc)
+        'iat': datetime.now(timezone.utc),
     }
+    if JWT_EXPIRATION_HOURS > 0:
+        payload['exp'] = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS)
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 def decode_token(token: str) -> dict:
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=[JWT_ALGORITHM],
+            options={"verify_exp": JWT_EXPIRATION_HOURS > 0},
+        )
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
@@ -361,7 +368,7 @@ def _decode_external_jwt(token: str) -> dict:
             token,
             options={
                 "verify_signature": False,
-                "verify_exp": True,
+                "verify_exp": JWT_EXPIRATION_HOURS > 0,
                 "verify_aud": False,
             },
         )

@@ -1,6 +1,6 @@
 """
 Iteration 8 Tests - Testing new features:
-1. JWT token expiry is 30 days (720 hours)
+1. JWT token expiry (disabled by default; optional via JWT_EXPIRATION_HOURS)
 2. SAML App creation accepts home_url field
 3. SAML App home_url is stored and returned in API
 4. App Launcher shows tile view with app name and description
@@ -29,10 +29,10 @@ SAML_APP_ID = "e5a4c999-65fd-4301-9ebd-8948893eea0d"
 
 
 class TestJWTExpiration:
-    """Test JWT token expiry is 30 days (720 hours)"""
+    """Test JWT token expiry configuration"""
     
-    def test_jwt_expiry_is_30_days(self):
-        """Verify JWT token has 30-day expiration"""
+    def test_jwt_token_issued_on_login(self):
+        """Verify login returns a valid JWT (no exp by default, or configured TTL)."""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "email": ADMIN_EMAIL,
             "password": ADMIN_PASSWORD
@@ -42,22 +42,17 @@ class TestJWTExpiration:
         token = response.json().get("token")
         assert token, "No token returned"
         
-        # Decode token without verification to check expiry
         decoded = jwt.decode(token, options={"verify_signature": False})
+        assert decoded.get("iat"), "No iat claim in token"
         
         exp_timestamp = decoded.get("exp")
         iat_timestamp = decoded.get("iat")
-        
-        assert exp_timestamp, "No exp claim in token"
-        assert iat_timestamp, "No iat claim in token"
-        
-        # Calculate difference in hours
-        diff_seconds = exp_timestamp - iat_timestamp
-        diff_hours = diff_seconds / 3600
-        
-        # Should be 720 hours (30 days)
-        assert 719 <= diff_hours <= 721, f"JWT expiry is {diff_hours} hours, expected 720 (30 days)"
-        print(f"JWT expiry verified: {diff_hours} hours (~{diff_hours/24:.1f} days)")
+        if exp_timestamp:
+            diff_hours = (exp_timestamp - iat_timestamp) / 3600
+            assert diff_hours > 0, "JWT exp must be after iat"
+            print(f"JWT expiry configured: {diff_hours} hours (~{diff_hours/24:.1f} days)")
+        else:
+            print("JWT has no exp claim (session does not expire)")
 
 
 class TestSAMLAppHomeUrl:
