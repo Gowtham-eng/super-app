@@ -53,6 +53,58 @@ const openDesktopAppTab = (url) => {
   }
 };
 
+/** NE embed dashboards — split Reports tab into consolidated vs per-app sections. */
+const NE_EMBED_HOST = 'refex-admin-ui';
+
+const isNeConsolidatedReport = (app) => {
+  const url = String(app?.home_url || '');
+  return url.includes(NE_EMBED_HOST) && url.includes('/dashboard') && !url.includes('/applications/');
+};
+
+const isNeApplicationReport = (app) => {
+  const url = String(app?.home_url || '');
+  return url.includes(NE_EMBED_HOST) && url.includes('/applications/');
+};
+
+const splitReportsSections = (apps) => {
+  const consolidated = apps.filter(isNeConsolidatedReport);
+  const application = apps.filter(isNeApplicationReport);
+  const other = apps.filter((a) => !isNeConsolidatedReport(a) && !isNeApplicationReport(a));
+  const sections = [];
+  if (consolidated.length) sections.push({ key: 'consolidated', label: 'Consolidated Usage Report', apps: consolidated });
+  if (application.length) sections.push({ key: 'application', label: 'Application Usage Report', apps: application });
+  if (other.length) sections.push({ key: 'other', label: 'Other Reports', apps: other });
+  return sections.length ? sections : [{ key: 'all', label: null, apps }];
+};
+
+/** Adrenalin TITLE is honorific (Mr./Mrs.); DESIGNATION is the job title. */
+const HONORIFIC_TITLE_RE = /^(mr|mrs|ms|miss|dr|sir|madam|mx)\.?$/i;
+
+const jobTitleFromUser = (u) => {
+  const candidates = [u?.designation, u?.job_title, u?.title];
+  for (const raw of candidates) {
+    const title = String(raw || '').trim();
+    if (title && !HONORIFIC_TITLE_RE.test(title)) return title;
+  }
+  return '';
+};
+
+/** Pass Refex One logged-in user into NE embed greeting. */
+const appendNeEmbedIdentity = (url, u) => {
+  if (!url || !String(url).includes('embed=1')) return url;
+  try {
+    const parsed = new URL(url);
+    const name = (u?.name || u?.full_name || '').trim();
+    const title = jobTitleFromUser(u);
+    if (name) parsed.searchParams.set('user_name', name);
+    if (title) parsed.searchParams.set('user_title', title);
+    else parsed.searchParams.delete('user_title');
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+};
+
 // Mobile palette (kept untouched)
 const APP_COLORS = [
   { bg: 'bg-blue-50', text: 'text-blue-600', border: 'border-blue-100' },
@@ -517,9 +569,9 @@ const AppLauncher = () => {
       }
       const mobileFlow = isCapacitor || (isPWA && isMobile);
       if (mobileFlow) {
-        window.location.href = targetUrl;
+        window.location.href = appendNeEmbedIdentity(targetUrl, user);
       } else {
-        openDesktopAppTab(targetUrl);
+        openDesktopAppTab(appendNeEmbedIdentity(targetUrl, user));
       }
     } else if (app.type === 'mobile') {
       // Detect device and route to the appropriate store
@@ -712,6 +764,7 @@ const AppLauncher = () => {
             const meta = CATEGORY_META[category] || { icon: Zap, color: 'text-slate-600', bg: 'bg-slate-50', dot: '#64748B' };
             const Icon = meta.icon;
             const label = CATEGORY_LABEL[category] || category;
+            const reportSections = category === 'Reports' ? splitReportsSections(catApps) : [{ key: 'default', label: null, apps: catApps }];
             return (
               <div key={category} data-testid={`category-${category.toLowerCase()}`}>
                 {/* Category Header — refined */}
@@ -724,9 +777,19 @@ const AppLauncher = () => {
                   <span className="text-xs text-slate-400 font-medium tabular-nums">{catApps.length} app{catApps.length !== 1 ? 's' : ''}</span>
                 </div>
 
+                {reportSections.map((section) => (
+                <div key={section.key} className={section.label ? 'mb-8 last:mb-0' : ''} data-testid={section.label ? `reports-section-${section.key}` : undefined}>
+                {section.label ? (
+                  <div className="flex items-center gap-2 mb-3 sm:mb-4 pl-0.5">
+                    <span className="w-1 h-4 rounded-full bg-teal-500" aria-hidden />
+                    <h3 className="text-sm font-semibold text-slate-800">{section.label}</h3>
+                    <span className="text-xs text-slate-400 font-medium tabular-nums">{section.apps.length} app{section.apps.length !== 1 ? 's' : ''}</span>
+                  </div>
+                ) : null}
+
                 {/* Mobile: 4-col grid */}
                 <div className="sm:hidden grid grid-cols-4 gap-3">
-                  {catApps.map((app) => {
+                  {section.apps.map((app) => {
                     const c = APP_COLORS[hashString(app.id || app.name) % APP_COLORS.length];
                     const mNoAccess = app.has_access === false && !app.is_placeholder;
                     const mBlocked = app.policy_blocked && !app.is_placeholder && !mNoAccess;
@@ -763,7 +826,7 @@ const AppLauncher = () => {
 
                 {/* Desktop: Vibrant gradient tile grid (matches mockup) */}
                 <div className="hidden sm:grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 3xl:grid-cols-7 gap-4">
-                  {catApps.map((app) => {
+                  {section.apps.map((app) => {
                     const pal = getTilePalette(app);
                     const AppIcon = pickAppIcon(app.name);
                     const catMeta = CATEGORY_META[app.category] || meta;
@@ -836,6 +899,8 @@ const AppLauncher = () => {
                     );
                   })}
                 </div>
+                </div>
+                ))}
               </div>
             );
           })}
