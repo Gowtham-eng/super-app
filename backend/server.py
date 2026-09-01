@@ -17,7 +17,14 @@ import ipaddress
 
 from services.email_service import send_email, build_access_request_email, build_request_status_email, build_sync_report_email
 from services.adrenalin_sync import sync_employees
-from services.kissflow_scim_client import sync_to_kissflow, push_single_user_to_kissflow, get_kissflow_scim_config, save_kissflow_scim_config, resolve_managers_in_kissflow
+from services.kissflow_scim_client import (
+    sync_to_kissflow,
+    push_single_user_to_kissflow,
+    link_user_from_kissflow_scim,
+    get_kissflow_scim_config,
+    save_kissflow_scim_config,
+    resolve_managers_in_kissflow,
+)
 from services.app_update import get_app_update_config, save_app_update_config, evaluate_update
 from services.oidc_crypto import get_jwks, sign_oidc_jwt, normalize_issuer, decode_oidc_jwt
 from routes import scim as scim_router_module
@@ -3508,6 +3515,45 @@ async def push_user_to_kf(request: Request, user: dict = Depends(get_current_use
     }
     await db.kissflow_sync_logs.insert_one(log_doc)
 
+    return result
+
+
+@api_router.post("/kissflow-scim/link-user")
+async def link_user_from_kf(request: Request, user: dict = Depends(get_current_user)):
+    """Look up a RefexOne user in Kissflow SCIM and save kissflow_user_id (no create)."""
+    if user.get("role") != "org_admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    body = await request.json()
+    email = (body.get("email") or "").strip().lower()
+    user_id = (body.get("user_id") or "").strip() or None
+    if not email and not user_id:
+        raise HTTPException(status_code=400, detail="email or user_id is required")
+
+    target = None
+    if user_id:
+        target = await db.users.find_one(
+            {"id": user_id, "org_id": user["org_id"]}, {"_id": 0, "id": 1, "email": 1}
+        )
+    if not target and email:
+        target = await db.users.find_one(
+            {"email": email, "org_id": user["org_id"]}, {"_id": 0, "id": 1, "email": 1}
+        )
+    if not target:
+        raise HTTPException(status_code=404, detail=f"User {email or user_id} not found in this organization")
+
+    result = await link_user_from_kissflow_scim(
+        db, user["org_id"], target.get("email") or email, user_id=target["id"]
+    )
+    await db.kissflow_sync_logs.insert_one({
+        "org_id": user["org_id"],
+        "triggered_by": user["id"],
+        "trigger_type": "manual_link",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "email": target.get("email") or email,
+        "result": result,
+    })
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
     return result
 
 

@@ -204,6 +204,7 @@ const UsersPage = () => {
   const [detailEditing, setDetailEditing] = useState(false);
   const [detailForm, setDetailForm] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [linkingKf, setLinkingKf] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [quickFilter, setQuickFilter] = useState('all');
 
@@ -290,6 +291,48 @@ const UsersPage = () => {
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to delete user');
+    }
+  };
+
+  const linkKissflow = async (user) => {
+    if (!user?.email) {
+      toast.error('User has no email');
+      return;
+    }
+    if (!window.confirm(
+      `Link ${user.email} to Kissflow?\n\nLooks up this email in Kissflow SCIM, saves the Kissflow ID (badge), and assigns the Kissflow app if found.`
+    )) return;
+    setLinkingKf(true);
+    try {
+      const res = await axios.post(
+        `${API}/kissflow-scim/link-user`,
+        { email: user.email, user_id: user.id },
+        getAuthHeader()
+      );
+      const data = res.data || {};
+      if (data.action === 'linked') {
+        toast.success('Kissflow linked — badge should appear');
+        const updated = {
+          ...user,
+          kissflow_user_id: data.kissflow_user_id,
+          kissflow_synced_at: data.kissflow_synced_at,
+        };
+        setDetailUser(updated);
+        setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, ...updated } : u)));
+        fetchData();
+      } else if (data.action === 'not_found') {
+        toast.error(data.detail || 'Not found in Kissflow. Email must match Kissflow login exactly.');
+      } else if (data.action === 'inactive') {
+        toast.error(data.detail || 'User is disabled in Kissflow.');
+      } else if (data.action === 'auth_error') {
+        toast.error('Kissflow SCIM auth failed. Check SCIM Setup token.');
+      } else {
+        toast.error(data.detail || data.error || `Link result: ${data.action || 'unknown'}`);
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to link Kissflow');
+    } finally {
+      setLinkingKf(false);
     }
   };
 
@@ -729,6 +772,19 @@ const UsersPage = () => {
                   </p>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
+                  {!detailEditing && currentUser?.role === 'org_admin' && (
+                    <button
+                      type="button"
+                      onClick={() => linkKissflow(detailUser)}
+                      disabled={linkingKf}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-violet-50 text-violet-700 hover:bg-violet-100 border border-violet-200 transition-colors disabled:opacity-50"
+                      data-testid="detail-link-kissflow-btn"
+                      title={detailUser.kissflow_user_id ? 'Refresh Kissflow ID from SCIM' : 'Look up this email in Kissflow and show the badge'}
+                    >
+                      <Link2 size={13} className={linkingKf ? 'animate-pulse' : ''} />
+                      {linkingKf ? 'Linking…' : (detailUser.kissflow_user_id ? 'Relink Kissflow' : 'Link Kissflow')}
+                    </button>
+                  )}
                   {!detailEditing ? (
                     <button
                       type="button"
@@ -880,6 +936,14 @@ const UsersPage = () => {
                     <Field label="PAN Number" value={detailUser.pan_number} />
                     <Field label="System Role" value={detailUser.role === 'org_admin' ? 'Admin' : 'User'} />
                     <Field label="Status" value={detailUser.status} />
+                    <Field
+                      label="Kissflow"
+                      value={
+                        detailUser.kissflow_user_id
+                          ? `Linked (${detailUser.kissflow_user_id})`
+                          : 'Not linked'
+                      }
+                    />
                   </Section>
 
                   {/* Contact */}

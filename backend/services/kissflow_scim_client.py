@@ -801,6 +801,118 @@ async def push_single_user_to_kissflow(db, org_id: str, email: str) -> dict:
     return res
 
 
+async def _assign_kissflow_apps(db, org_id: str, user_id: str) -> list:
+    """Add user to Kissflow SAML/OIDC approved_user_ids (tile access)."""
+    assigned = []
+    for app in await get_kissflow_app_ids(db, org_id):
+        res = await db[app["collection"]].update_one(
+            {"id": app["id"]},
+            {"$addToSet": {"approved_user_ids": user_id}},
+        )
+        if res.modified_count or res.matched_count:
+            assigned.append(app["id"])
+    return assigned
+
+
+async def link_user_from_kissflow_scim(db, org_id: str, email: str, user_id: str = None) -> dict:
+    """
+    Look up an existing Kissflow SCIM user by email and store kissflow_user_id.
+    Does not create a Kissflow account. Does not revoke on miss.
+    Also assigns Kissflow app tiles in RefexOne when the SCIM user is active.
+    """
+    email = (email or "").strip().lower()
+    if not email:
+        return {"error": "email is required"}
+
+    query = {"org_id": org_id}
+    if user_id:
+        query = {"id": user_id}
+    else:
+        query["email"] = email
+
+    user = await db.users.find_one(query, {"_id": 0, "password": 0})
+    if not user and not user_id:
+        import re as _re
+        user = await db.users.find_one(
+            {"org_id": org_id, "email": {"$regex": f"^{_re.escape(email)}$", "$options": "i"}},
+            {"_id": 0, "password": 0},
+        )
+    if not user:
+        return {"error": f"User {email} not found in this organization"}
+
+    config = await get_kissflow_scim_config(db, org_id)
+    if not config:
+        return {"error": "Kissflow SCIM not configured. Save config under SCIM Setup."}
+
+    base_url = config["base_url"].rstrip("/") + "/"
+    token = config["token"]
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/scim+json",
+    }
+    lookup_email = (user.get("email") or email).strip().lower()
+    filter_url = f'{base_url}Users?filter=userName eq "{lookup_email}"'
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        search_resp = await _request_with_retry(client, "GET", filter_url, headers)
+
+    if search_resp.status_code in (401, 403):
+        return {
+            "action": "auth_error",
+            "email": lookup_email,
+            "status": search_resp.status_code,
+            "detail": (search_resp.text or "")[:300],
+        }
+    if search_resp.status_code != 200:
+        return {
+            "action": "search_error",
+            "email": lookup_email,
+            "status": search_resp.status_code,
+            "detail": (search_resp.text or "")[:300],
+        }
+
+    resources = (search_resp.json() or {}).get("Resources") or []
+    if not resources:
+        return {
+            "action": "not_found",
+            "email": lookup_email,
+            "user_in_kissflow": False,
+            "detail": "User not found in Kissflow SCIM. Confirm the Kissflow login email matches RefexOne exactly.",
+        }
+
+    kf_user = resources[0]
+    kf_id = kf_user.get("id")
+    active = kf_user.get("active", True) is True
+    now = datetime.now(timezone.utc).isoformat()
+
+    if not active:
+        return {
+            "action": "inactive",
+            "email": lookup_email,
+            "user_in_kissflow": True,
+            "kissflow_user_id": kf_id,
+            "kissflow_active": False,
+            "detail": "User exists in Kissflow but is disabled. Enable them in Kissflow, then link again.",
+        }
+
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"kissflow_user_id": kf_id, "kissflow_synced_at": now}},
+    )
+    apps_assigned = await _assign_kissflow_apps(db, org_id, user["id"])
+
+    logger.info("Linked Kissflow SCIM user %s -> %s (apps=%s)", lookup_email, kf_id, apps_assigned)
+    return {
+        "action": "linked",
+        "email": lookup_email,
+        "user_id": user["id"],
+        "user_in_kissflow": True,
+        "kissflow_user_id": kf_id,
+        "kissflow_active": True,
+        "apps_assigned": apps_assigned,
+        "kissflow_synced_at": now,
+    }
+
 
 async def resolve_managers_in_kissflow(db, org_id: str) -> dict:
     """
