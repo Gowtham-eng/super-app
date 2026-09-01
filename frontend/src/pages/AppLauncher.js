@@ -8,7 +8,9 @@ import RefexOneAppDownload from '../components/RefexOneAppDownload';
 import {
   isItsmNamedApp as isItsmApp,
   isKissflowApp,
+  isKissflowApiOk,
   isNeEmbedApp,
+  itsmKissflowFallbackReason,
   resolveKissflowLaunchApp,
   shouldHijackItsmLaunch,
 } from '../utils/launcherApps';
@@ -423,8 +425,8 @@ const AppLauncher = () => {
       return;
     }
 
-    const tryLaunchKissflow = () => {
-      const target = pickKissflowLaunchApp(app);
+    const tryLaunchKissflow = (list = apps) => {
+      const target = pickKissflowLaunchApp(app, list);
       if (target) {
         launchKissflowApp(target);
         return true;
@@ -435,12 +437,11 @@ const AppLauncher = () => {
     setItsmChecking(true);
     try {
       const res = await axios.get(`${ITSM_API}/itsm/kissflow-status`, getAuthHeader());
-      // Strict: only SCIM-verified / linked users open Kissflow — app tile alone is not enough.
+      const kissflowOk = isKissflowApiOk(res);
       const userInKissflow = res.data?.user_in_kissflow === true;
 
-      if (userInKissflow) {
+      if (kissflowOk && userInKissflow) {
         if (tryLaunchKissflow()) return;
-        // Status check may have just assigned Kissflow app — reload launcher apps once.
         try {
           const appsRes = await axios.get(`${API}/launcher/apps`, getAuthHeader());
           const list = Array.isArray(appsRes.data) ? appsRes.data : [];
@@ -448,11 +449,7 @@ const AppLauncher = () => {
           const hasItsm = withoutDup.some(isItsmApp);
           const refreshed = hasItsm ? withoutDup : [...withoutDup, ITSM_VIRTUAL_APP];
           setApps(refreshed);
-          const kissflowSaml = pickKissflowLaunchApp(app, refreshed);
-          if (kissflowSaml) {
-            launchKissflowApp(kissflowSaml);
-            return;
-          }
+          if (tryLaunchKissflow(refreshed)) return;
         } catch (e) {
           // ignore reload errors
         }
@@ -460,7 +457,12 @@ const AppLauncher = () => {
         return;
       }
 
-      navigate('/itsm', { state: { kissflowFallback: true, reason: 'not_in_kissflow' } });
+      navigate('/itsm', {
+        state: {
+          kissflowFallback: true,
+          reason: itsmKissflowFallbackReason(res, userInKissflow),
+        },
+      });
     } catch (err) {
       navigate('/itsm', { state: { kissflowFallback: true, reason: 'check_failed' } });
     } finally {

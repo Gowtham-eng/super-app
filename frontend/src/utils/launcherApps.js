@@ -27,13 +27,30 @@ export function isItsmNamedApp(app = {}) {
 }
 
 /**
- * Only the in-app virtual ITSM tile should run Kissflow-status + first-SAML fallback.
- * Reports OIDC and All-tab SAML must use their own home_url from settings.
+ * Virtual ITSM + All-tab ITSM SAML run the Kissflow-status probe.
+ * Reports OIDC must never enter that path (it was opening EMS).
  */
 export function shouldHijackItsmLaunch(app = {}) {
   if (!app || isNeEmbedApp(app)) return false;
-  if (app.type === 'saml' || app.type === 'oidc') return false;
+  if (app.type === 'oidc') return false;
   return isItsmNamedApp(app);
+}
+
+/**
+ * GET /itsm/kissflow-status returns HTTP 200 even when Kissflow is down.
+ * Use Kissflow's own status_code / ok flag. Not 2xx → in-app /itsm dashboard.
+ */
+export function isKissflowApiOk(res) {
+  const httpOk = Number(res?.status) === 200;
+  const data = res?.data || {};
+  const kfCode = Number(data.status_code);
+  return httpOk && data.ok === true && kfCode >= 200 && kfCode < 300;
+}
+
+export function itsmKissflowFallbackReason(res, userInKissflow) {
+  if (!isKissflowApiOk(res)) return 'kissflow_unavailable';
+  if (!userInKissflow) return 'not_in_kissflow';
+  return 'no_sso_target';
 }
 
 function usableLauncherApp(app) {

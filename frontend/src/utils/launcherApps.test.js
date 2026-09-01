@@ -3,6 +3,8 @@ import {
   isItsmNamedApp,
   shouldHijackItsmLaunch,
   resolveKissflowLaunchApp,
+  isKissflowApiOk,
+  itsmKissflowFallbackReason,
 } from './launcherApps';
 
 const EMS = {
@@ -43,12 +45,25 @@ describe('launcher ITSM vs Reports vs EMS', () => {
     expect(shouldHijackItsmLaunch(ITSM_OIDC)).toBe(false);
   });
 
-  it('does not hijack All-tab SAML IT Service Management — settings home_url is used', () => {
-    expect(shouldHijackItsmLaunch(ITSM_SAML)).toBe(false);
+  it('runs Kissflow-status for All-tab SAML IT Service Management, not Reports OIDC', () => {
+    expect(shouldHijackItsmLaunch(ITSM_SAML)).toBe(true);
     expect(isItsmNamedApp(ITSM_SAML)).toBe(true);
+    expect(shouldHijackItsmLaunch(ITSM_OIDC)).toBe(false);
   });
 
-  it('only hijacks the virtual in-app ITSM tile', () => {
+  it('treats Kissflow status_code outside 2xx as unavailable (open in-app /itsm)', () => {
+    const down = { status: 200, data: { ok: false, status_code: 502, user_in_kissflow: true } };
+    expect(isKissflowApiOk(down)).toBe(false);
+    expect(itsmKissflowFallbackReason(down, true)).toBe('kissflow_unavailable');
+  });
+
+  it('allows Kissflow SSO only when the probe is 2xx and the user is in Kissflow', () => {
+    const up = { status: 200, data: { ok: true, status_code: 200, user_in_kissflow: true } };
+    expect(isKissflowApiOk(up)).toBe(true);
+    expect(itsmKissflowFallbackReason(up, false)).toBe('not_in_kissflow');
+  });
+
+  it('also probes Kissflow for the virtual in-app ITSM tile', () => {
     expect(shouldHijackItsmLaunch(VIRTUAL)).toBe(true);
   });
 
