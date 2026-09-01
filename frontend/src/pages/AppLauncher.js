@@ -5,19 +5,15 @@ import { useAuth } from '../context/AuthContext';
 import { launchUrlAfterKissflowClear } from '../utils/nativeSession';
 import { BACKEND_ORIGIN, ITSM_API } from '../config/api';
 import RefexOneAppDownload from '../components/RefexOneAppDownload';
+import {
+  isItsmNamedApp as isItsmApp,
+  isKissflowApp,
+  isNeEmbedApp,
+  resolveKissflowLaunchApp,
+  shouldHijackItsmLaunch,
+} from '../utils/launcherApps';
 import { toast } from 'sonner';
 import { Search, Lock, MessageCircle, X, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight, Headphones, Loader2, BarChart3 } from 'lucide-react';
-
-const isItsmApp = (app = {}) => {
-  const name = (app.name || '').toLowerCase();
-  const desc = (app.description || '').toLowerCase();
-  const id = (app.id || '').toLowerCase();
-  return (
-    id === 'itsm-inapp' ||
-    /itsm|tech support|it support|helpdesk|it helpdesk|it service/.test(name) ||
-    /itsm|tech support|it helpdesk|helpdesk/.test(desc)
-  );
-};
 
 const ITSM_VIRTUAL_APP = {
   id: 'itsm-inapp',
@@ -252,11 +248,6 @@ const AppLauncher = () => {
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
   const isSafari = /Safari/i.test(ua) && !/Chrome|CriOS|Chromium|Edg|Android/i.test(ua);
 
-  const isKissflowApp = (app = {}) => {
-    const blob = `${app.name || ''} ${app.description || ''} ${app.home_url || ''} ${app.acs_url || ''} ${app.entity_id || ''}`.toLowerCase();
-    return /kissflow/.test(blob);
-  };
-
   const isAdrenalinApp = (app = {}) => {
     const blob = `${app.name || ''} ${app.description || ''} ${app.home_url || ''} ${app.acs_url || ''}`.toLowerCase();
     return /adrenalin|myadrenalin/.test(blob);
@@ -388,39 +379,7 @@ const AppLauncher = () => {
     toast.message('Kissflow account may not be synced. If login fails, contact IT.', { duration: 5000 });
   };
 
-  /** Find a Kissflow SAML app to SSO into from an ITSM tile click. */
-  const resolveKissflowLaunchApp = (tappedApp) => {
-    const list = Array.isArray(apps) ? apps : [];
-    const usable = (a) =>
-      a &&
-      a.has_access !== false &&
-      !a.policy_blocked &&
-      !a.is_placeholder &&
-      a.id !== ITSM_VIRTUAL_APP.id;
-
-    // 1) Prefer a real Kissflow SAML tile (same app that opens Kissflow when tapped directly)
-    const kissflowSaml = list.find((a) => usable(a) && a.type === 'saml' && isKissflowApp(a));
-    if (kissflowSaml) return kissflowSaml;
-
-    // 2) ITSM SAML module that itself points at Kissflow (home_url / ACS on kissflow.com)
-    const itsmOnKissflow = list.find((a) => {
-      if (!usable(a) || a.type !== 'saml' || !isItsmApp(a)) return false;
-      return isKissflowApp(a);
-    });
-    if (itsmOnKissflow) return itsmOnKissflow;
-
-    // 3) Tapped app only if it is Kissflow SSO (never the virtual in-app ITSM tile)
-    if (
-      tappedApp &&
-      usable(tappedApp) &&
-      tappedApp.type === 'saml' &&
-      isKissflowApp(tappedApp)
-    ) {
-      return tappedApp;
-    }
-
-    return null;
-  };
+  const pickKissflowLaunchApp = (tappedApp, list = apps) => resolveKissflowLaunchApp(list, tappedApp);
 
   const launchKissflowApp = (app) => {
     const token = localStorage.getItem('iam_token');
@@ -465,7 +424,7 @@ const AppLauncher = () => {
     }
 
     const tryLaunchKissflow = () => {
-      const target = resolveKissflowLaunchApp(app);
+      const target = pickKissflowLaunchApp(app);
       if (target) {
         launchKissflowApp(target);
         return true;
@@ -489,13 +448,7 @@ const AppLauncher = () => {
           const hasItsm = withoutDup.some(isItsmApp);
           const refreshed = hasItsm ? withoutDup : [...withoutDup, ITSM_VIRTUAL_APP];
           setApps(refreshed);
-          const usable = (a) =>
-            a &&
-            a.has_access !== false &&
-            !a.policy_blocked &&
-            !a.is_placeholder &&
-            a.id !== ITSM_VIRTUAL_APP.id;
-          const kissflowSaml = refreshed.find((a) => usable(a) && a.type === 'saml' && isKissflowApp(a));
+          const kissflowSaml = pickKissflowLaunchApp(app, refreshed);
           if (kissflowSaml) {
             launchKissflowApp(kissflowSaml);
             return;
@@ -516,7 +469,15 @@ const AppLauncher = () => {
   };
 
   const launchApp = (app) => {
-    if (isItsmApp(app)) {
+    if (isNeEmbedApp(app)) {
+      const targetUrl = appendNeEmbedIdentity(app.home_url, user);
+      const mobileFlow = isCapacitor || (isPWA && isMobile);
+      if (mobileFlow) window.location.href = targetUrl;
+      else openDesktopAppTab(targetUrl);
+      return;
+    }
+
+    if (shouldHijackItsmLaunch(app)) {
       handleItsmClick(app);
       return;
     }
