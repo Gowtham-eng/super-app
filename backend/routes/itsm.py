@@ -2145,6 +2145,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             user.get("email") or "",
             user_id=user.get("id"),
             revoke_if_missing=False,
+            for_itsm_routing=True,
         )
         return {
             "user_in_kissflow": bool(profile.get("user_in_kissflow")),

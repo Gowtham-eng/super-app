@@ -469,6 +469,7 @@ async def check_user_kissflow_access(
     user_id: str = None,
     *,
     revoke_if_missing: bool = True,
+    for_itsm_routing: bool = False,
 ) -> dict:
     """
     Live-verify whether the user still has Kissflow login access (SCIM).
@@ -477,6 +478,9 @@ async def check_user_kissflow_access(
 
     Set revoke_if_missing=False for ITSM launcher probes — do not strip app assignment
     on a temporary SCIM miss / error.
+
+    Set for_itsm_routing=True for ITSM tile routing: only SCIM-active users or users
+    with kissflow_user_id count as in Kissflow — RefexOne app assignment alone does not.
     """
     email = (email or "").strip().lower()
     result = {
@@ -489,7 +493,7 @@ async def check_user_kissflow_access(
         return result
 
     async def _local_fallback(verified_via: str, error: str = None) -> dict:
-        """Prefer local kissflow_user_id / app assignment when SCIM is unavailable."""
+        """Prefer local kissflow_user_id when SCIM is unavailable."""
         local_kf_id = None
         local_user = None
         if db is not None:
@@ -503,7 +507,7 @@ async def check_user_kissflow_access(
             local_kf_id = (local_user or {}).get("kissflow_user_id")
         has_local_id = bool(local_kf_id and str(local_kf_id).strip())
         has_app = False
-        if db is not None and local_user:
+        if not for_itsm_routing and db is not None and local_user:
             has_app = await user_has_kissflow_access(db, org_id, local_user)
         has_local = has_local_id or has_app
         out = {
@@ -561,12 +565,22 @@ async def check_user_kissflow_access(
         if not resources:
             # Not found in Kissflow SCIM
             revoke_res = await _revoke_local_access()
-            out = await _local_fallback("scim") if not revoke_if_missing else {
-                "user_in_kissflow": False,
-                "kissflow_user_id": None,
-                "kissflow_active": False,
-                "verified_via": "scim",
-            }
+            if for_itsm_routing:
+                out = {
+                    "user_in_kissflow": False,
+                    "kissflow_user_id": None,
+                    "kissflow_active": False,
+                    "verified_via": "scim",
+                }
+            elif not revoke_if_missing:
+                out = await _local_fallback("scim")
+            else:
+                out = {
+                    "user_in_kissflow": False,
+                    "kissflow_user_id": None,
+                    "kissflow_active": False,
+                    "verified_via": "scim",
+                }
             out["access_revoked"] = bool(revoke_res and revoke_res.get("revoked"))
             return out
 
