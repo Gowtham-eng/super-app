@@ -2144,12 +2144,14 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             user.get("org_id") or "",
             user.get("email") or "",
             user_id=user.get("id"),
+            revoke_if_missing=False,
         )
         return {
             "user_in_kissflow": bool(profile.get("user_in_kissflow")),
-            "kissflow_user_id": profile.get("kissflow_user_id") if profile.get("user_in_kissflow") else None,
+            "kissflow_user_id": profile.get("kissflow_user_id") or None,
             "kissflow_active": bool(profile.get("kissflow_active")),
             "verified_via": profile.get("verified_via"),
+            "error": profile.get("error"),
         }
 
     async def _fetch_matrix(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -2238,8 +2240,31 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
 
     @api_router.get("/itsm/kissflow-status")
     async def kissflow_status(user: dict = Depends(get_current_user)):
+        # Always resolve user membership first — ITSM env issues must not hide Kissflow users.
         user_profile = await _verify_kissflow_access(user)
-        cfg = await _resolve_config(user.get("org_id") or "", None)
+        cfg = None
+        try:
+            cfg = await _resolve_config(user.get("org_id") or "", None)
+        except HTTPException as exc:
+            return {
+                "ok": False,
+                "status_code": exc.status_code,
+                "base_url": "",
+                "activeEnvironment": "",
+                "config_error": exc.detail,
+                **user_profile,
+            }
+        except Exception as exc:
+            logger.warning("Kissflow status config resolve failed: %s", exc)
+            return {
+                "ok": False,
+                "status_code": 0,
+                "base_url": "",
+                "activeEnvironment": "",
+                "config_error": str(exc)[:200],
+                **user_profile,
+            }
+
         path = (
             f"/form/2/{cfg['account_id']}/{cfg['approval_matrix_id']}/list"
             f"?page_number=1&page_size=1"

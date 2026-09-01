@@ -201,7 +201,7 @@ const AppLauncher = () => {
   const isSafari = /Safari/i.test(ua) && !/Chrome|CriOS|Chromium|Edg|Android/i.test(ua);
 
   const isKissflowApp = (app = {}) => {
-    const blob = `${app.name || ''} ${app.description || ''} ${app.home_url || ''}`.toLowerCase();
+    const blob = `${app.name || ''} ${app.description || ''} ${app.home_url || ''} ${app.acs_url || ''} ${app.entity_id || ''}`.toLowerCase();
     return /kissflow/.test(blob);
   };
 
@@ -336,9 +336,8 @@ const AppLauncher = () => {
     toast.message('Kissflow account may not be synced. If login fails, contact IT.', { duration: 5000 });
   };
 
-  /** Find a SAML/Kissflow app to SSO into when the ITSM tile itself is the virtual in-app tile. */
+  /** Find a Kissflow SAML app to SSO into from an ITSM tile click. */
   const resolveKissflowLaunchApp = (tappedApp) => {
-    if (tappedApp?.type === 'saml' || tappedApp?.home_url) return tappedApp;
     const list = Array.isArray(apps) ? apps : [];
     const usable = (a) =>
       a &&
@@ -347,15 +346,26 @@ const AppLauncher = () => {
       !a.is_placeholder &&
       a.id !== ITSM_VIRTUAL_APP.id;
 
-    const itsmSaml = list.find((a) => usable(a) && a.type === 'saml' && isItsmApp(a));
-    if (itsmSaml) return itsmSaml;
-
-    const kissflowSaml = list.find((a) => {
-      if (!usable(a) || a.type !== 'saml') return false;
-      const blob = `${a.name || ''} ${a.description || ''} ${a.home_url || ''}`.toLowerCase();
-      return /kissflow/.test(blob);
-    });
+    // 1) Prefer a real Kissflow SAML tile (same app that opens Kissflow when tapped directly)
+    const kissflowSaml = list.find((a) => usable(a) && a.type === 'saml' && isKissflowApp(a));
     if (kissflowSaml) return kissflowSaml;
+
+    // 2) ITSM SAML module that itself points at Kissflow (home_url / ACS on kissflow.com)
+    const itsmOnKissflow = list.find((a) => {
+      if (!usable(a) || a.type !== 'saml' || !isItsmApp(a)) return false;
+      return isKissflowApp(a);
+    });
+    if (itsmOnKissflow) return itsmOnKissflow;
+
+    // 3) Tapped app only if it is Kissflow SSO (never the virtual in-app ITSM tile)
+    if (
+      tappedApp &&
+      usable(tappedApp) &&
+      tappedApp.type === 'saml' &&
+      isKissflowApp(tappedApp)
+    ) {
+      return tappedApp;
+    }
 
     return null;
   };
@@ -402,17 +412,55 @@ const AppLauncher = () => {
       return;
     }
 
+    const tryLaunchKissflow = () => {
+      const target = resolveKissflowLaunchApp(app);
+      if (target) {
+        launchKissflowApp(target);
+        return true;
+      }
+      return false;
+    };
+
+    // Fast path: Kissflow app already on launcher (badge not required) → SSO to Kissflow
+    // This matches "Kissflow tile works, but ITSM opened RefexOne dashboard".
+    if (tryLaunchKissflow()) {
+      // Soft sync badge / kissflow_user_id in background (do not block SSO)
+      axios.get(`${ITSM_API}/itsm/kissflow-status`, getAuthHeader()).catch(() => {});
+      return;
+    }
+
     setItsmChecking(true);
     try {
-      // Kissflow user → open Kissflow. Not in Kissflow → in-app dashboard.
+      // No Kissflow tile visible — ask backend (SCIM / local id)
       const res = await axios.get(`${ITSM_API}/itsm/kissflow-status`, getAuthHeader());
-      const userInKissflow = res.data?.user_in_kissflow === true;
+      const userInKissflow =
+        res.data?.user_in_kissflow === true ||
+        Boolean(res.data?.kissflow_user_id) ||
+        Boolean(user?.kissflow_user_id);
 
       if (userInKissflow) {
-        const target = resolveKissflowLaunchApp(app);
-        if (target) {
-          launchKissflowApp(target);
-          return;
+        if (tryLaunchKissflow()) return;
+        // Status check may have just assigned Kissflow app — reload launcher apps once.
+        try {
+          const appsRes = await axios.get(`${API}/launcher/apps`, getAuthHeader());
+          const list = Array.isArray(appsRes.data) ? appsRes.data : [];
+          const withoutDup = list.filter((a) => a.id !== ITSM_VIRTUAL_APP.id);
+          const hasItsm = withoutDup.some(isItsmApp);
+          const refreshed = hasItsm ? withoutDup : [...withoutDup, ITSM_VIRTUAL_APP];
+          setApps(refreshed);
+          const usable = (a) =>
+            a &&
+            a.has_access !== false &&
+            !a.policy_blocked &&
+            !a.is_placeholder &&
+            a.id !== ITSM_VIRTUAL_APP.id;
+          const kissflowSaml = refreshed.find((a) => usable(a) && a.type === 'saml' && isKissflowApp(a));
+          if (kissflowSaml) {
+            launchKissflowApp(kissflowSaml);
+            return;
+          }
+        } catch (e) {
+          // ignore reload errors
         }
         navigate('/itsm', { state: { kissflowFallback: true, reason: 'no_sso_target' } });
         return;
@@ -420,6 +468,7 @@ const AppLauncher = () => {
 
       navigate('/itsm', { state: { kissflowFallback: true, reason: 'not_in_kissflow' } });
     } catch (err) {
+      if (user?.kissflow_user_id && tryLaunchKissflow()) return;
       navigate('/itsm', { state: { kissflowFallback: true, reason: 'check_failed' } });
     } finally {
       setItsmChecking(false);

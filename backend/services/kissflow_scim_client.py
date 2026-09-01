@@ -462,11 +462,21 @@ async def user_has_kissflow_access(db, org_id: str, user: dict) -> bool:
     return False
 
 
-async def check_user_kissflow_access(db, org_id: str, email: str, user_id: str = None) -> dict:
+async def check_user_kissflow_access(
+    db,
+    org_id: str,
+    email: str,
+    user_id: str = None,
+    *,
+    revoke_if_missing: bool = True,
+) -> dict:
     """
     Live-verify whether the user still has Kissflow login access (SCIM).
     If the user was deleted/deactivated in Kissflow, clear Kissflow access in RefexOne
-    (kissflow_user_id + Kissflow app approved_user_ids).
+    (kissflow_user_id + Kissflow app approved_user_ids) when revoke_if_missing=True.
+
+    Set revoke_if_missing=False for ITSM launcher probes — do not strip app assignment
+    on a temporary SCIM miss / error.
     """
     email = (email or "").strip().lower()
     result = {
@@ -478,10 +488,38 @@ async def check_user_kissflow_access(db, org_id: str, email: str, user_id: str =
     if not email:
         return result
 
+    async def _local_fallback(verified_via: str, error: str = None) -> dict:
+        """Prefer local kissflow_user_id / app assignment when SCIM is unavailable."""
+        local_kf_id = None
+        local_user = None
+        if db is not None:
+            q = {"id": user_id} if user_id else {"email": email, "org_id": org_id}
+            local_user = await db.users.find_one(q, {"_id": 0, "id": 1, "email": 1, "kissflow_user_id": 1})
+            if not local_user and not user_id:
+                local_user = await db.users.find_one(
+                    {"email": email},
+                    {"_id": 0, "id": 1, "email": 1, "kissflow_user_id": 1},
+                )
+            local_kf_id = (local_user or {}).get("kissflow_user_id")
+        has_local_id = bool(local_kf_id and str(local_kf_id).strip())
+        has_app = False
+        if db is not None and local_user:
+            has_app = await user_has_kissflow_access(db, org_id, local_user)
+        has_local = has_local_id or has_app
+        out = {
+            "user_in_kissflow": has_local,
+            "kissflow_user_id": local_kf_id if has_local_id else None,
+            "kissflow_active": has_local,
+            "verified_via": verified_via,
+        }
+        if error:
+            out["error"] = error
+        return out
+
     config = await get_kissflow_scim_config(db, org_id) if db is not None else None
 
     async def _revoke_local_access():
-        if db is None:
+        if db is None or not revoke_if_missing:
             return None
         # Only removes Kissflow app assignment — never RefexOne login / other apps
         return await revoke_kissflow_access_in_refexone(
@@ -489,18 +527,7 @@ async def check_user_kissflow_access(db, org_id: str, email: str, user_id: str =
         )
 
     if not config:
-        # No SCIM — fall back to local flag only
-        local_kf_id = None
-        if db is not None:
-            q = {"id": user_id} if user_id else {"email": email}
-            local = await db.users.find_one(q, {"_id": 0, "kissflow_user_id": 1})
-            local_kf_id = (local or {}).get("kissflow_user_id")
-        has_local = bool(local_kf_id and str(local_kf_id).strip())
-        result["user_in_kissflow"] = has_local
-        result["kissflow_user_id"] = local_kf_id if has_local else None
-        result["kissflow_active"] = has_local
-        result["verified_via"] = "local_db"
-        return result
+        return await _local_fallback("local_db")
 
     base_url = config["base_url"].rstrip("/") + "/"
     token = config["token"]
@@ -508,25 +535,40 @@ async def check_user_kissflow_access(db, org_id: str, email: str, user_id: str =
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/scim+json",
     }
-    filter_url = f'{base_url}Users?filter=userName eq "{email}"'
+    filters = [
+        f'userName eq "{email}"',
+        f'emails.value eq "{email}"',
+    ]
 
     try:
+        resources = []
+        last_status = None
         async with httpx.AsyncClient(timeout=15.0) as client:
-            search_resp = await _request_with_retry(client, "GET", filter_url, headers)
+            for filt in filters:
+                filter_url = f"{base_url}Users?filter={filt}"
+                search_resp = await _request_with_retry(client, "GET", filter_url, headers)
+                last_status = search_resp.status_code
+                if search_resp.status_code != 200:
+                    continue
+                resources = (search_resp.json() or {}).get("Resources") or []
+                if resources:
+                    break
 
-        if search_resp.status_code != 200:
-            # Do not trust stale local id when SCIM check fails closed for access redirect
-            result["verified_via"] = "scim_error"
-            result["error"] = f"scim_status_{search_resp.status_code}"
-            return result
+        if last_status is not None and last_status != 200 and not resources:
+            # SCIM unreachable / auth error — fall back to local linkage (do not fail closed)
+            return await _local_fallback("scim_error", f"scim_status_{last_status}")
 
-        resources = (search_resp.json() or {}).get("Resources") or []
         if not resources:
-            # Deleted from Kissflow — revoke Kissflow app only (RefexOne account stays)
+            # Not found in Kissflow SCIM
             revoke_res = await _revoke_local_access()
-            result["verified_via"] = "scim"
-            result["access_revoked"] = bool(revoke_res and revoke_res.get("revoked"))
-            return result
+            out = await _local_fallback("scim") if not revoke_if_missing else {
+                "user_in_kissflow": False,
+                "kissflow_user_id": None,
+                "kissflow_active": False,
+                "verified_via": "scim",
+            }
+            out["access_revoked"] = bool(revoke_res and revoke_res.get("revoked"))
+            return out
 
         kf_user = resources[0]
         kf_id = kf_user.get("id")
@@ -539,7 +581,7 @@ async def check_user_kissflow_access(db, org_id: str, email: str, user_id: str =
             result["access_revoked"] = bool(revoke_res and revoke_res.get("revoked"))
             return result
 
-        # Active in Kissflow — keep/update local id
+        # Active in Kissflow — keep/update local id and ensure Kissflow app tile exists
         if db is not None and kf_id:
             q = {"id": user_id} if user_id else {"email": email, "org_id": org_id}
             await db.users.update_one(
@@ -549,6 +591,15 @@ async def check_user_kissflow_access(db, org_id: str, email: str, user_id: str =
                     "kissflow_synced_at": datetime.now(timezone.utc).isoformat(),
                 }},
             )
+            uid = user_id
+            if not uid:
+                u = await db.users.find_one(q, {"_id": 0, "id": 1})
+                uid = (u or {}).get("id")
+            if uid:
+                try:
+                    await _assign_kissflow_apps(db, org_id, uid)
+                except Exception as assign_exc:
+                    logger.warning("Kissflow app assign during access check failed: %s", assign_exc)
 
         result["kissflow_user_id"] = kf_id
         result["kissflow_active"] = True
@@ -557,9 +608,7 @@ async def check_user_kissflow_access(db, org_id: str, email: str, user_id: str =
         return result
     except Exception as exc:
         logger.warning("Kissflow access check failed for %s: %s", email, exc)
-        result["verified_via"] = "scim_exception"
-        result["error"] = str(exc)[:200]
-        return result
+        return await _local_fallback("scim_exception", str(exc)[:200])
 
 
 async def deactivate_user_in_kissflow(client: httpx.AsyncClient, base_url: str, token: str, email: str) -> dict:

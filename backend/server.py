@@ -3031,6 +3031,8 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
             "description": app.get('description'),
             "logo_url": app.get('logo_url'),
             "home_url": app.get('home_url'),
+            "acs_url": app.get('acs_url'),
+            "entity_id": app.get('entity_id'),
             "type": "saml",
             "launch_url": f"/api/saml/{app['id']}/sso",
             "has_access": has_access,
