@@ -102,6 +102,10 @@ async def start_scheduler():
     scheduler.add_job(scheduled_hr_sync, 'cron', hour=0, minute=0, id='hr_sync_midnight')
     scheduler.start()
     logging.getLogger("hr_sync").info("Scheduler started - HR sync at midnight daily")
+    try:
+        await ensure_platform_admins()
+    except Exception as e:
+        logging.getLogger(__name__).error("ensure_platform_admins failed: %s", e)
 
 # Static uploads directory
 UPLOAD_DIR = ROOT_DIR / 'uploads'
@@ -333,15 +337,73 @@ class AuditLog(BaseModel):
 
 # ===================== HELPERS =====================
 
+ADMIN_ROLES = ("org_admin", "owner", "admin", "super_admin")
+
 def normalize_email(email: str) -> str:
     """Email addresses are case-insensitive per RFC 5321. Always store/lookup as lowercase."""
     return (email or "").strip().lower()
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    raw = (password or "").encode("utf-8")
+    if len(raw) > 72:
+        raise HTTPException(status_code=400, detail="Password cannot exceed 72 characters")
+    return bcrypt.hashpw(raw, bcrypt.gensalt()).decode()
 
 def verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode(), hashed.encode())
+    if not password or not hashed:
+        return False
+    try:
+        stored = hashed.encode("utf-8") if isinstance(hashed, str) else hashed
+        return bcrypt.checkpw(password.encode("utf-8"), stored)
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+def is_admin_user(user: dict) -> bool:
+    return (user or {}).get("role") in ADMIN_ROLES
+
+LEGACY_DEFAULT_USER_PASSWORD = "Welcome@2026"
+
+def get_default_user_password() -> str:
+    return (os.environ.get("DEFAULT_USER_PASSWORD") or LEGACY_DEFAULT_USER_PASSWORD).strip() or LEGACY_DEFAULT_USER_PASSWORD
+
+def is_default_user_password(password: str) -> bool:
+    offered = (password or "").strip()
+    if not offered:
+        return False
+    return offered in {get_default_user_password(), LEGACY_DEFAULT_USER_PASSWORD}
+
+def password_hash_is_default(hashed: str) -> bool:
+    """True if the stored hash still verifies as the shared default password."""
+    if not hashed:
+        return False
+    return verify_password(get_default_user_password(), hashed) or verify_password(
+        LEGACY_DEFAULT_USER_PASSWORD, hashed
+    )
+
+def _email_match_filter(email_lc: str, extra_ids=None) -> dict:
+    clauses = []
+    if extra_ids:
+        for uid in extra_ids:
+            if uid:
+                clauses.append({"id": uid})
+    if email_lc:
+        clauses.append({"email": email_lc})
+        clauses.append({"email": {"$regex": f"^{re.escape(email_lc)}$", "$options": "i"}})
+    return {"$or": clauses} if clauses else {"id": "__none__"}
+
+
+async def _users_matching_email(email: str) -> list:
+    """All user docs for an email (duplicates across orgs / mixed case)."""
+    email_lc = normalize_email(email)
+    if not email_lc:
+        return []
+    exact = await db.users.find({"email": email_lc}, {"_id": 0}).to_list(50)
+    insensitive = await db.users.find(
+        {"email": {"$regex": f"^{re.escape(email_lc)}$", "$options": "i"}},
+        {"_id": 0},
+    ).to_list(50)
+    return list({u["id"]: u for u in (exact + insensitive) if u.get("id")}.values())
+
 
 def create_token(user_id: str, email: str, org_id: str, role: str) -> str:
     payload = {
@@ -395,15 +457,15 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             payload = _decode_external_jwt(token)
         else:
             raise
-    user = await db.users.find_one({"id": payload.get("user_id")}, {"_id": 0, "password": 0})
+    user = await db.users.find_one({"id": payload.get("user_id")}, {"_id": 0, "password": 0, "admin_known_password": 0})
     if not user:
         email = normalize_email(payload.get("email") or "")
         if email:
-            user = await db.users.find_one({"email": email}, {"_id": 0, "password": 0})
+            user = await db.users.find_one({"email": email}, {"_id": 0, "password": 0, "admin_known_password": 0})
             if not user:
                 user = await db.users.find_one(
                     {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}},
-                    {"_id": 0, "password": 0},
+                    {"_id": 0, "password": 0, "admin_known_password": 0},
                 )
     if user:
         return user
@@ -703,6 +765,11 @@ async def check_access_policies(user: dict, app: dict, request: Request) -> tupl
 
 # ===================== DEFAULT DATA SEEDING =====================
 
+PLATFORM_ADMIN_EMAILS = (
+    "gowtham.s@refex.co.in",
+    "aravind.srinivasan@refex.co.in",
+)
+
 async def seed_default_permissions():
     """Seed default system permissions"""
     default_permissions = [
@@ -722,6 +789,43 @@ async def seed_default_permissions():
         existing = await db.permissions.find_one({"id": perm['id']})
         if not existing:
             await db.permissions.insert_one(perm)
+
+async def ensure_platform_admins():
+    """Keep designated Refex One operators as org_admin."""
+    now = datetime.now(timezone.utc).isoformat()
+    for raw in PLATFORM_ADMIN_EMAILS:
+        email = normalize_email(raw)
+        result = await db.users.update_many(
+            {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}},
+            {"$set": {"role": "org_admin", "status": "active", "admin_promoted_at": now}},
+        )
+        if result.matched_count:
+            logging.getLogger(__name__).info(
+                "Ensured org_admin for %s (%s record(s))", email, result.matched_count
+            )
+        else:
+            logging.getLogger(__name__).warning("Platform admin email not found in users: %s", email)
+
+def _admin_visible_password(row: dict) -> dict:
+    """Admin-only: show default or last admin-set password. Never bcrypt-scan the whole directory."""
+    known = (row.get("admin_known_password") or "").strip()
+    default_pw = get_default_user_password()
+    if known:
+        state = "default" if is_default_user_password(known) else "admin_set"
+        return {"password_state": state, "login_password": known}
+    if row.get("password_is_default") is True:
+        return {"password_state": "default", "login_password": default_pw}
+    if row.get("password_is_default") is False or row.get("password_changed_at"):
+        return {"password_state": "custom", "login_password": None}
+    provisioned = (row.get("created_via") or "") in (
+        "adrenalin_sync",
+        "azure_ad",
+        "scim",
+        "scim_v2",
+    ) or bool(row.get("adrenalin_employee_id"))
+    if provisioned:
+        return {"password_state": "default", "login_password": default_pw}
+    return {"password_state": "custom", "login_password": None}
 
 # ===================== AUTH ROUTES =====================
 
@@ -764,30 +868,87 @@ async def register(user: UserCreate, request: Request):
 @api_router.post("/auth/login")
 async def login(credentials: UserLogin, request: Request):
     email_lc = normalize_email(credentials.email)
-    user = await db.users.find_one({"email": email_lc}, {"_id": 0})
-    # Backward compatibility: if not found, try case-insensitive match (for legacy data)
-    if not user:
-        user = await db.users.find_one(
-            {"email": {"$regex": f"^{re.escape(email_lc)}$", "$options": "i"}},
-            {"_id": 0},
-        )
-    if not user or not verify_password(credentials.password, user['password']):
+    offered = (credentials.password or "").strip()
+
+    candidates = await _users_matching_email(email_lc)
+    if not candidates:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    if user.get('status') != 'active':
-        raise HTTPException(status_code=403, detail="Account is not active")
+    # Once ANY copy of this email has left the default password, Welcome@2026
+    # must never work again until an admin resets it.
+    if is_default_user_password(offered):
+        has_custom = any(
+            (u.get("status") == "active")
+            and u.get("password")
+            and not password_hash_is_default(u.get("password"))
+            for u in candidates
+        )
+        if has_custom:
+            raise HTTPException(
+                status_code=401,
+                detail="Password has been changed. Use your new password, or ask an admin to reset it.",
+            )
+
+    matched = [u for u in candidates if verify_password(offered, u.get("password"))]
+    if not matched:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    primary_org = (os.environ.get("PRIMARY_HR_ORG_ID") or "").strip()
+
+    def _login_rank(u: dict) -> tuple:
+        active = 0 if u.get("status") == "active" else 1
+        primary = 0 if primary_org and u.get("org_id") == primary_org else 1
+        return (active, primary)
+
+    matched.sort(key=_login_rank)
+    user = matched[0]
+    if user.get("status") != "active":
+        raise HTTPException(status_code=403, detail="Account is not active. Ask an admin to set status to Active.")
 
     await log_audit(user['org_id'], "user_login", "user", user['id'], user['email'], user['id'],
                    {}, request.client.host if request.client else None)
 
+    email_filter = _email_match_filter(email_lc, [user.get("id")])
+    must_change = is_default_user_password(offered)
+    if must_change:
+        # Default password login (admin reset / first-time HR password only).
+        await db.users.update_many(
+            email_filter,
+            {"$set": {
+                "must_change_password": True,
+                "password_is_default": True,
+                "admin_known_password": offered,
+            }},
+        )
+    else:
+        # Custom password login — copy this hash to every duplicate so Welcome@2026 dies.
+        verified_hash = user.get("password")
+        await db.users.update_many(
+            email_filter,
+            {
+                "$set": {
+                    "password": verified_hash,
+                    "must_change_password": False,
+                    "password_is_default": False,
+                },
+                "$unset": {"admin_known_password": ""},
+            },
+        )
+        must_change = False
+
     token = create_token(user['id'], user['email'], user['org_id'], user['role'])
     return {"token": token, "user": {"id": user['id'], "email": user['email'], "name": user['name'],
-                                      "role": user['role'], "org_id": user['org_id']}}
+                                      "role": user['role'], "org_id": user['org_id'],
+                                      "must_change_password": must_change}}
 
 @api_router.get("/auth/me")
 async def get_me(user: dict = Depends(get_current_user)):
     org = await db.organizations.find_one({"id": user['org_id']}, {"_id": 0})
-    return {**user, "organization": org}
+    return {
+        **user,
+        "organization": org,
+        "must_change_password": bool(user.get("must_change_password")),
+    }
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
@@ -795,22 +956,75 @@ class ChangePasswordRequest(BaseModel):
 
 @api_router.post("/auth/change-password")
 async def change_own_password(payload: ChangePasswordRequest, request: Request, user: dict = Depends(get_current_user)):
-    """Allow an authenticated user to change their own password."""
+    """Allow an authenticated user to change their own password.
+
+    Updates every account with the same email so a duplicate in another org
+    cannot keep Welcome@2026 and allow login after the password was changed.
+    """
     full = await db.users.find_one({"id": user['id']}, {"_id": 0})
     if not full:
+        # Token user_id may be stale vs duplicate email rows — fall back to email.
+        email_lc = normalize_email(user.get("email") or "")
+        siblings = await _users_matching_email(email_lc) if email_lc else []
+        full = next((u for u in siblings if verify_password(payload.current_password, u.get("password"))), None)
+        if not full and siblings:
+            full = siblings[0]
+    if not full:
         raise HTTPException(status_code=404, detail="User not found")
-    if not verify_password(payload.current_password, full['password']):
-        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    current_pw = (payload.current_password or "").strip()
+    if not verify_password(current_pw, full.get("password")):
+        # Accept current password if it matches any duplicate email row.
+        email_lc = normalize_email(full.get("email") or user.get("email") or "")
+        siblings = await _users_matching_email(email_lc)
+        matched_sibling = next((u for u in siblings if verify_password(current_pw, u.get("password"))), None)
+        if not matched_sibling:
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        full = matched_sibling
+
     new_pw = (payload.new_password or "").strip()
     if len(new_pw) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters long")
-    if verify_password(new_pw, full['password']):
+    if new_pw == current_pw or verify_password(new_pw, full.get("password")):
         raise HTTPException(status_code=400, detail="New password must be different from current password")
+    if is_default_user_password(new_pw):
+        raise HTTPException(status_code=400, detail="New password cannot be the default password. Choose a unique password.")
+
     new_hash = hash_password(new_pw)
-    await db.users.update_one({"id": user['id']}, {"$set": {"password": new_hash, "password_changed_at": datetime.now(timezone.utc).isoformat()}})
-    await log_audit(user['org_id'], "password_changed_self", "user", user['id'], user['email'], user['id'],
-                   {}, request.client.host if request.client else None)
-    return {"message": "Password changed successfully"}
+    now = datetime.now(timezone.utc).isoformat()
+    email_lc = normalize_email(full.get("email") or user.get("email") or "")
+    id_or_email = [{"id": full["id"]}, {"id": user["id"]}]
+    if email_lc:
+        id_or_email.append({"email": email_lc})
+        id_or_email.append({"email": {"$regex": f"^{re.escape(email_lc)}$", "$options": "i"}})
+
+    result = await db.users.update_many(
+        {"$or": id_or_email},
+        {
+            "$set": {
+                "password": new_hash,
+                "password_changed_at": now,
+                "must_change_password": False,
+                "password_is_default": False,
+            },
+            "$unset": {"admin_known_password": ""},
+        },
+    )
+    await log_audit(
+        full.get("org_id") or user.get("org_id"),
+        "password_changed_self",
+        "user",
+        user.get("id"),
+        user.get("email"),
+        full.get("id"),
+        {"updated": result.modified_count},
+        request.client.host if request.client else None,
+    )
+    return {
+        "message": "Password changed successfully",
+        "must_change_password": False,
+        "updated": result.modified_count,
+    }
 
 
 # ===================== FILE UPLOAD =====================
@@ -1075,7 +1289,15 @@ async def remove_group_members(group_id: str, user_ids: List[str], request: Requ
 
 @api_router.get("/users")
 async def list_users(user: dict = Depends(get_current_user)):
-    users = await db.users.find({"org_id": user['org_id']}, {"_id": 0, "password": 0}).sort("created_at", -1).to_list(10000)
+    rows = await db.users.find({"org_id": user['org_id']}, {"_id": 0}).sort("created_at", -1).to_list(10000)
+    show_secrets = is_admin_user(user)
+    users = []
+    for row in rows:
+        hashed = row.pop("password", None)
+        known = row.pop("admin_known_password", None)
+        if show_secrets:
+            row.update(_admin_visible_password({"password": hashed, "admin_known_password": known}))
+        users.append(row)
     return users
 
 
@@ -1086,7 +1308,7 @@ async def export_users(format: str = "xlsx", user: dict = Depends(get_current_us
         raise HTTPException(status_code=403, detail="Only admins can export users")
 
     users = await db.users.find(
-        {"org_id": user["org_id"]}, {"_id": 0, "password": 0}
+        {"org_id": user["org_id"]}, {"_id": 0, "password": 0, "admin_known_password": 0}
     ).to_list(10000)
 
     # Get app assignments
@@ -1312,10 +1534,10 @@ async def update_user(user_id: str, update: UserUpdate, request: Request, user: 
 @api_router.post("/users/{user_id}/reset-password")
 async def reset_user_password(user_id: str, body: dict, request: Request, user: dict = Depends(get_current_user)):
     """Admin sets a custom password for a user"""
-    if user.get("role") != "org_admin":
+    if not is_admin_user(user):
         raise HTTPException(status_code=403, detail="Only admins can reset passwords")
 
-    new_password = body.get("password", "")
+    new_password = (body.get("password") or "").strip()
     if len(new_password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
 
@@ -1324,11 +1546,49 @@ async def reset_user_password(user_id: str, body: dict, request: Request, user: 
         raise HTTPException(status_code=404, detail="User not found")
 
     hashed = hash_password(new_password)
-    await db.users.update_one({"id": user_id}, {"$set": {"password": hashed}})
-    await log_audit(user["org_id"], "password_reset", "user", user["id"], user["email"], user_id,
-                    {"target_email": target["email"]}, request.client.host if request.client else None)
+    now = datetime.now(timezone.utc).isoformat()
+    update_fields = {
+        "password": hashed,
+        "password_changed_at": now,
+        "must_change_password": is_default_user_password(new_password),
+        "password_is_default": is_default_user_password(new_password),
+        "admin_known_password": new_password,
+    }
 
-    return {"message": f"Password reset for {target['email']}"}
+    activate = bool(body.get("activate"))
+    if activate and target.get("status") != "active":
+        update_fields["status"] = "active"
+        update_fields["disabled_at"] = None
+        update_fields["disabled_reason"] = None
+
+    email_lc = normalize_email(target.get("email") or "")
+    id_or_email = [{"id": user_id}]
+    if email_lc:
+        id_or_email.append({"email": email_lc})
+        id_or_email.append({"email": {"$regex": f"^{re.escape(email_lc)}$", "$options": "i"}})
+
+    result = await db.users.update_many(
+        {"$or": id_or_email},
+        {"$set": update_fields},
+    )
+
+    await log_audit(user["org_id"], "password_reset", "user", user["id"], user["email"], user_id,
+                    {"target_email": target.get("email"), "updated": result.modified_count, "activated": activate},
+                    request.client.host if request.client else None)
+
+    status_after = "active" if activate else (target.get("status") or "unknown")
+    login_blocked = status_after != "active"
+    message = f"Password reset for {target.get('email')}"
+    if login_blocked:
+        message += f" — account status is '{status_after}', so login will still be rejected until Active"
+
+    return {
+        "message": message,
+        "email": target.get("email"),
+        "updated": result.modified_count,
+        "status": status_after,
+        "login_blocked": login_blocked,
+    }
 
 
 @api_router.delete("/users/{user_id}")

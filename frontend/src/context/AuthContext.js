@@ -159,10 +159,17 @@ export const AuthProvider = ({ children }) => {
         });
         setUser(response.data);
         setOrganization(response.data.organization);
+        try {
+          localStorage.setItem('iam_user', JSON.stringify(response.data));
+        } catch (e) {
+          // ignore
+        }
+        return response.data;
       } catch (error) {
         console.error('Refresh user failed:', error);
       }
     }
+    return null;
   };
 
   return (

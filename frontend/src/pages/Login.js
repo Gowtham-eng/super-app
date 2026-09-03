@@ -82,7 +82,7 @@ const Login = () => {
   const azureHandled = React.useRef(false);
   const googleHandled = React.useRef(false);
 
-  const { login, loginWithToken, token } = useAuth();
+  const { login, loginWithToken, token, user } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -236,15 +236,20 @@ const Login = () => {
 
   useEffect(() => {
     if (!token) return undefined;
+    if (!user) return undefined;
+    if (user.must_change_password) {
+      navigate('/', { replace: true });
+      return undefined;
+    }
 
-    // Already logged in â€” resume pending app SSO (P2P email View, Feast/QR, etc.)
+    // Already logged in — resume pending app SSO (P2P email View, Feast/QR, etc.)
     if (resumePendingAppSso()) {
       return undefined;
     }
 
     navigate('/', { replace: true });
     return undefined;
-  }, [token, ssoAppId, navigate, searchParams]);
+  }, [token, user, ssoAppId, navigate, searchParams]);
 
   const startAzureLogin = (configId) => {
     // Keep pending P2P/SSO intent across Microsoft round-trip if used later
@@ -330,7 +335,12 @@ const Login = () => {
         relayState: searchParams.get('relay_state') || existing.relayState,
         oidcRedirect: searchParams.get('oidc_redirect') || existing.oidcRedirect,
       });
-      await login(email, password);
+      const me = await login(email, password);
+      if (me?.must_change_password) {
+        toast.warning('Please set a new password before continuing');
+        navigate('/', { replace: true });
+        return;
+      }
       toast.success('Welcome back!');
       // Critical: resume P2P/SAML/OIDC immediately (don't rely only on useEffect)
       if (resumePendingAppSso()) {
@@ -350,7 +360,7 @@ const Login = () => {
   const ssoPending = !!(ssoAppId || pendingSso.ssoApp || oidcRedirectPending);
 
   // Already signed in + app SSO resume: never flash the login form
-  if (token && ssoPending) {
+  if (token && ssoPending && !user?.must_change_password) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white" data-testid="login-oidc-resume">
         <div className="spinner" />

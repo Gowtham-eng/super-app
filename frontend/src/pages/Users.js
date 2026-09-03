@@ -6,7 +6,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
-import { Users, UserPlus, Pencil, Trash2, Search, AppWindow, X, Building2, Phone, MapPin, CalendarDays, BadgeCheck, UserCog, Download, KeyRound, Check, CheckSquare, Square, UserCheck, UserX, RefreshCw, ChevronLeft, ChevronRight, Briefcase, Mail, Link2 } from 'lucide-react';
+import { Users, UserPlus, Pencil, Trash2, Search, AppWindow, X, Building2, Phone, MapPin, CalendarDays, BadgeCheck, UserCog, Download, KeyRound, Check, CheckSquare, Square, UserCheck, UserX, RefreshCw, ChevronLeft, ChevronRight, Briefcase, Mail, Link2, Eye, EyeOff, Copy } from 'lucide-react';
 
 // Reusable Application Access selector (used in both Create and Edit modals)
 const AppAccessSelector = ({ samlApps, selectedIds, onToggle, onSelectAll, onClear, testIdPrefix = 'assign-app' }) => {
@@ -150,6 +150,48 @@ const Section = ({ icon: Icon, title, children, forceShow = false }) => {
   );
 };
 
+const PasswordCell = ({ user }) => {
+  const [visible, setVisible] = useState(false);
+  const password = user?.login_password;
+  if (!password) {
+    return (
+      <span className="text-[11px] text-slate-400" title="User set a custom password. It cannot be recovered — use Reset.">
+        Changed
+      </span>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      <code className="text-[11px] font-mono text-slate-800 max-w-[120px] truncate" title={visible ? password : 'Hidden'}>
+        {visible ? password : '••••••••'}
+      </code>
+      <button
+        type="button"
+        className="p-0.5 text-slate-400 hover:text-slate-700"
+        onClick={() => setVisible((v) => !v)}
+        title={visible ? 'Hide' : 'Show'}
+      >
+        {visible ? <EyeOff size={12} /> : <Eye size={12} />}
+      </button>
+      <button
+        type="button"
+        className="p-0.5 text-slate-400 hover:text-slate-700"
+        title="Copy"
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(password);
+            toast.success('Password copied');
+          } catch {
+            toast.error('Could not copy');
+          }
+        }}
+      >
+        <Copy size={12} />
+      </button>
+    </div>
+  );
+};
+
 const DETAIL_FORM_KEYS = [
   'name', 'email', 'status', 'role',
   'title', 'first_name', 'last_name', 'sex', 'date_of_birth', 'pan_number', 'adrenalin_employee_id',
@@ -192,6 +234,7 @@ const userAvatarGradient = (u) => AVATAR_GRADIENTS[hashUser(u.email || u.name ||
 
 const UsersPage = () => {
   const { API, getAuthHeader, user: currentUser } = useAuth();
+  const isAdmin = ['org_admin', 'admin', 'super_admin', 'owner'].includes(currentUser?.role);
   const [users, setUsers] = useState([]);
   const [groups, setGroups] = useState([]);
   const [roles, setRoles] = useState([]);
@@ -212,6 +255,8 @@ const UsersPage = () => {
   const [editForm, setEditForm] = useState({ name: '', email: '', status: '', designation: '', department: '', company: '', group_ids: [], role_ids: [], app_ids: [] });
   const [resetUser, setResetUser] = useState(null);
   const [resetPassword, setResetPassword] = useState('');
+  const [resetActivate, setResetActivate] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(false);
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 25;
 
@@ -336,17 +381,45 @@ const UsersPage = () => {
     }
   };
 
-  const handleResetPassword = async () => {
-    if (!resetPassword || resetPassword.length < 6) {
+  const openReset = (user) => {
+    setDetailUser(null);
+    setDetailEditing(false);
+    setResetUser(user);
+    setResetPassword('');
+    setResetActivate(false);
+    setShowResetPassword(false);
+  };
+
+  const closeReset = () => {
+    setResetUser(null);
+    setResetPassword('');
+    setResetActivate(false);
+    setShowResetPassword(false);
+  };
+
+  const handleResetPassword = async (e) => {
+    if (e?.preventDefault) e.preventDefault();
+    if (!resetUser?.id) return;
+    const nextPassword = (resetPassword || '').trim();
+    if (!nextPassword || nextPassword.length < 6) {
       toast.error('Password must be at least 6 characters');
       return;
     }
     setSaving(true);
     try {
-      await axios.post(`${API}/users/${resetUser.id}/reset-password`, { password: resetPassword }, getAuthHeader());
-      toast.success(`Password reset for ${resetUser.name}`);
-      setResetUser(null);
-      setResetPassword('');
+      const res = await axios.post(
+        `${API}/users/${resetUser.id}/reset-password`,
+        { password: nextPassword, activate: resetActivate },
+        getAuthHeader()
+      );
+      const data = res.data || {};
+      if (data.login_blocked) {
+        toast.error(data.message || `Password saved, but ${resetUser.email} cannot log in until status is Active`);
+      } else {
+        toast.success(data.message || `Password reset for ${resetUser.email || resetUser.name}`);
+      }
+      closeReset();
+      if (resetActivate) fetchData();
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed to reset password');
     } finally {
@@ -483,6 +556,10 @@ const UsersPage = () => {
       matchesFilter = !u.supervisor_email;
     } else if (quickFilter === 'hr_synced') {
       matchesFilter = u.created_via === 'adrenalin_sync';
+    } else if (quickFilter === 'default_password') {
+      matchesFilter = u.password_state === 'default' || u.password_state === 'admin_set';
+    } else if (quickFilter === 'custom_password') {
+      matchesFilter = u.password_state === 'custom';
     }
 
     return matchesSearch && matchesFilter;
@@ -592,6 +669,10 @@ const UsersPage = () => {
             { key: 'no_email', label: 'Missing Personal Email', count: users.filter(u => !u.personal_email).length },
             { key: 'no_manager', label: 'Missing Manager', count: users.filter(u => !u.supervisor_email).length },
             { key: 'hr_synced', label: 'HR Synced', count: users.filter(u => u.created_via === 'adrenalin_sync').length },
+            ...(isAdmin ? [
+              { key: 'default_password', label: 'Known password', count: users.filter(u => u.login_password).length },
+              { key: 'custom_password', label: 'Changed', count: users.filter(u => u.password_state === 'custom').length },
+            ] : []),
           ].map(f => (
             <button
               key={f.key}
@@ -622,13 +703,14 @@ const UsersPage = () => {
                 <th className="hidden md:table-cell" style={{ width: '160px' }}>Designation</th>
                 <th className="hidden lg:table-cell" style={{ width: '160px' }}>Department</th>
                 <th className="hidden xl:table-cell" style={{ width: '180px' }}>Company</th>
+                {isAdmin && <th className="hidden md:table-cell" style={{ width: '160px' }}>Password</th>}
                 <th className="text-right sticky right-0 bg-white shadow-[-6px_0_8px_-8px_rgba(15,23,42,0.08)]" style={{ width: '120px' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {paginatedUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="py-16 text-center">
+                  <td colSpan={isAdmin ? 6 : 5} className="py-16 text-center">
                     <div className="inline-flex flex-col items-center">
                       <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center mb-3">
                         <Users size={22} className="text-slate-400" />
@@ -701,9 +783,14 @@ const UsersPage = () => {
                     <td className="hidden xl:table-cell">
                       <span className="text-xs text-slate-600 truncate block" title={user.company || ''}>{user.company || <span className="text-slate-300">—</span>}</span>
                     </td>
+                    {isAdmin && (
+                      <td className="hidden md:table-cell">
+                        <PasswordCell user={user} />
+                      </td>
+                    )}
                     <td className="sticky right-0 bg-white group-hover:bg-slate-50/70 shadow-[-6px_0_8px_-8px_rgba(15,23,42,0.08)] transition-colors">
                       <div className="flex justify-end gap-0.5" onClick={(e) => e.stopPropagation()}>
-                        <button onClick={() => { setResetUser(user); setResetPassword(''); }} className="p-1.5 hover:bg-amber-100 rounded-lg transition-colors" title="Reset Password" data-testid={`reset-pwd-${user.id}`}>
+                        <button type="button" onClick={() => openReset(user)} className="p-1.5 hover:bg-amber-100 rounded-lg transition-colors" title="Reset Password" data-testid={`reset-pwd-${user.id}`}>
                           <KeyRound size={15} className="text-amber-500" />
                         </button>
                         <button onClick={() => editUser(user)} className="p-1.5 hover:bg-slate-200 rounded-lg transition-colors" title="Edit" data-testid={`edit-user-${user.id}`}>
@@ -772,6 +859,17 @@ const UsersPage = () => {
                   </p>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
+                  {!detailEditing && (
+                    <button
+                      type="button"
+                      onClick={() => openReset(detailUser)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 transition-colors"
+                      data-testid="detail-reset-pwd-btn"
+                      title="Reset password"
+                    >
+                      <KeyRound size={13} /> Reset
+                    </button>
+                  )}
                   {!detailEditing && currentUser?.role === 'org_admin' && (
                     <button
                       type="button"
@@ -936,6 +1034,16 @@ const UsersPage = () => {
                     <Field label="PAN Number" value={detailUser.pan_number} />
                     <Field label="System Role" value={detailUser.role === 'org_admin' ? 'Admin' : 'User'} />
                     <Field label="Status" value={detailUser.status} />
+                    {isAdmin && (
+                      <Field
+                        label="Login password"
+                        value={
+                          detailUser.login_password
+                            ? detailUser.login_password
+                            : 'Changed by user — not recoverable. Use Reset.'
+                        }
+                      />
+                    )}
                     <Field
                       label="Kissflow"
                       value={
@@ -1165,32 +1273,68 @@ const UsersPage = () => {
         </DialogContent>
       </Dialog>
       {/* Reset Password Modal */}
-      <Dialog open={!!resetUser} onOpenChange={() => setResetUser(null)}>
+      <Dialog open={!!resetUser} onOpenChange={(open) => { if (!open) closeReset(); }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader><DialogTitle className="font-heading text-lg">Reset Password</DialogTitle></DialogHeader>
-          <div className="space-y-4">
+          <form onSubmit={handleResetPassword} className="space-y-4">
             <div className="bg-slate-50 rounded-lg p-3">
               <p className="text-sm text-slate-700"><span className="font-semibold">{resetUser?.name}</span></p>
               <p className="text-xs text-slate-400">{resetUser?.email}</p>
+              {resetUser?.status && resetUser.status !== 'active' && (
+                <p className="text-xs font-semibold text-amber-700 mt-2">
+                  Status is {resetUser.status}. Login is blocked until this account is Active.
+                </p>
+              )}
             </div>
             <div>
               <Label className="label-uppercase text-xs">New Password *</Label>
-              <Input
-                type="password"
-                value={resetPassword}
-                onChange={(e) => setResetPassword(e.target.value)}
-                placeholder="Enter new password (min 6 chars)"
-                className="input-brutalist w-full mt-1.5"
-                data-testid="reset-password-input"
-              />
+              <div className="relative mt-1.5">
+                <Input
+                  type={showResetPassword ? 'text' : 'password'}
+                  value={resetPassword}
+                  onChange={(e) => setResetPassword(e.target.value)}
+                  placeholder="Enter new password (min 6 chars)"
+                  className="input-brutalist w-full pr-10"
+                  autoComplete="new-password"
+                  data-testid="reset-password-input"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowResetPassword((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600"
+                  tabIndex={-1}
+                  aria-label={showResetPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showResetPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
             </div>
-          </div>
-          <DialogFooter>
-            <Button type="button" onClick={() => setResetUser(null)} className="btn-secondary">Cancel</Button>
-            <Button onClick={handleResetPassword} disabled={saving} className="btn-primary" data-testid="reset-password-submit">
-              {saving ? 'Resetting...' : 'Reset Password'}
-            </Button>
-          </DialogFooter>
+            {resetUser?.status && resetUser.status !== 'active' && (
+              <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={resetActivate}
+                  onChange={(e) => setResetActivate(e.target.checked)}
+                  className="mt-1"
+                  data-testid="reset-activate-checkbox"
+                />
+                <span>
+                  Also set status to Active so they can log in now
+                  {resetUser?.adrenalin_employee_id ? (
+                    <span className="block text-xs text-slate-400 mt-0.5">
+                      HR sync may disable them again if they are exited in Adrenalin.
+                    </span>
+                  ) : null}
+                </span>
+              </label>
+            )}
+            <DialogFooter>
+              <Button type="button" onClick={closeReset} className="btn-secondary">Cancel</Button>
+              <Button type="submit" disabled={saving} className="btn-primary" data-testid="reset-password-submit">
+                {saving ? 'Resetting...' : 'Reset Password'}
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
     </div>

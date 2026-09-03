@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { getApiErrorMessage } from '../utils/apiError';
 import {
   LayoutDashboard,
   AppWindow,
@@ -51,6 +52,8 @@ const Layout = ({ children }) => {
   const fileInputRef = useRef(null);
 
   const isAdmin = user?.role === 'org_admin' || user?.role === 'admin' || user?.role === 'super_admin';
+  const forcePasswordChange = user?.must_change_password === true;
+  const passwordModalOpen = showChangePassword || forcePasswordChange;
 
   const adminSections = [
     {
@@ -236,6 +239,10 @@ const Layout = ({ children }) => {
       toast.error('New password must be different from current');
       return;
     }
+    if (pwForm.next.trim() === 'Welcome@2026') {
+      toast.error('Choose a unique password. The default password cannot be reused.');
+      return;
+    }
     setPwSaving(true);
     try {
       await axios.post(`${API}/auth/change-password`,
@@ -246,8 +253,21 @@ const Layout = ({ children }) => {
       setShowChangePassword(false);
       setPwForm({ current: '', next: '', confirm: '' });
       setPwShow({ current: false, next: false, confirm: false });
+      const me = await refreshUser();
+      if (!me?.must_change_password) {
+        // Ensure forced modal closes even if cached profile was stale
+        try {
+          const cached = JSON.parse(localStorage.getItem('iam_user') || '{}');
+          if (cached?.id) {
+            cached.must_change_password = false;
+            localStorage.setItem('iam_user', JSON.stringify(cached));
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Failed to change password');
+      toast.error(getApiErrorMessage(err, 'Failed to change password'));
     } finally {
       setPwSaving(false);
     }
@@ -449,11 +469,11 @@ const Layout = ({ children }) => {
         </div>
       </main>
 
-      {/* Change Password Modal */}
-      {showChangePassword && (
+      {/* Change Password Modal (forced after default Welcome@2026 login) */}
+      {passwordModalOpen && (
         <div
           className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn"
-          onClick={() => !pwSaving && setShowChangePassword(false)}
+          onClick={() => !forcePasswordChange && !pwSaving && setShowChangePassword(false)}
           data-testid="change-password-modal"
         >
           <div
@@ -466,17 +486,25 @@ const Layout = ({ children }) => {
                   <Lock size={18} className="text-emerald-600" />
                 </div>
                 <div>
-                  <h2 className="font-heading font-semibold text-lg text-slate-900">Change Password</h2>
-                  <p className="text-xs text-slate-500">Update your account password</p>
+                  <h2 className="font-heading font-semibold text-lg text-slate-900">
+                    {forcePasswordChange ? 'Set a new password' : 'Change Password'}
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    {forcePasswordChange
+                      ? 'You signed in with the default password. Choose a new one to continue.'
+                      : 'Update your account password'}
+                  </p>
                 </div>
               </div>
-              <button
-                onClick={() => !pwSaving && setShowChangePassword(false)}
-                className="p-2 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors"
-                data-testid="close-change-password-btn"
-              >
-                <X size={18} />
-              </button>
+              {!forcePasswordChange && (
+                <button
+                  onClick={() => !pwSaving && setShowChangePassword(false)}
+                  className="p-2 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors"
+                  data-testid="close-change-password-btn"
+                >
+                  <X size={18} />
+                </button>
+              )}
             </div>
 
             <form onSubmit={handleChangePassword} className="p-6 space-y-4">
@@ -489,7 +517,7 @@ const Layout = ({ children }) => {
                     value={pwForm.current}
                     onChange={(e) => setPwForm({ ...pwForm, current: e.target.value })}
                     className="w-full h-11 px-3 pr-10 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300"
-                    placeholder="Enter current password"
+                    placeholder={forcePasswordChange ? 'Password you just used to sign in' : 'Enter current password'}
                     autoFocus
                     data-testid="current-password-input"
                   />
@@ -556,22 +584,34 @@ const Layout = ({ children }) => {
                 )}
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowChangePassword(false)}
-                  disabled={pwSaving}
-                  className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-50"
-                >
-                  Cancel
-                </button>
+              <div className={`flex items-center gap-2 pt-2 ${forcePasswordChange ? 'justify-between' : 'justify-end'}`}>
+                {forcePasswordChange ? (
+                  <button
+                    type="button"
+                    onClick={logout}
+                    disabled={pwSaving}
+                    className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-50"
+                    data-testid="force-change-password-logout-btn"
+                  >
+                    Log out
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowChangePassword(false)}
+                    disabled={pwSaving}
+                    className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                )}
                 <button
                   type="submit"
                   disabled={pwSaving}
                   className="px-5 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-all disabled:opacity-50"
                   data-testid="submit-change-password-btn"
                 >
-                  {pwSaving ? 'Updating...' : 'Update Password'}
+                  {pwSaving ? 'Updating...' : (forcePasswordChange ? 'Save and continue' : 'Update Password')}
                 </button>
               </div>
             </form>
