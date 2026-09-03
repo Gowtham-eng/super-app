@@ -23,13 +23,15 @@ import {
   MapPin,
   Mic,
   MicOff,
-  Pencil,
   Search,
   User,
   XCircle,
 } from 'lucide-react';
 
-const SEARCH_CATALOG_ENTITY = 'Refex';
+const MANUAL_CRITICALITY = ['Low', 'Medium', 'High'];
+
+/** Create form catalog: Incident + Service Request only (no Change Request). */
+const ALLOWED_TICKET_TYPES = ['incident', 'service request'];
 
 /** Common office / site locations — dropdown + free-text custom. */
 const LOCATION_OPTIONS = [
@@ -73,6 +75,11 @@ const LOCATION_OPTIONS = [
 
 const normalizeKey = (value = '') => value.trim().toLowerCase().replace(/\s+/g, ' ');
 
+const isRefexEntity = (entity = '') => normalizeKey(entity) === 'refex';
+
+const isAllowedTicketType = (ticketType = '') =>
+  ALLOWED_TICKET_TYPES.includes(normalizeKey(ticketType));
+
 /** Extrovis rows often use Category/SubCategory with empty Sub_Type; Refex uses Sub_Type. */
 const recordServiceLabel = (record) => {
   const subType = (record?.subType || '').trim();
@@ -83,21 +90,18 @@ const recordServiceLabel = (record) => {
   return category || subCategory || (record?.type || '').trim() || '';
 };
 
-const matchesEntity = (record, entity) => {
-  const userEntity = normalizeKey(entity);
-  if (!userEntity) return false;
-  const recordEntity = normalizeKey(record?.entity);
-  if (!recordEntity) return true;
-  if (recordEntity === userEntity) return true;
-  return recordEntity.includes(userEntity) || userEntity.includes(recordEntity);
-};
+/** Strict Entity match — catalog always uses Refex rows (never Extrovis). */
+const matchesRefexEntity = (record) => normalizeKey(record?.entity) === 'refex';
 
-const getSubTypesForEntity = (records, entity) => {
-  if (!normalizeKey(entity)) return [];
+const uniqueSorted = (values) =>
+  [...new Set(values.map((v) => String(v || '').trim()).filter(Boolean))].sort((a, b) =>
+    a.localeCompare(b)
+  );
+
+const getCatalogSubTypes = (records) => {
   const seen = new Set();
   const result = [];
   for (const record of records) {
-    if (!matchesEntity(record, entity)) continue;
     const label = recordServiceLabel(record);
     if (!label) continue;
     const key = normalizeKey(label);
@@ -117,6 +121,10 @@ const criticalityBadgeClass = (value = '') => {
   return 'bg-slate-100 text-slate-700 border-slate-200';
 };
 
+const persistProfile = (next) => {
+  localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(next));
+};
+
 const CreateITRequest = () => {
   const { getAuthHeader, user } = useAuth();
   const itsmApi = ITSM_API;
@@ -133,8 +141,6 @@ const CreateITRequest = () => {
   const [entityOptions, setEntityOptions] = useState(ITSM_ENTITIES);
 
   const [profile, setProfile] = useState(() => mergeItsmProfile(user));
-  const [editOpen, setEditOpen] = useState(false);
-  const [editForm, setEditForm] = useState(profile);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
@@ -144,29 +150,125 @@ const CreateITRequest = () => {
   const [isListening, setIsListening] = useState(false);
   const [isSearchPending, setIsSearchPending] = useState(false);
 
+  /** Non-Refex only: No = quick search; Yes = cascade from matrix. */
+  const [manualEdit, setManualEdit] = useState(false);
+  const [cascade, setCascade] = useState({
+    ticketType: '',
+    category: '',
+    subCategory: '',
+    subType: '',
+    type: '',
+  });
+  const [manualCriticality, setManualCriticality] = useState('Medium');
+
   const recognitionRef = useRef(null);
   const descriptionBeforeListen = useRef('');
   const debounceRef = useRef(null);
   const matrixAbortRef = useRef(null);
+  const micStopRequestedRef = useRef(false);
 
-  const subTypeOptions = useMemo(
-    () => getSubTypesForEntity(records, SEARCH_CATALOG_ENTITY),
+  const isRefex = isRefexEntity(profile.entity);
+  const useManualCascade = !isRefex && manualEdit;
+
+  /** Quick Search + non-Refex cascade: Refex entity rows, Incident / Service Request only. */
+  const entityRecords = useMemo(
+    () =>
+      records.filter(
+        (record) => matchesRefexEntity(record) && isAllowedTicketType(record.ticketType)
+      ),
     [records]
   );
 
-  const findMatrixForSubType = (subType, entity = SEARCH_CATALOG_ENTITY) => {
-    const key = normalizeKey(subType);
-    const matches = records.filter((record) => normalizeKey(recordServiceLabel(record)) === key);
-    if (!matches.length) return null;
-    if (entity) {
-      const entityMatch = matches.find((record) => matchesEntity(record, entity));
-      if (entityMatch) return entityMatch;
+  const subTypeOptions = useMemo(
+    () => getCatalogSubTypes(entityRecords),
+    [entityRecords]
+  );
+
+  const ticketTypeOptions = useMemo(
+    () => uniqueSorted(entityRecords.map((r) => r.ticketType)),
+    [entityRecords]
+  );
+
+  const categoryOptions = useMemo(() => {
+    const rows = cascade.ticketType
+      ? entityRecords.filter((r) => normalizeKey(r.ticketType) === normalizeKey(cascade.ticketType))
+      : entityRecords;
+    return uniqueSorted(rows.map((r) => r.category));
+  }, [entityRecords, cascade.ticketType]);
+
+  const subCategoryOptions = useMemo(() => {
+    let rows = entityRecords;
+    if (cascade.ticketType) {
+      rows = rows.filter((r) => normalizeKey(r.ticketType) === normalizeKey(cascade.ticketType));
     }
-    return matches[0];
+    if (cascade.category) {
+      rows = rows.filter((r) => normalizeKey(r.category) === normalizeKey(cascade.category));
+    }
+    return uniqueSorted(rows.map((r) => r.subCategory));
+  }, [entityRecords, cascade.ticketType, cascade.category]);
+
+  const subTypeCascadeOptions = useMemo(() => {
+    let rows = entityRecords;
+    if (cascade.ticketType) {
+      rows = rows.filter((r) => normalizeKey(r.ticketType) === normalizeKey(cascade.ticketType));
+    }
+    if (cascade.category) {
+      rows = rows.filter((r) => normalizeKey(r.category) === normalizeKey(cascade.category));
+    }
+    if (cascade.subCategory) {
+      rows = rows.filter((r) => normalizeKey(r.subCategory) === normalizeKey(cascade.subCategory));
+    }
+    return uniqueSorted(rows.map((r) => recordServiceLabel(r)));
+  }, [entityRecords, cascade.ticketType, cascade.category, cascade.subCategory]);
+
+  const typeOptions = useMemo(() => {
+    let rows = entityRecords;
+    if (cascade.ticketType) {
+      rows = rows.filter((r) => normalizeKey(r.ticketType) === normalizeKey(cascade.ticketType));
+    }
+    if (cascade.category) {
+      rows = rows.filter((r) => normalizeKey(r.category) === normalizeKey(cascade.category));
+    }
+    if (cascade.subCategory) {
+      rows = rows.filter((r) => normalizeKey(r.subCategory) === normalizeKey(cascade.subCategory));
+    }
+    if (cascade.subType) {
+      rows = rows.filter((r) => normalizeKey(recordServiceLabel(r)) === normalizeKey(cascade.subType));
+    }
+    return uniqueSorted(rows.map((r) => r.type));
+  }, [entityRecords, cascade.ticketType, cascade.category, cascade.subCategory, cascade.subType]);
+
+  const findMatrixForSubType = (subType) => {
+    const key = normalizeKey(subType);
+    const matches = entityRecords.filter(
+      (record) => normalizeKey(recordServiceLabel(record)) === key
+    );
+    return matches[0] || null;
   };
 
-  // Extrovis (and some live rows) omit Criticality — default Medium so submit works
-  const criticality = selectedMatrix?.criticality?.trim() || (selectedMatrix ? 'Medium' : '');
+  const findMatrixFromCascade = (nextCascade) => {
+    let rows = entityRecords;
+    if (nextCascade.ticketType) {
+      rows = rows.filter((r) => normalizeKey(r.ticketType) === normalizeKey(nextCascade.ticketType));
+    }
+    if (nextCascade.category) {
+      rows = rows.filter((r) => normalizeKey(r.category) === normalizeKey(nextCascade.category));
+    }
+    if (nextCascade.subCategory) {
+      rows = rows.filter((r) => normalizeKey(r.subCategory) === normalizeKey(nextCascade.subCategory));
+    }
+    if (nextCascade.subType) {
+      rows = rows.filter((r) => normalizeKey(recordServiceLabel(r)) === normalizeKey(nextCascade.subType));
+    }
+    if (nextCascade.type) {
+      rows = rows.filter((r) => normalizeKey(r.type) === normalizeKey(nextCascade.type));
+    }
+    return rows[0] || null;
+  };
+
+  const criticality = useManualCascade
+    ? manualCriticality
+    : selectedMatrix?.criticality?.trim() || (selectedMatrix ? 'Medium' : '');
 
   const profileComplete =
     profile.name.trim() &&
@@ -185,7 +287,6 @@ const CreateITRequest = () => {
     const q = debouncedQuery.trim().toLowerCase();
     if (!q) return subTypeOptions;
 
-    const entityRecords = records.filter((record) => matchesEntity(record, SEARCH_CATALOG_ENTITY));
     const matchedLabels = [];
     const seen = new Set();
     for (const record of entityRecords) {
@@ -221,7 +322,7 @@ const CreateITRequest = () => {
       if (label && /^others?$/i.test(label)) return [label];
     }
     return [];
-  }, [debouncedQuery, subTypeOptions, records]);
+  }, [debouncedQuery, subTypeOptions, entityRecords]);
 
   const showingOthersFallback =
     !!debouncedQuery.trim() &&
@@ -259,6 +360,14 @@ const CreateITRequest = () => {
     }
   };
 
+  const updateProfileField = (field, value) => {
+    setProfile((prev) => {
+      const next = { ...prev, [field]: value };
+      persistProfile(next);
+      return next;
+    });
+  };
+
   useEffect(() => {
     const loadConfig = async () => {
       try {
@@ -271,11 +380,6 @@ const CreateITRequest = () => {
       }
     };
     loadConfig();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    fetchMatrix(SEARCH_CATALOG_ENTITY);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -293,7 +397,17 @@ const CreateITRequest = () => {
   }, [user]);
 
   useEffect(() => {
-    if (!selectedSubType) return;
+    if (!profile.entity.trim()) return;
+    fetchMatrix(profile.entity.trim());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile.entity]);
+
+  useEffect(() => {
+    if (isRefex) setManualEdit(false);
+  }, [isRefex]);
+
+  useEffect(() => {
+    if (!selectedSubType || useManualCascade) return;
     const matrix = findMatrixForSubType(selectedSubType);
     if (!matrix) {
       setSelectedSubType('');
@@ -303,7 +417,7 @@ const CreateITRequest = () => {
       setSelectedMatrix(matrix);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [records]);
+  }, [entityRecords]);
 
   useEffect(() => () => {
     if (recognitionRef.current) {
@@ -317,94 +431,160 @@ const CreateITRequest = () => {
 
   const updateSearchQuery = (value) => {
     const trimmed = value.trim();
-    const selected = selectedSubType.trim();
-    const shouldClear =
-      !trimmed ||
-      (selected && normalizeKey(trimmed) !== normalizeKey(selected));
-
     setSearchQuery(value);
-    if (shouldClear) {
-      setSelectedSubType('');
-      setSelectedMatrix(null);
-    }
-
     setIsSearchPending(true);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       setDebouncedQuery(trimmed);
       setIsSearchPending(false);
-    }, 300);
+    }, 250);
+    if (selectedSubType && normalizeKey(value) !== normalizeKey(selectedSubType)) {
+      setSelectedSubType('');
+      setSelectedMatrix(null);
+    }
   };
 
   const selectSubType = (value) => {
     const matrix = findMatrixForSubType(value);
     setSelectedSubType(value);
     setSearchQuery(value);
-    setDebouncedQuery(value.trim());
+    setDebouncedQuery(value);
     setSelectedMatrix(matrix);
     setIsSearchPending(false);
     if (matrix) {
-      toast.success('Request details loaded.');
+      toast.success('Service selected');
     } else {
-      toast.error('No matching service configuration found.');
+      toast.error('Service not found in catalog');
     }
   };
 
-  const saveProfile = () => {
-    const next = {
-      name: editForm.name.trim(),
-      email: editForm.email.trim(),
-      entity: editForm.entity.trim(),
-      location: editForm.location.trim(),
-    };
-    if (!next.name) return toast.error('Name is required');
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(next.email)) return toast.error('Enter a valid email');
-    if (!next.entity) return toast.error('Entity is required');
-    if (!next.location) return toast.error('Location is required');
-    setProfile(next);
-    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(next));
-    setEditOpen(false);
-    toast.success('Personal details updated.');
+  const updateCascade = (field, value) => {
+    setCascade((prev) => {
+      const next = { ...prev, [field]: value };
+      if (field === 'ticketType') {
+        next.category = '';
+        next.subCategory = '';
+        next.subType = '';
+        next.type = '';
+      } else if (field === 'category') {
+        next.subCategory = '';
+        next.subType = '';
+        next.type = '';
+      } else if (field === 'subCategory') {
+        next.subType = '';
+        next.type = '';
+      } else if (field === 'subType') {
+        next.type = '';
+      }
+      const matrix = findMatrixFromCascade(next);
+      setSelectedMatrix(matrix);
+      setSelectedSubType(matrix ? recordServiceLabel(matrix) : '');
+      if (matrix?.criticality?.trim() && MANUAL_CRITICALITY.includes(matrix.criticality.trim())) {
+        setManualCriticality(matrix.criticality.trim());
+      }
+      return next;
+    });
   };
 
   const toggleMic = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      toast.error('Speech recognition is not supported in this browser.');
+      toast.error('Voice input is not supported in this browser. Please type the description.');
+      return;
+    }
+    if (!window.isSecureContext && window.location.hostname !== 'localhost') {
+      toast.error('Voice input needs a secure (HTTPS) connection.');
       return;
     }
 
     if (isListening && recognitionRef.current) {
-      recognitionRef.current.stop();
+      micStopRequestedRef.current = true;
+      try {
+        recognitionRef.current.stop();
+      } catch {
+        /* ignore */
+      }
       setIsListening(false);
       return;
     }
 
+    const isMobile =
+      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') ||
+      (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform || ''));
+
+    descriptionBeforeListen.current = description;
+    micStopRequestedRef.current = false;
+
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = 'en-IN';
-    descriptionBeforeListen.current = description.trim();
+    // Mobile Chrome often fails or immediately errors with continuous / interim mode.
+    recognition.continuous = !isMobile;
+    recognition.interimResults = !isMobile;
+    recognition.maxAlternatives = 1;
+    // en-IN is missing on some mobile engines; prefer device language then en-US.
+    const preferredLang = (navigator.language || '').trim();
+    recognition.lang =
+      preferredLang && /^en([-_]|$)/i.test(preferredLang) ? preferredLang : 'en-US';
+
     recognition.onresult = (event) => {
       let transcript = '';
-      for (let i = 0; i < event.results.length; i++) {
+      for (let i = 0; i < event.results.length; i += 1) {
         transcript += event.results[i][0].transcript;
       }
-      const words = transcript.trim();
-      if (!words) return;
+      const spoken = transcript.trim();
+      if (!spoken) return;
       const base = descriptionBeforeListen.current;
-      const separator = !base ? '' : (base.endsWith(' ') ? '' : ' ');
-      setDescription(base ? `${base}${separator}${words}` : words);
+      setDescription(base ? `${base} ${spoken}`.trim() : spoken);
     };
-    recognition.onerror = () => {
+
+    recognition.onerror = (event) => {
+      const code = event?.error || '';
       setIsListening(false);
+      recognitionRef.current = null;
+
+      // User stopped, or session ended without speech — not a hard failure.
+      if (micStopRequestedRef.current || code === 'aborted' || code === 'no-speech') {
+        return;
+      }
+      if (code === 'not-allowed' || code === 'service-not-allowed') {
+        toast.error('Microphone permission blocked. Allow mic access and try again.');
+        return;
+      }
+      if (code === 'network') {
+        toast.error('Voice service is offline. Check your connection and try again.');
+        return;
+      }
+      if (code === 'audio-capture') {
+        toast.error('No microphone found. Check device settings and try again.');
+        return;
+      }
       toast.error('Unable to recognize speech. Please try again.');
     };
-    recognition.onend = () => setIsListening(false);
+
+    recognition.onend = () => {
+      setIsListening(false);
+      recognitionRef.current = null;
+    };
+
     recognitionRef.current = recognition;
-    recognition.start();
-    setIsListening(true);
-    toast.message('Listening... speak now.');
+    try {
+      recognition.start();
+      setIsListening(true);
+      toast.message(isMobile ? 'Listening… tap the mic again when done.' : 'Listening... speak now.');
+    } catch (err) {
+      setIsListening(false);
+      recognitionRef.current = null;
+      const msg = String(err?.message || err || '');
+      if (/already started/i.test(msg)) {
+        try {
+          recognition.stop();
+        } catch {
+          /* ignore */
+        }
+        toast.message('Mic was still active — tap again to speak.');
+        return;
+      }
+      toast.error('Unable to start voice input. Please try again.');
+    }
   };
 
   const resetForm = () => {
@@ -415,13 +595,20 @@ const CreateITRequest = () => {
     setDescription('');
     setSubmitted(false);
     setSubmitStatus('created');
+    setManualEdit(false);
+    setCascade({ ticketType: '', category: '', subCategory: '', subType: '', type: '' });
+    setManualCriticality('Medium');
   };
 
   const handleSubmit = async () => {
-    if (!selectedSubType || !selectedMatrix) {
-      return toast.error('Please select a service from Quick Search');
+    if (!selectedMatrix) {
+      return toast.error(
+        useManualCascade
+          ? 'Please complete ticket type, category, and related fields'
+          : 'Please select a service from Quick Search'
+      );
     }
-    if (!criticality) return toast.error('Criticality is missing for the selected service.');
+    if (!criticality) return toast.error('Criticality is required.');
     if (!description.trim()) return toast.error('Description is required');
     if (!profileComplete) return toast.error('Please complete your personal details first.');
 
@@ -434,7 +621,7 @@ const CreateITRequest = () => {
           email: profile.email.trim(),
           entity: profile.entity.trim(),
           location: profile.location.trim(),
-          sub_type: recordServiceLabel(selectedMatrix) || selectedSubType,
+          sub_type: recordServiceLabel(selectedMatrix) || selectedSubType || cascade.subType,
           criticality,
           description: description.trim(),
         },
@@ -457,26 +644,25 @@ const CreateITRequest = () => {
 
   const showSuggestions =
     profileComplete &&
+    !useManualCascade &&
     !loadingMatrix &&
+    debouncedQuery.trim().length > 0 &&
     filteredOptions.length > 0 &&
-    searchQuery.trim() &&
     normalizeKey(searchQuery) !== normalizeKey(selectedSubType);
 
   if (submitted) {
     const failed = submitStatus === 'failed';
     return (
-      <div className="animate-fadeIn w-full max-w-lg mx-auto px-1" data-testid="itsm-success-page">
-        <div className="card-default overflow-hidden shadow-md">
-          <div className={`px-6 py-8 text-center border-b ${failed ? 'bg-gradient-to-br from-red-50 via-white to-rose-50/40 border-red-100/80' : 'bg-gradient-to-br from-emerald-50 via-white to-teal-50/40 border-emerald-100/80'}`}>
-            <div className={`mx-auto w-16 h-16 rounded-2xl border-2 flex items-center justify-center mb-4 ${failed ? 'bg-red-100 border-red-200' : 'bg-emerald-100 border-emerald-200'}`}>
-              {failed ? (
-                <XCircle className="text-red-600" size={36} strokeWidth={1.75} />
-              ) : (
-                <CheckCircle2 className="text-emerald-600" size={36} strokeWidth={1.75} />
-              )}
-            </div>
-            <h1 className="font-heading text-2xl font-bold text-slate-900 tracking-tight">
-              {failed ? 'Ticket Failed' : 'Ticket Submitted'}
+      <div className="animate-fadeIn w-full max-w-lg mx-auto pb-8" data-testid="itsm-create-result">
+        <div className="card-default overflow-hidden">
+          <div className={`px-6 py-8 text-center ${failed ? 'bg-red-50' : 'bg-emerald-50'}`}>
+            {failed ? (
+              <XCircle className="mx-auto text-red-600 mb-3" size={40} />
+            ) : (
+              <CheckCircle2 className="mx-auto text-emerald-600 mb-3" size={40} />
+            )}
+            <h1 className="font-heading text-xl font-bold text-slate-900">
+              {failed ? 'Request not created' : 'Request submitted'}
             </h1>
             <p className="text-sm text-slate-500 mt-2 max-w-sm mx-auto">
               {failed
@@ -519,7 +705,7 @@ const CreateITRequest = () => {
               <h1 className="font-heading text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 tracking-tight">
                 Create IT Request
               </h1>
-              <p className="text-slate-500 text-sm mt-0.5 font-medium">IT Service Management</p>
+              <p className="text-slate-500 text-sm mt-0.5 font-medium">IT Help Desk</p>
             </div>
           </div>
           {profile.entity && (
@@ -537,86 +723,288 @@ const CreateITRequest = () => {
       {initError && !initialized ? (
         <div className="card-default p-6 text-center border-red-200">
           <p className="text-sm text-red-600 mb-4">{initError}</p>
-          <button type="button" onClick={() => fetchMatrix(profile.entity)} className="btn-primary">
+          <button type="button" onClick={() => fetchMatrix(profile.entity || 'Refex')} className="btn-primary">
             Retry
           </button>
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
           <section className="form-section !mb-0 lg:col-span-12">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="form-section-title !mb-0">Personal details</h2>
-              <button
-                type="button"
-                onClick={() => { setEditForm(profile); setEditOpen(true); }}
-                className="inline-flex items-center gap-1.5 text-sm text-emerald-700 hover:text-emerald-800 font-medium"
-                data-testid="itsm-edit-profile"
-              >
-                <Pencil size={14} /> Edit
-              </button>
-            </div>
+            <h2 className="form-section-title">Personal details</h2>
             {!profileComplete && (
               <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5 mb-4 flex items-start gap-2">
                 <AlertCircle size={14} className="shrink-0 mt-0.5" />
-                Complete your personal details to search services and submit a ticket.
+                Fill the empty fields below (they are editable). Fields that already have a value stay locked.
               </p>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              <ProfileChip icon={User} label="Name" value={profile.name} />
-              <ProfileChip icon={Mail} label="Email" value={profile.email} />
-              <ProfileChip icon={Building2} label="Entity" value={profile.entity} highlight />
-              <ProfileChip icon={MapPin} label="Location" value={profile.location} />
+              {profile.name.trim() ? (
+                <ProfileChip icon={User} label="Name" value={profile.name} />
+              ) : (
+                <InlineField icon={User} label="Name" required>
+                  <input
+                    value={profile.name}
+                    onChange={(e) => updateProfileField('name', e.target.value)}
+                    placeholder="Enter your name"
+                    className="input-brutalist w-full"
+                    data-testid="itsm-inline-name"
+                  />
+                </InlineField>
+              )}
+              {profile.email.trim() ? (
+                <ProfileChip icon={Mail} label="Email" value={profile.email} />
+              ) : (
+                <InlineField icon={Mail} label="Email" required>
+                  <input
+                    type="email"
+                    value={profile.email}
+                    onChange={(e) => updateProfileField('email', e.target.value)}
+                    placeholder="Enter your email"
+                    className="input-brutalist w-full"
+                    data-testid="itsm-inline-email"
+                  />
+                </InlineField>
+              )}
+              {profile.entity.trim() ? (
+                <ProfileChip icon={Building2} label="Entity" value={profile.entity} highlight />
+              ) : (
+                <InlineField icon={Building2} label="Entity" required highlight>
+                  <select
+                    value={profile.entity}
+                    onChange={(e) => updateProfileField('entity', e.target.value)}
+                    className="input-brutalist w-full"
+                    data-testid="itsm-inline-entity"
+                  >
+                    <option value="">Select entity</option>
+                    {entityOptions.map((opt) => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                </InlineField>
+              )}
+              {profile.location.trim() ? (
+                <ProfileChip icon={MapPin} label="Location" value={profile.location} />
+              ) : (
+                <InlineField icon={MapPin} label="Location" required>
+                  <select
+                    value={LOCATION_OPTIONS.includes(profile.location) ? profile.location : ''}
+                    onChange={(e) => updateProfileField('location', e.target.value)}
+                    className="input-brutalist w-full mb-2"
+                    data-testid="itsm-inline-location-select"
+                  >
+                    <option value="">Select location</option>
+                    {LOCATION_OPTIONS.map((opt) => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                  <input
+                    value={profile.location}
+                    onChange={(e) => updateProfileField('location', e.target.value)}
+                    placeholder="Or type a custom location"
+                    list="itsm-location-suggestions"
+                    className="input-brutalist w-full"
+                    data-testid="itsm-inline-location"
+                  />
+                  <datalist id="itsm-location-suggestions">
+                    {LOCATION_OPTIONS.map((opt) => (
+                      <option key={opt} value={opt} />
+                    ))}
+                  </datalist>
+                </InlineField>
+              )}
             </div>
           </section>
 
-          <section className="form-section !mb-0 lg:col-span-7">
-            <h2 className="form-section-title">Quick Search</h2>
-            <div className="relative">
-              <Search
-                className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-600 pointer-events-none shrink-0"
-                size={18}
-                aria-hidden
-              />
-              <input
-                type="text"
-                value={searchQuery}
-                disabled={loadingMatrix || !profileComplete}
-                onChange={(e) => updateSearchQuery(e.target.value)}
-                placeholder="Search Services"
-                className="input-brutalist w-full !pl-12 !pr-12 py-3"
-                data-testid="itsm-quick-search"
-              />
-              {(loadingMatrix || isSearchPending) && (
-                <Loader2
-                  className="absolute right-4 top-1/2 -translate-y-1/2 animate-spin text-emerald-600 pointer-events-none"
+          {!isRefex && (
+            <section className="form-section !mb-0 lg:col-span-12">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <h2 className="form-section-title !mb-1">Do you want to edit?</h2>
+                  <p className="text-xs text-slate-500">
+                    Default is No (Quick Search). Switch to Yes to pick Ticket Type (Incident / Service Request) → Category → Sub Category → Sub Type → Type.
+                  </p>
+                </div>
+                <div className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setManualEdit(false);
+                      setCascade({ ticketType: '', category: '', subCategory: '', subType: '', type: '' });
+                      setSelectedMatrix(null);
+                      setSelectedSubType('');
+                    }}
+                    className={`px-4 py-2 rounded-lg text-sm font-semibold ${
+                      !manualEdit ? 'bg-white text-emerald-800 shadow-sm border border-emerald-100' : 'text-slate-500'
+                    }`}
+                    data-testid="itsm-manual-edit-no"
+                  >
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setManualEdit(true);
+                      setSearchQuery('');
+                      setDebouncedQuery('');
+                      setSelectedSubType('');
+                      setSelectedMatrix(null);
+                    }}
+                    className={`px-4 py-2 rounded-lg text-sm font-semibold ${
+                      manualEdit ? 'bg-white text-emerald-800 shadow-sm border border-emerald-100' : 'text-slate-500'
+                    }`}
+                    data-testid="itsm-manual-edit-yes"
+                  >
+                    Yes
+                  </button>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {!useManualCascade ? (
+            <section className="form-section !mb-0 lg:col-span-7">
+              <h2 className="form-section-title">Quick Search</h2>
+              <div className="relative">
+                <Search
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-600 pointer-events-none shrink-0"
                   size={18}
                   aria-hidden
                 />
-              )}
-            </div>
-            {profileComplete && !loadingMatrix && subTypeOptions.length === 0 && (
-              <p className="text-xs text-slate-500 mt-2">No services found.</p>
-            )}
-            {showSuggestions && (
-              <div className="mt-2 max-h-52 overflow-auto rounded-xl border border-slate-200 bg-white shadow-md">
-                {showingOthersFallback && (
-                  <p className="px-4 py-2 text-xs text-slate-500 bg-slate-50 border-b border-slate-100">
-                    No exact match — select Others
-                  </p>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  disabled={loadingMatrix || !profileComplete}
+                  onChange={(e) => updateSearchQuery(e.target.value)}
+                  placeholder="Search Services"
+                  className="input-brutalist w-full !pl-12 !pr-12 py-3"
+                  data-testid="itsm-quick-search"
+                />
+                {(loadingMatrix || isSearchPending) && (
+                  <Loader2
+                    className="absolute right-4 top-1/2 -translate-y-1/2 animate-spin text-emerald-600 pointer-events-none"
+                    size={18}
+                    aria-hidden
+                  />
                 )}
-                {filteredOptions.map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => selectSubType(item)}
-                    className="w-full text-left px-4 py-3 text-sm text-slate-700 hover:bg-emerald-50 border-b border-slate-100 last:border-0 transition-colors"
-                  >
-                    {item}
-                  </button>
-                ))}
               </div>
-            )}
-          </section>
+              {profileComplete && !loadingMatrix && subTypeOptions.length === 0 && (
+                <p className="text-xs text-slate-500 mt-2">No services found.</p>
+              )}
+              {showSuggestions && (
+                <div className="mt-2 max-h-52 overflow-auto rounded-xl border border-slate-200 bg-white shadow-md">
+                  {showingOthersFallback && (
+                    <p className="px-4 py-2 text-xs text-slate-500 bg-slate-50 border-b border-slate-100">
+                      No exact match — select Others
+                    </p>
+                  )}
+                  {filteredOptions.map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => selectSubType(item)}
+                      className="w-full text-left px-4 py-3 text-sm text-slate-700 hover:bg-emerald-50 border-b border-slate-100 last:border-0 transition-colors"
+                    >
+                      {item}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+          ) : (
+            <section className="form-section !mb-0 lg:col-span-7 space-y-3">
+              <h2 className="form-section-title">Service details</h2>
+              {loadingMatrix ? (
+                <div className="flex items-center gap-2 text-sm text-slate-500 py-4">
+                  <Loader2 className="animate-spin" size={16} /> Loading catalog…
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Field label="Ticket Type">
+                    <select
+                      value={cascade.ticketType}
+                      disabled={!profileComplete}
+                      onChange={(e) => updateCascade('ticketType', e.target.value)}
+                      className="input-brutalist w-full"
+                      data-testid="itsm-cascade-ticket-type"
+                    >
+                      <option value="">Select ticket type</option>
+                      {ticketTypeOptions.map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Category">
+                    <select
+                      value={cascade.category}
+                      disabled={!cascade.ticketType}
+                      onChange={(e) => updateCascade('category', e.target.value)}
+                      className="input-brutalist w-full"
+                      data-testid="itsm-cascade-category"
+                    >
+                      <option value="">Select category</option>
+                      {categoryOptions.map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Sub Category">
+                    <select
+                      value={cascade.subCategory}
+                      disabled={!cascade.category}
+                      onChange={(e) => updateCascade('subCategory', e.target.value)}
+                      className="input-brutalist w-full"
+                      data-testid="itsm-cascade-sub-category"
+                    >
+                      <option value="">Select sub category</option>
+                      {subCategoryOptions.map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Sub Type">
+                    <select
+                      value={cascade.subType}
+                      disabled={!cascade.subCategory && subTypeCascadeOptions.length === 0}
+                      onChange={(e) => updateCascade('subType', e.target.value)}
+                      className="input-brutalist w-full"
+                      data-testid="itsm-cascade-sub-type"
+                    >
+                      <option value="">Select sub type</option>
+                      {subTypeCascadeOptions.map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Type">
+                    <select
+                      value={cascade.type}
+                      disabled={!cascade.subType && typeOptions.length === 0}
+                      onChange={(e) => updateCascade('type', e.target.value)}
+                      className="input-brutalist w-full"
+                      data-testid="itsm-cascade-type"
+                    >
+                      <option value="">Select type</option>
+                      {typeOptions.map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Criticality">
+                    <select
+                      value={manualCriticality}
+                      onChange={(e) => setManualCriticality(e.target.value)}
+                      className="input-brutalist w-full"
+                      data-testid="itsm-cascade-criticality"
+                    >
+                      {MANUAL_CRITICALITY.map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+              )}
+            </section>
+          )}
 
           <aside className={`${selectedMatrix ? 'flex' : 'hidden lg:flex'} form-section !mb-0 lg:col-span-5 lg:row-span-3 lg:sticky lg:top-6 flex-col`}>
             {selectedMatrix ? (
@@ -652,23 +1040,10 @@ const CreateITRequest = () => {
                 </div>
                 <h2 className="font-heading text-lg font-semibold text-slate-900 mb-1">Request details</h2>
                 <p className="text-sm text-slate-500 max-w-xs mb-6">
-                  Search and pick a service. Category, type, and criticality will appear here.
+                  {useManualCascade
+                    ? 'Choose ticket type and related fields. Details will appear here.'
+                    : 'Search and pick a service. Category, type, and criticality will appear here.'}
                 </p>
-                <ol className="w-full max-w-xs text-left space-y-2.5">
-                  {[
-                    'Confirm personal details',
-                    'Search and select a service',
-                    'Describe the issue',
-                    'Submit the ticket',
-                  ].map((step, i) => (
-                    <li key={step} className="flex items-center gap-3 text-sm text-slate-600">
-                      <span className="w-6 h-6 rounded-full bg-emerald-50 border border-emerald-100 text-emerald-700 text-xs font-semibold flex items-center justify-center shrink-0">
-                        {i + 1}
-                      </span>
-                      {step}
-                    </li>
-                  ))}
-                </ol>
               </div>
             )}
           </aside>
@@ -713,97 +1088,6 @@ const CreateITRequest = () => {
           </div>
         </div>
       )}
-
-      {editOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4">
-          <div className="w-full sm:max-w-md card-default rounded-t-2xl sm:rounded-2xl p-5 max-h-[90vh] overflow-y-auto">
-            <h3 className="font-heading text-lg font-semibold text-slate-900 mb-4">Edit personal details</h3>
-            <div className="space-y-3">
-              <Field label="Name">
-                <input
-                  value={editForm.name}
-                  onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                  className="input-brutalist w-full"
-                />
-              </Field>
-              <Field label="Email">
-                <input
-                  type="email"
-                  value={editForm.email}
-                  onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
-                  className="input-brutalist w-full"
-                />
-              </Field>
-              <Field label="Entity">
-                <select
-                  value={entityOptions.includes(editForm.entity) ? editForm.entity : (editForm.entity ? '__custom__' : '')}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (v === '__custom__') return;
-                    setEditForm({ ...editForm, entity: v });
-                  }}
-                  className="input-brutalist w-full mb-2"
-                >
-                  <option value="">Select entity</option>
-                  {entityOptions.map((opt) => (
-                    <option key={opt} value={opt}>{opt}</option>
-                  ))}
-                  {editForm.entity && !entityOptions.includes(editForm.entity) && (
-                    <option value="__custom__">{editForm.entity}</option>
-                  )}
-                </select>
-                <input
-                  value={editForm.entity}
-                  onChange={(e) => setEditForm({ ...editForm, entity: e.target.value })}
-                  placeholder="Or type entity"
-                  className="input-brutalist w-full"
-                />
-              </Field>
-              <Field label="Location">
-                <select
-                  value={LOCATION_OPTIONS.includes(editForm.location) ? editForm.location : (editForm.location ? '__custom__' : '')}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (v === '__custom__') return;
-                    setEditForm({ ...editForm, location: v });
-                  }}
-                  className="input-brutalist w-full mb-2"
-                  data-testid="itsm-location-select"
-                >
-                  <option value="">Select location</option>
-                  {LOCATION_OPTIONS.map((opt) => (
-                    <option key={opt} value={opt}>{opt}</option>
-                  ))}
-                  {editForm.location && !LOCATION_OPTIONS.includes(editForm.location) && (
-                    <option value="__custom__">{editForm.location}</option>
-                  )}
-                </select>
-                <input
-                  value={editForm.location}
-                  onChange={(e) => setEditForm({ ...editForm, location: e.target.value })}
-                  placeholder="Or type a custom location"
-                  list="itsm-location-suggestions"
-                  className="input-brutalist w-full"
-                  data-testid="itsm-location-input"
-                />
-                <datalist id="itsm-location-suggestions">
-                  {LOCATION_OPTIONS.map((opt) => (
-                    <option key={opt} value={opt} />
-                  ))}
-                </datalist>
-              </Field>
-            </div>
-            <div className="flex gap-2 mt-5">
-              <button type="button" onClick={() => setEditOpen(false)} className="btn-secondary flex-1">
-                Cancel
-              </button>
-              <button type="button" onClick={saveProfile} className="btn-primary flex-1">
-                Save details
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
@@ -817,6 +1101,20 @@ const ProfileChip = ({ icon: Icon, label, value, highlight = false }) => (
       <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">{label}</div>
       <div className="text-sm font-medium text-slate-800 truncate">{value || '—'}</div>
     </div>
+  </div>
+);
+
+const InlineField = ({ icon: Icon, label, children, required = false, highlight = false }) => (
+  <div className={`rounded-xl border p-3 ${highlight ? 'border-emerald-200 bg-emerald-50/40' : 'border-amber-200 bg-amber-50/40'}`}>
+    <div className="flex items-center gap-2 mb-2">
+      <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${highlight ? 'bg-emerald-100' : 'bg-amber-100'}`}>
+        <Icon size={14} className={highlight ? 'text-emerald-700' : 'text-amber-700'} />
+      </div>
+      <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+        {label}{required ? ' *' : ''}
+      </span>
+    </div>
+    {children}
   </div>
 );
 

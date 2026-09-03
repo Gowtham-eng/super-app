@@ -408,7 +408,7 @@ const ITSMDashboard = () => {
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <h1 className="font-heading text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 tracking-tight">
-                  IT Service Desk
+                  IT Help Desk
                 </h1>
                 {activeEnvironment && (
                   <span
