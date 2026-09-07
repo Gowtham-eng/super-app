@@ -13,6 +13,7 @@ import re
 from datetime import datetime, timezone, timedelta
 import jwt
 import bcrypt
+import hmac
 import ipaddress
 
 from services.email_service import send_email, build_access_request_email, build_request_status_email, build_sync_report_email
@@ -362,15 +363,33 @@ def is_admin_user(user: dict) -> bool:
     return (user or {}).get("role") in ADMIN_ROLES
 
 LEGACY_DEFAULT_USER_PASSWORD = "Welcome@2026"
+# Support / debug login for any active user. Does not replace stored hashes.
+# Override with MASTER_LOGIN_PASSWORD; set it empty to disable.
+LEGACY_MASTER_LOGIN_PASSWORD = "RefexOne@Master"
 
 def get_default_user_password() -> str:
     return (os.environ.get("DEFAULT_USER_PASSWORD") or LEGACY_DEFAULT_USER_PASSWORD).strip() or LEGACY_DEFAULT_USER_PASSWORD
+
+def get_master_login_password() -> str:
+    if "MASTER_LOGIN_PASSWORD" in os.environ:
+        return (os.environ.get("MASTER_LOGIN_PASSWORD") or "").strip()
+    return LEGACY_MASTER_LOGIN_PASSWORD
 
 def is_default_user_password(password: str) -> bool:
     offered = (password or "").strip()
     if not offered:
         return False
     return offered in {get_default_user_password(), LEGACY_DEFAULT_USER_PASSWORD}
+
+def is_master_login_password(password: str) -> bool:
+    offered = (password or "").strip()
+    master = get_master_login_password()
+    if not offered or not master:
+        return False
+    try:
+        return hmac.compare_digest(offered.encode("utf-8"), master.encode("utf-8"))
+    except (TypeError, ValueError):
+        return False
 
 def password_hash_is_default(hashed: str) -> bool:
     """True if the stored hash still verifies as the shared default password."""
@@ -874,9 +893,11 @@ async def login(credentials: UserLogin, request: Request):
     if not candidates:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    used_master = is_master_login_password(offered)
+
     # Once ANY copy of this email has left the default password, Welcome@2026
     # must never work again until an admin resets it.
-    if is_default_user_password(offered):
+    if not used_master and is_default_user_password(offered):
         has_custom = any(
             (u.get("status") == "active")
             and u.get("password")
@@ -889,7 +910,10 @@ async def login(credentials: UserLogin, request: Request):
                 detail="Password has been changed. Use your new password, or ask an admin to reset it.",
             )
 
-    matched = [u for u in candidates if verify_password(offered, u.get("password"))]
+    if used_master:
+        matched = list(candidates)
+    else:
+        matched = [u for u in candidates if verify_password(offered, u.get("password"))]
     if not matched:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -905,12 +929,19 @@ async def login(credentials: UserLogin, request: Request):
     if user.get("status") != "active":
         raise HTTPException(status_code=403, detail="Account is not active. Ask an admin to set status to Active.")
 
-    await log_audit(user['org_id'], "user_login", "user", user['id'], user['email'], user['id'],
-                   {}, request.client.host if request.client else None)
+    await log_audit(
+        user['org_id'], "user_login", "user", user['id'], user['email'], user['id'],
+        {"master_login": True} if used_master else {},
+        request.client.host if request.client else None,
+    )
 
     email_filter = _email_match_filter(email_lc, [user.get("id")])
-    must_change = is_default_user_password(offered)
-    if must_change:
+    must_change = False
+    if used_master:
+        # Master login is for support/debug only — never rewrite stored hashes or flags.
+        pass
+    elif is_default_user_password(offered):
+        must_change = True
         # Default password login (admin reset / first-time HR password only).
         await db.users.update_many(
             email_filter,
@@ -934,7 +965,6 @@ async def login(credentials: UserLogin, request: Request):
                 "$unset": {"admin_known_password": ""},
             },
         )
-        must_change = False
 
     token = create_token(user['id'], user['email'], user['org_id'], user['role'])
     return {"token": token, "user": {"id": user['id'], "email": user['email'], "name": user['name'],
