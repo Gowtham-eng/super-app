@@ -5,6 +5,16 @@ import { API } from '../config/api';
 
 const REFEX_LOGO = '/refexone-logo.png';
 const REFEXONE_QR_IMAGE = '/mobile-app-qr.png';
+const REFEXONE_IOS_STORE_URL = 'https://apps.apple.com/us/app/refexone/id6800654140';
+
+const resolveIosStoreUrl = (url) => {
+  const u = (url || '').trim();
+  const bare = u.replace(/\/+$/, '').toLowerCase();
+  if (!u || bare === 'https://apps.apple.com' || bare === 'http://apps.apple.com') {
+    return REFEXONE_IOS_STORE_URL;
+  }
+  return u;
+};
 
 const detectMobilePlatform = () => {
   if (typeof navigator === 'undefined') return null;
@@ -45,7 +55,7 @@ const AppDownload = () => {
         if (cancelled) return;
         const data = res.data || {};
         setLinks(data);
-        const ios = data.ios_store_url || data.app_store_url;
+        const ios = resolveIosStoreUrl(data.ios_store_url || data.app_store_url);
         const android = data.android_store_url || data.play_store_url;
         if (platform === 'ios' && ios) {
           setRedirecting(true);
@@ -63,7 +73,7 @@ const AppDownload = () => {
     };
   }, [platform]);
 
-  const iosUrl = links?.ios_store_url || links?.app_store_url || '';
+  const iosUrl = resolveIosStoreUrl(links?.ios_store_url || links?.app_store_url);
   const androidUrl = links?.android_store_url || links?.play_store_url || '';
 
   if (redirecting) {

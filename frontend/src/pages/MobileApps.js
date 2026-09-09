@@ -23,7 +23,7 @@ const defaultUpdateConfig = {
   ios: {
     min_build: 1,
     latest_build: 1,
-    store_url: 'https://apps.apple.com/',
+    store_url: 'https://apps.apple.com/us/app/refexone/id6800654140',
     force_title: 'Update required',
     force_message: 'A new version of RefexOne is required to continue. Please update from the App Store.',
     optional_title: 'Update available',

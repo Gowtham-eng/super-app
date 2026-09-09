@@ -26,7 +26,7 @@ from services.kissflow_scim_client import (
     save_kissflow_scim_config,
     resolve_managers_in_kissflow,
 )
-from services.app_update import get_app_update_config, save_app_update_config, evaluate_update
+from services.app_update import get_app_update_config, save_app_update_config, evaluate_update, effective_ios_store_url
 from services.oidc_crypto import get_jwks, sign_oidc_jwt, normalize_issuer, decode_oidc_jwt
 from routes import scim as scim_router_module
 from routes.itsm import register_itsm_routes
@@ -3922,6 +3922,8 @@ async def get_app_download_links():
         if not android_url:
             android_url = (refex_mobile.get("play_store_url") or "").strip()
 
+    ios_url = effective_ios_store_url(ios_url)
+
     return {
         "app_store_url": ios_url,
         "play_store_url": android_url,
@@ -3957,6 +3959,8 @@ async def app_download_go(request: Request):
             ios_url = (refex_mobile.get("app_store_url") or "").strip()
         if not android_url:
             android_url = (refex_mobile.get("play_store_url") or "").strip()
+
+    ios_url = effective_ios_store_url(ios_url)
 
     ua = (request.headers.get("user-agent") or "").lower()
     if any(x in ua for x in ("iphone", "ipad", "ipod")) and ios_url:

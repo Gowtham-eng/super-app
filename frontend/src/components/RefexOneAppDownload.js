@@ -6,6 +6,16 @@ import { API } from '../config/api';
 
 export const REFEXONE_QR_IMAGE = '/mobile-app-qr.png';
 export const REFEXONE_DOWNLOAD_PATH = '/download';
+export const REFEXONE_IOS_STORE_URL = 'https://apps.apple.com/us/app/refexone/id6800654140';
+
+const resolveIosStoreUrl = (url) => {
+  const u = (url || '').trim();
+  const bare = u.replace(/\/+$/, '').toLowerCase();
+  if (!u || bare === 'https://apps.apple.com' || bare === 'http://apps.apple.com') {
+    return REFEXONE_IOS_STORE_URL;
+  }
+  return u;
+};
 
 const QR_COPY = {
   title: 'RefexOne Mobile',
@@ -117,7 +127,7 @@ const RefexOneAppDownload = ({ variant = 'launcher', className = '' }) => {
     };
   }, []);
 
-  const iosUrl = links?.ios_store_url || links?.app_store_url || '';
+  const iosUrl = resolveIosStoreUrl(links?.ios_store_url || links?.app_store_url);
   const androidUrl = links?.android_store_url || links?.play_store_url || '';
   const mobilePlatform = detectMobilePlatform();
   const showQr = !mobilePlatform;

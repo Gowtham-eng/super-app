@@ -26,10 +26,19 @@ DEFAULT_CONFIG = {
     },
     "ios": {
         **DEFAULT_PLATFORM,
-        "store_url": "https://apps.apple.com/",
+        "store_url": "https://apps.apple.com/us/app/refexone/id6800654140",
     },
     "updated_at": None,
 }
+
+REFEXONE_IOS_APP_STORE_URL = DEFAULT_CONFIG["ios"]["store_url"]
+
+
+def effective_ios_store_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u or u.rstrip("/").lower() in ("https://apps.apple.com", "http://apps.apple.com"):
+        return REFEXONE_IOS_APP_STORE_URL
+    return u
 
 
 def _to_int(value: Any, fallback: int = 0) -> int:
@@ -56,6 +65,7 @@ def normalize_config(doc: Optional[dict]) -> dict:
     base["enabled"] = bool(base.get("enabled"))
     base["android"] = _normalize_platform(base.get("android"), DEFAULT_CONFIG["android"])
     base["ios"] = _normalize_platform(base.get("ios"), DEFAULT_CONFIG["ios"])
+    base["ios"]["store_url"] = effective_ios_store_url(base["ios"].get("store_url"))
     return base
 
 
