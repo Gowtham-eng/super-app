@@ -95,6 +95,8 @@ credentials.json
 *.pem
 *.key
 .credentials
+backend/.itsm-env-runtime.json
+backend/.itsm-comment-ledger.json
 
 # Local ADB / UI test screenshots (repo root)
 _*.png

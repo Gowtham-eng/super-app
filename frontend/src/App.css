@@ -256,6 +256,53 @@ button:not(.btn-primary):not(.btn-secondary):not(.btn-danger):not(.btn-ghost):no
   text-overflow: ellipsis;
 }
 
+/* ITSM MIS: keep headers/cells from colliding when the viewport is tight. */
+.itsm-mis-table th {
+  @apply whitespace-nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.itsm-mis-table td {
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.itsm-mis-table td.itsm-conversation-cell,
+.data-table td.itsm-conversation-cell {
+  overflow: visible;
+  white-space: normal;
+  text-overflow: unset;
+  vertical-align: top;
+}
+
+.itsm-conversation {
+  min-width: 0;
+  max-width: 56rem;
+}
+
+.itsm-thread {
+  position: relative;
+  background: #f8fafc;
+}
+
+.itsm-thread::before {
+  content: '';
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 50%;
+  width: 1px;
+  background: #e2e8f0;
+  pointer-events: none;
+}
+
+@media (max-width: 639px) {
+  .itsm-thread::before {
+    display: none;
+  }
+}
+
 /* Sticky cells must layer above non-sticky neighbours */
 .data-table th[class*="sticky"],
 .data-table td[class*="sticky"] {

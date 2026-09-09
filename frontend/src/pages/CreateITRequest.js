@@ -33,6 +33,21 @@ const MANUAL_CRITICALITY = ['Low', 'Medium', 'High'];
 /** Create form catalog: Incident + Service Request only (no Change Request). */
 const ALLOWED_TICKET_TYPES = ['incident', 'service request'];
 
+const TICKET_TYPE_GUIDE = {
+  incident: {
+    title: 'Incident',
+    summary: 'Something that was working is broken or degraded.',
+    why: 'Use Incident when an existing IT service stops working or works poorly and you need it restored.',
+    examples: ['Laptop will not start', 'VPN / Wi‑Fi down', 'Email not syncing', 'Printer offline'],
+  },
+  'service request': {
+    title: 'Service Request',
+    summary: 'A request for something new or a standard change.',
+    why: 'Use Service Request when you need access, hardware, software, or a planned IT change — not an outage.',
+    examples: ['New laptop / headset', 'Access to a shared folder', 'Install an application', 'Email distribution list'],
+  },
+};
+
 /** Common office / site locations — dropdown + free-text custom. */
 const LOCATION_OPTIONS = [
   'Refex Group',
@@ -353,6 +368,23 @@ const CreateITRequest = () => {
     } catch (err) {
       if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') return;
       setInitError(getApiErrorMessage(err, 'Unable to load service catalog. Please retry.'));
+      const detail = getApiErrorMessage(err, '');
+      if (/401|not authorized|access keys|ITSM Setup|Live access keys/i.test(detail)) {
+        setInitError(
+          `${detail}\n\nApproval matrix always uses Kissflow Live. An admin must set valid Live access keys in ITSM Setup (create/submit can stay on Development).`
+        );
+      } else if (/429|rate.?limit|Too Many Requests/i.test(detail) || err?.response?.status === 429) {
+        setInitError(
+          'Kissflow is rate-limiting the approval matrix right now. Wait a few seconds and tap Retry.'
+        );
+      } else if (
+        err?.response?.status === 502 &&
+        /local ITSM backend is not running|ECONNREFUSED|proxy error/i.test(detail)
+      ) {
+        setInitError(
+          'Local ITSM backend is not reachable (port 8000). Start the backend, then tap Retry.'
+        );
+      }
     } finally {
       if (matrixAbortRef.current === controller) {
         setLoadingMatrix(false);
@@ -475,6 +507,19 @@ const CreateITRequest = () => {
         next.type = '';
       } else if (field === 'subType') {
         next.type = '';
+      }
+      // Only bind Request Details after the full cascade is chosen — do not
+      // auto-pick the first Incident/SR matrix row on partial selection.
+      const cascadeReady =
+        !!next.ticketType &&
+        !!next.category &&
+        !!next.subCategory &&
+        !!next.subType &&
+        !!next.type;
+      if (!cascadeReady) {
+        setSelectedMatrix(null);
+        setSelectedSubType('');
+        return next;
       }
       const matrix = findMatrixFromCascade(next);
       setSelectedMatrix(matrix);
@@ -634,7 +679,7 @@ const CreateITRequest = () => {
         toast.error(res.data.message || 'Ticket was not created in Kissflow.');
         return;
       }
-      navigate('/itsm', { replace: true });
+      navigate('/itsm', { replace: true, state: { refreshTickets: true } });
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Unable to submit ticket. Please try again.'));
     } finally {
@@ -722,10 +767,15 @@ const CreateITRequest = () => {
 
       {initError && !initialized ? (
         <div className="card-default p-6 text-center border-red-200">
-          <p className="text-sm text-red-600 mb-4">{initError}</p>
-          <button type="button" onClick={() => fetchMatrix(profile.entity || 'Refex')} className="btn-primary">
-            Retry
-          </button>
+          <p className="text-sm text-red-600 mb-4 whitespace-pre-wrap text-left">{initError}</p>
+          <div className="flex flex-col sm:flex-row gap-2 justify-center">
+            <button type="button" onClick={() => fetchMatrix(profile.entity || 'Refex')} className="btn-primary">
+              Retry
+            </button>
+            <button type="button" onClick={() => navigate('/itsm-setup')} className="btn-secondary">
+              Open ITSM Setup
+            </button>
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
@@ -782,36 +832,32 @@ const CreateITRequest = () => {
                   </select>
                 </InlineField>
               )}
-              {profile.location.trim() ? (
-                <ProfileChip icon={MapPin} label="Location" value={profile.location} />
-              ) : (
-                <InlineField icon={MapPin} label="Location" required>
-                  <select
-                    value={LOCATION_OPTIONS.includes(profile.location) ? profile.location : ''}
-                    onChange={(e) => updateProfileField('location', e.target.value)}
-                    className="input-brutalist w-full mb-2"
-                    data-testid="itsm-inline-location-select"
-                  >
-                    <option value="">Select location</option>
-                    {LOCATION_OPTIONS.map((opt) => (
-                      <option key={opt} value={opt}>{opt}</option>
-                    ))}
-                  </select>
-                  <input
-                    value={profile.location}
-                    onChange={(e) => updateProfileField('location', e.target.value)}
-                    placeholder="Or type a custom location"
-                    list="itsm-location-suggestions"
-                    className="input-brutalist w-full"
-                    data-testid="itsm-inline-location"
-                  />
-                  <datalist id="itsm-location-suggestions">
-                    {LOCATION_OPTIONS.map((opt) => (
-                      <option key={opt} value={opt} />
-                    ))}
-                  </datalist>
-                </InlineField>
-              )}
+              <InlineField icon={MapPin} label="Location" required>
+                <select
+                  value={LOCATION_OPTIONS.includes(profile.location) ? profile.location : ''}
+                  onChange={(e) => updateProfileField('location', e.target.value)}
+                  className="input-brutalist w-full mb-2"
+                  data-testid="itsm-inline-location-select"
+                >
+                  <option value="">Select location</option>
+                  {LOCATION_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                </select>
+                <input
+                  value={profile.location}
+                  onChange={(e) => updateProfileField('location', e.target.value)}
+                  placeholder="Or type a custom location"
+                  list="itsm-location-suggestions"
+                  className="input-brutalist w-full"
+                  data-testid="itsm-inline-location"
+                />
+                <datalist id="itsm-location-suggestions">
+                  {LOCATION_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt} />
+                  ))}
+                </datalist>
+              </InlineField>
             </div>
           </section>
 
@@ -1006,7 +1052,13 @@ const CreateITRequest = () => {
             </section>
           )}
 
-          <aside className={`${selectedMatrix ? 'flex' : 'hidden lg:flex'} form-section !mb-0 lg:col-span-5 lg:row-span-3 lg:sticky lg:top-6 flex-col`}>
+          <aside
+            className={`${
+              selectedMatrix || (useManualCascade && cascade.ticketType)
+                ? 'flex'
+                : 'hidden lg:flex'
+            } form-section !mb-0 lg:col-span-5 lg:row-span-3 lg:sticky lg:top-6 flex-col`}
+          >
             {selectedMatrix ? (
               <>
                 <div className="flex items-center justify-between gap-3 mb-4">
@@ -1033,6 +1085,32 @@ const CreateITRequest = () => {
                   <InfoBlock label="Criticality" value={criticality} />
                 </div>
               </>
+            ) : useManualCascade && cascade.ticketType && TICKET_TYPE_GUIDE[normalizeKey(cascade.ticketType)] ? (
+              (() => {
+                const guide = TICKET_TYPE_GUIDE[normalizeKey(cascade.ticketType)];
+                return (
+                  <div data-testid="itsm-ticket-type-guide">
+                    <div className="flex items-center gap-2 mb-4">
+                      <ClipboardList className="text-emerald-600" size={18} />
+                      <h2 className="form-section-title !mb-0">What is {guide.title}?</h2>
+                    </div>
+                    <p className="text-sm font-medium text-slate-800 mb-2">{guide.summary}</p>
+                    <p className="text-sm text-slate-600 leading-relaxed mb-4">{guide.why}</p>
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Examples</p>
+                    <ul className="space-y-1.5 mb-4">
+                      {guide.examples.map((ex) => (
+                        <li key={ex} className="text-sm text-slate-600 flex gap-2">
+                          <span className="text-emerald-600 shrink-0">•</span>
+                          <span>{ex}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="text-xs text-slate-500 border-t border-slate-100 pt-3">
+                      Keep selecting Category → Sub Category → Sub Type → Type. Full request details appear here after the last choice.
+                    </p>
+                  </div>
+                );
+              })()
             ) : (
               <div className="flex flex-col items-center justify-center text-center py-8 px-4 h-full min-h-[280px]">
                 <div className="w-14 h-14 rounded-2xl bg-emerald-50 border border-emerald-100 flex items-center justify-center mb-4">
@@ -1041,7 +1119,7 @@ const CreateITRequest = () => {
                 <h2 className="font-heading text-lg font-semibold text-slate-900 mb-1">Request details</h2>
                 <p className="text-sm text-slate-500 max-w-xs mb-6">
                   {useManualCascade
-                    ? 'Choose ticket type and related fields. Details will appear here.'
+                    ? 'Select Incident or Service Request first. A short guide appears here — catalog fields stay empty until you finish the cascade.'
                     : 'Search and pick a service. Category, type, and criticality will appear here.'}
                 </p>
               </div>

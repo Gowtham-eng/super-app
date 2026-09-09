@@ -12,14 +12,37 @@ import re
 import json
 import uuid
 import asyncio
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr, Field
 
 logger = logging.getLogger("itsm")
+
+# Skip Mongo after first failure so ITSM routes don't stack serverSelection timeouts.
+_ITSM_DB_DOWN_UNTIL = 0.0
+_ITSM_DB_CIRCUIT_SEC = float(os.environ.get("MONGO_CIRCUIT_BREAKER_SEC", "90") or "90")
+# Cache Live approval matrix to avoid Kissflow 429 from StrictMode / retry storms.
+_MATRIX_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_MATRIX_CACHE_TTL_SEC = float(os.environ.get("ITSM_MATRIX_CACHE_TTL_SEC", "120") or "120")
+_MATRIX_INFLIGHT: Dict[str, asyncio.Future] = {}
+
+
+def _itsm_db_usable(db) -> bool:
+    if db is None:
+        return False
+    return time.monotonic() >= _ITSM_DB_DOWN_UNTIL
+
+
+def _trip_itsm_db_circuit(exc: Exception) -> None:
+    global _ITSM_DB_DOWN_UNTIL
+    _ITSM_DB_DOWN_UNTIL = time.monotonic() + _ITSM_DB_CIRCUIT_SEC
+    logger.warning(
+        "ITSM Mongo circuit open for %.0fs after: %s", _ITSM_DB_CIRCUIT_SEC, exc
+    )
 
 KISSFLOW_BASE_URL = os.environ.get(
     "ITSM_KISSFLOW_BASE_URL",
@@ -65,6 +88,125 @@ SOURCE_VALUE = "Mobile"
 APPROVAL_MATRIX_PAGE_SIZE = 500
 COLLECTION = "itsm_entity_configs"
 ENV_COLLECTION = "itsm_kissflow_environments"
+# Survives Mongo downtime so ITSM Setup can still switch development ↔ live.
+_ENV_RUNTIME: Optional[Dict[str, Any]] = None
+_ENV_RUNTIME_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".itsm-env-runtime.json",
+)
+
+
+def _client_env_name(value: Optional[str]) -> Optional[str]:
+    """Dashboard Dev/Live badge → Kissflow account. Ignore anything else."""
+    token = (value or "").strip().lower()
+    if token in ("production", "prod"):
+        token = "live"
+    if token in ("dev",):
+        token = "development"
+    return token if token in ("development", "live") else None
+
+
+def _read_env_runtime_file() -> Optional[Dict[str, Any]]:
+    try:
+        if not os.path.isfile(_ENV_RUNTIME_FILE):
+            return None
+        with open(_ENV_RUNTIME_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict) and data.get("active") in ("development", "live", "production"):
+            if data.get("active") == "production":
+                data["active"] = "live"
+            return data
+    except Exception as exc:
+        logger.warning("ITSM env runtime file read failed: %s", exc)
+    return None
+
+
+def _write_env_runtime_file(doc: Dict[str, Any]) -> None:
+    try:
+        with open(_ENV_RUNTIME_FILE, "w", encoding="utf-8") as handle:
+            json.dump(doc, handle, indent=2, default=str)
+    except Exception as exc:
+        logger.warning("ITSM env runtime file write failed: %s", exc)
+
+
+_COMMENT_LEDGER_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".itsm-comment-ledger.json",
+)
+
+
+def _comment_ledger_key(environment: str, instance_id: str) -> str:
+    return f"{(environment or 'development').strip().lower()}|{(instance_id or '').strip()}"
+
+
+def _read_comment_ledger() -> Dict[str, List[Dict[str, Any]]]:
+    try:
+        if not os.path.isfile(_COMMENT_LEDGER_FILE):
+            return {}
+        with open(_COMMENT_LEDGER_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        logger.warning("ITSM comment ledger read failed: %s", exc)
+        return {}
+
+
+def _write_comment_ledger(data: Dict[str, List[Dict[str, Any]]]) -> None:
+    try:
+        with open(_COMMENT_LEDGER_FILE, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, default=str)
+    except Exception as exc:
+        logger.warning("ITSM comment ledger write failed: %s", exc)
+
+
+def _ledger_comments(environment: str, instance_id: str) -> List[Dict[str, Any]]:
+    rows = _read_comment_ledger().get(_comment_ledger_key(environment, instance_id)) or []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _append_ledger_comment(environment: str, instance_id: str, entry: Dict[str, Any]) -> None:
+    data = _read_comment_ledger()
+    key = _comment_ledger_key(environment, instance_id)
+    rows = [row for row in (data.get(key) or []) if isinstance(row, dict)]
+    entry_id = str(entry.get("id") or entry.get("recordId") or "")
+    if entry_id and any(str(row.get("id") or row.get("recordId") or "") == entry_id for row in rows):
+        data[key] = rows
+        _write_comment_ledger(data)
+        return
+    rows.append(entry)
+    data[key] = rows
+    _write_comment_ledger(data)
+
+
+def _merge_comment_lists(*groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen: Set[str] = set()
+    out: List[Dict[str, Any]] = []
+    for group in groups:
+        for row in group or []:
+            if not isinstance(row, dict):
+                continue
+            text = str(row.get("comment") or row.get("resolution") or "").strip()
+            if not text or _looks_like_kissflow_id(text):
+                continue
+            cid = str(row.get("id") or row.get("recordId") or "").strip()
+            token = cid or text.lower()
+            if token in seen or text.lower() in seen:
+                continue
+            if cid:
+                seen.add(cid)
+            seen.add(text.lower())
+            out.append(row)
+    return out
+
+
+def _attach_ledger_comments(
+    comments: Optional[List[Dict[str, Any]]],
+    environment: str,
+    instance_id: str,
+) -> List[Dict[str, Any]]:
+    return _merge_comment_lists(comments or [], _ledger_comments(environment, instance_id))
+
+
 LOCAL_TICKETS = "itsm_local_tickets"
 VERIFY_ATTEMPTS = 3
 VERIFY_DELAY_SEC = 2
@@ -114,11 +256,19 @@ def _normalize_entity_key(value: str) -> str:
 
 
 def _kissflow_headers(cfg: Dict[str, Any]) -> Dict[str, str]:
+    """Same auth for reports GET and process POST (ITSM Setup / env keys)."""
+    key_id = (cfg.get("access_key_id") or "").strip()
+    key_secret = (cfg.get("access_key_secret") or "").strip()
+    if not key_id or not key_secret:
+        raise HTTPException(
+            status_code=400,
+            detail="Kissflow access key id and secret are missing in ITSM Setup.",
+        )
     return {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "X-Access-Key-Id": cfg["access_key_id"],
-        "X-Access-Key-Secret": cfg["access_key_secret"],
+        "X-Access-Key-Id": key_id,
+        "X-Access-Key-Secret": key_secret,
     }
 
 
@@ -518,6 +668,54 @@ def _walk_progress_nodes(payload: Any) -> List[Dict[str, Any]]:
     return found
 
 
+def _iter_progress_steps(progress: Any) -> List[Dict[str, Any]]:
+    """Raw workflow steps, including nested Process[].Steps branches (aasik_ITSM)."""
+    if not isinstance(progress, dict):
+        return []
+    steps: List[Dict[str, Any]] = []
+
+    def from_branch(branch: Any) -> None:
+        if not isinstance(branch, dict):
+            return
+        for step in branch.get("Steps") or branch.get("steps") or []:
+            if isinstance(step, dict):
+                steps.append(step)
+                for nested in step.get("Process") or step.get("process") or []:
+                    from_branch(nested)
+
+    for step in progress.get("Steps") or progress.get("steps") or []:
+        if isinstance(step, dict):
+            steps.append(step)
+            for nested in step.get("Process") or step.get("process") or []:
+                from_branch(nested)
+    for nested in progress.get("Process") or progress.get("process") or []:
+        from_branch(nested)
+    return steps
+
+
+def _step_activity_ids(step: Dict[str, Any], instance_id: str = "") -> List[str]:
+    """Activity instance ids on a progress step — `_id` first (Kissflow updateItem)."""
+    ordered: List[str] = []
+    for key in ("_id", "_activity_instance_id", "Id", "activityInstanceId", "Activity_Instance_ID"):
+        aid = _usable_activity_id(step.get(key), instance_id)
+        if aid and aid not in ordered:
+            ordered.append(aid)
+    assigned = step.get("AssignedTo") or step.get("_assigned_to") or []
+    if isinstance(assigned, dict):
+        assigned = [assigned]
+    if isinstance(assigned, list):
+        for person in assigned:
+            if not isinstance(person, dict):
+                continue
+            aid = _usable_activity_id(
+                person.get("_activity_instance_id") or person.get("activityInstanceId"),
+                instance_id,
+            )
+            if aid and aid not in ordered:
+                ordered.append(aid)
+    return ordered
+
+
 def _activity_instance_from_item(item: Dict[str, Any], instance_id: str = "") -> str:
     return _usable_activity_id(
         item.get("_activity_instance_id")
@@ -598,6 +796,56 @@ async def _kf_get_json(
         return None
 
 
+def _kissflow_response_text(raw: Any, fallback: str = "") -> str:
+    if isinstance(raw, dict):
+        for key in ("message", "error", "Error", "en_message", "Success", "success"):
+            text = _as_string(raw.get(key)).strip()
+            if text:
+                return text
+        return fallback
+    if raw:
+        return str(raw)[:240]
+    return fallback
+
+
+async def _kf_post_json(
+    cfg: Dict[str, Any],
+    path: str,
+    payload: Dict[str, Any],
+    params: Optional[Dict[str, Any]] = None,
+) -> tuple:
+    url = path if path.startswith("http") else f"{cfg['kissflow_base_url']}{path}"
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            url,
+            headers=_kissflow_headers(cfg),
+            params=params or {},
+            json=payload,
+        )
+    raw: Any = None
+    try:
+        raw = response.json()
+    except Exception:
+        raw = response.text
+    success_text = ""
+    if isinstance(raw, dict):
+        success_text = _as_string(
+            raw.get("Success") or raw.get("success") or raw.get("message") or raw.get("en_message")
+        ).strip()
+    return response.status_code, raw, success_text
+
+
+def _comment_write_accepted(status_code: int, raw: Any, success_text: str) -> bool:
+    if not (200 <= status_code < 300):
+        return False
+    if success_text and re.search(
+        r"fail|error|permission|queue|moved out|not found|anymore", success_text, re.I
+    ):
+        return False
+    saved = raw.get("Table::IT__Agent_Solution") if isinstance(raw, dict) else None
+    return bool(isinstance(saved, list) and saved) or not _is_kissflow_queue_error(success_text, status_code)
+
+
 def _pick_sendback_from_nodes(
     nodes: List[Dict[str, Any]],
     instance_id: str,
@@ -633,6 +881,189 @@ def _pick_sendback_from_nodes(
         elif not best:
             best = aid
     return best
+
+
+def _current_branch_steps(progress: Any) -> List[Dict[str, Any]]:
+    """Current process branch only — do not flatten sibling nested Process[] branches."""
+    if not isinstance(progress, dict):
+        return []
+
+    def branch_steps(branch: Any) -> List[Dict[str, Any]]:
+        if not isinstance(branch, dict):
+            return []
+        raw = branch.get("Steps") or branch.get("steps") or []
+        return [step for step in raw if isinstance(step, dict)]
+
+    candidates: List[List[Dict[str, Any]]] = []
+    root = progress.get("Steps") or progress.get("steps") or []
+    if not isinstance(root, list):
+        root = []
+    for step in root:
+        if not isinstance(step, dict):
+            continue
+        for nested in step.get("Process") or step.get("process") or []:
+            got = branch_steps(nested)
+            if got:
+                candidates.append(got)
+    for nested in progress.get("Process") or progress.get("process") or []:
+        got = branch_steps(nested)
+        if got:
+            candidates.append(got)
+    if candidates:
+        def _score(steps: List[Dict[str, Any]]) -> tuple:
+            live = 0
+            for step in steps:
+                token = _status_token(str(step.get("_status") or step.get("Status") or ""))
+                if token == "inprogress":
+                    live += 1
+            return (live, len(steps))
+
+        candidates.sort(key=_score, reverse=True)
+        return candidates[0]
+    return [step for step in root if isinstance(step, dict)]
+
+
+def _step_assignee_name(step: Dict[str, Any]) -> str:
+    return _person_label(
+        step.get("AssignedTo")
+        or step.get("_assigned_to")
+        or step.get("AssignedToUser")
+        or step.get("_current_assigned_to")
+    )
+
+
+def _assignee_entry_detail(value: Any) -> str:
+    """Name plus Kissflow Kind so AppRole 'ITSM Bot' is not confused with the BOT user."""
+    if value is None or value == "" or value == "—":
+        return ""
+    if isinstance(value, list):
+        parts = [_assignee_entry_detail(v) for v in value]
+        return ", ".join(p for p in parts if p)
+    if isinstance(value, dict):
+        name = _person_label(value) or _as_string(value.get("_id"))
+        kind = _as_string(value.get("Kind") or value.get("kind")).lower()
+        if kind in ("approle", "role"):
+            return f"{name} (role)" if name else ""
+        if kind == "user":
+            return f"{name} (user)" if name else ""
+        return name
+    return _person_label(value)
+
+
+def _step_assignee_detail(step: Dict[str, Any]) -> str:
+    return _assignee_entry_detail(
+        step.get("AssignedTo")
+        or step.get("_assigned_to")
+        or step.get("AssignedToUser")
+        or step.get("_current_assigned_to")
+    )
+
+
+async def _list_open_work_activity_ids(
+    cfg: Dict[str, Any],
+    instance_id: str,
+    hinted_activity: str = "",
+    entity: Optional[str] = None,
+) -> List[str]:
+    """Live InProgress user-task activity ids (BOT pending queue first, then progress)."""
+    process_id = cfg.get("process_id") or ""
+    hinted = _usable_activity_id(hinted_activity, instance_id)
+    if not process_id or not instance_id:
+        return [hinted] if hinted else []
+    params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
+    entity_key = _report_entity_key(entity or cfg.get("entity"))
+    if "extrovis" in (process_id or "").lower():
+        entity_key = "extrovis"
+    elif entity_key not in WORK_STEP_ACTIVITY_IDS:
+        entity_key = "refex"
+    pending_ids: List[str] = []
+    for def_id in WORK_STEP_ACTIVITY_IDS.get(entity_key, []):
+        queued = await _kf_get_json(
+            cfg,
+            f"/process/2/{cfg['account_id']}/{process_id}/pending/{def_id}",
+            {
+                **params,
+                "page_number": 1,
+                "page_size": 500,
+                "skip_aggregation": "true",
+            },
+        )
+        for item in _kissflow_items(queued):
+            if _as_string(item.get("_id")) != instance_id:
+                continue
+            aid = _usable_activity_id(
+                item.get("_activity_instance_id")
+                or item.get("activityInstanceId")
+                or item.get("Activity_Instance_ID"),
+                instance_id,
+            )
+            if aid and aid not in pending_ids:
+                pending_ids.append(aid)
+    progress = await _kf_get_json(
+        cfg,
+        f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}/progress",
+        params,
+    )
+    in_progress: List[Dict[str, Any]] = []
+    for step in _current_branch_steps(progress):
+        token = _status_token(str(step.get("_status") or step.get("Status") or step.get("status") or ""))
+        if token != "inprogress":
+            continue
+        node = str(step.get("NodeType") or step.get("node_type") or "").lower()
+        if node in ("startevent", "endevent"):
+            continue
+        if node and node not in ("usertask", "task", "") and "task" not in node:
+            continue
+        ids = _step_activity_ids(step, instance_id)
+        if ids:
+            in_progress.append({**step, "_resolved_aids": ids, "_resolved_aid": ids[0]})
+
+    # aasik pickInProgressAgentCommentActivity — last live user-task in branch order.
+    if in_progress:
+        in_progress = [in_progress[-1]] + in_progress[:-1]
+    ordered: List[str] = []
+    for step in in_progress:
+        for aid in step.get("_resolved_aids") or [step["_resolved_aid"]]:
+            if aid not in ordered:
+                ordered.append(aid)
+    if hinted and hinted in ordered:
+        ordered = [hinted] + [aid for aid in ordered if aid != hinted]
+    if pending_ids:
+        ordered = pending_ids + [aid for aid in ordered if aid not in pending_ids]
+    return ordered
+
+
+async def _resolve_open_work_activity_id(
+    cfg: Dict[str, Any],
+    instance_id: str,
+    hinted_activity: str = "",
+    entity: Optional[str] = None,
+) -> str:
+    """
+    Resolve the current InProgress user-task activity for an open ticket.
+    Dashboard often sends a completed step id (e.g. PickUp) — Kissflow then returns
+    "You don't have permission to submit this item anymore."
+    """
+    ids = await _list_open_work_activity_ids(cfg, instance_id, hinted_activity, entity=entity)
+    return ids[0] if ids else ""
+
+
+async def _read_activity_field(
+    cfg: Dict[str, Any],
+    process_id: str,
+    instance_id: str,
+    activity_id: str,
+    field_name: str,
+) -> str:
+    params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
+    payload = await _kf_get_json(
+        cfg,
+        f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}/{activity_id}",
+        params,
+    )
+    if not isinstance(payload, dict):
+        return ""
+    return _as_string(payload.get(field_name) or "").strip()
 
 
 async def _resolve_reopen_ids(
@@ -783,6 +1214,22 @@ REOPEN_STEP_ACTIVITY_IDS = {
     "extrovis": ["Activity_7rCa3_zSic"],
 }
 
+# Kissflow pending/{activityDef} — BOT key only sees items in its own queue.
+WORK_STEP_ACTIVITY_IDS = {
+    "extrovis": [
+        "Activity_XVeFnZdKon",  # IT Agent Solution
+        "Activity_9gAyNCIowD",  # IT Agent PickUp
+        "Activity_mtwvpxK-0q",
+        "Activity_XSuxhIx9TQ",
+    ],
+    "refex": [
+        "Activity_br-intVidq",
+        "Activity_9h2Y_0Yvdw",
+        "Activity_4ec092cgUY",
+        "Activity_tPGd7-Oggb",
+    ],
+}
+
 # Kissflow report columns use opaque Ids (verified in aasik_ITSM employee dashboard).
 REPORT_FIELD_IDS = {
     "refex": {
@@ -814,7 +1261,15 @@ REPORT_FIELD_IDS = {
         "assigned_to_user": ["Column_QcF4GcVGi9", "Assigned_To_User"],
         "modified_by": ["Column_2ePerEzuLP", "_modified_by"],
         "requester_email": ["Column_TNDYy0NHqk", "Email", "Requester_Email", "Requestor_Email"],
+        "requester_name": ["Requester_Name"],
         "created_by": ["Column_qpzG8v9AKq", "_created_by"],
+        # IT__Agent_Solution child table (Revisions)
+        "solution_table": ["Column_KaubOsozAz", "Table::IT__Agent_Solution", "IT__Agent_Solution"],
+        "solution_table_name": ["Column_mvjPOUTegd", "Name_1", "Name"],
+        "solution_table_resolution": ["Column_RHq6XN6hvD", "Resolution"],
+        "solution_table_datetime": ["Column__LGAMX8kf0", "ITAgentDate_Time", "Date_Time"],
+        # Refex IT__Agent_Solution has Name_1 + Resolution only (no Stages).
+        "solution_table_stages": [],
     },
     "extrovis": {
         "request_id": ["Column_y4srngcUo1"],
@@ -845,7 +1300,14 @@ REPORT_FIELD_IDS = {
         "assigned_to_user": ["Column_9uwhycudkA", "Assigned_To_User"],
         "modified_by": ["Column_FPFvrG0A9c", "_modified_by"],
         "requester_email": ["Column_Egh9ss0nVO", "Email", "Requester_Email", "Requestor_Email"],
+        "requester_name": ["Requester_Name"],
         "created_by": ["Column_9D6907I8pY", "_created_by"],
+        # IT__Agent_Solution child table (Revisions)
+        "solution_table": ["Column_qr_9gP_vE5", "Table::IT__Agent_Solution", "IT__Agent_Solution"],
+        "solution_table_name": ["Column_ZipK5a_k8Y", "Name_1", "Name"],
+        "solution_table_resolution": ["Column_KzHlT9k9fc", "Resolution"],
+        "solution_table_datetime": ["Column_R_u4Nyl5q_", "ITAgentDate_Time", "Date_Time"],
+        "solution_table_stages": ["Column_EA6Nomn1w4", "Stages_1", "Stages"],
     },
 }
 
@@ -855,6 +1317,427 @@ def _normalize_email(value: Any) -> str:
     if "@" not in text:
         return ""
     return text.split()[0].strip("<>\",;'")
+
+
+def _looks_like_email(value: Any) -> bool:
+    text = _as_string(value).strip()
+    return bool(text) and "@" in text and " " not in text
+
+
+def _commenter_display_name(user: Optional[Dict[str, Any]], hinted: Optional[str] = None) -> str:
+    """
+    Prefer a real person name for Table::IT__Agent_Solution.Name_1.
+    Never fall back to an email address when a name is available.
+    """
+    email = _normalize_email((user or {}).get("email") or "")
+
+    def _clean(value: Any) -> str:
+        text = _as_string(value).strip()
+        if not text:
+            return ""
+        if _looks_like_email(text):
+            return ""
+        if email and text.lower() == email:
+            return ""
+        return text
+
+    candidates = [
+        hinted,
+        " ".join(
+            part
+            for part in (
+                _as_string((user or {}).get("first_name") or (user or {}).get("firstName")).strip(),
+                _as_string((user or {}).get("last_name") or (user or {}).get("lastName")).strip(),
+            )
+            if part
+        ),
+        (user or {}).get("name"),
+        (user or {}).get("full_name"),
+        (user or {}).get("display_name"),
+        (user or {}).get("displayName"),
+    ]
+    for raw in candidates:
+        name = _clean(raw)
+        if name:
+            return name
+    return "Employee"
+
+
+def _comment_step_for_entity(entity: Optional[str]) -> str:
+    """Open-ticket comment is only allowed on the active work step(s)."""
+    if _report_entity_key(entity) == "refex":
+        return "IT Tech / IT Tech Support"
+    return "IT Agent PickUp / IT Agent Solution"
+
+
+def _can_comment_on_step(current_step: str, entity: Optional[str]) -> bool:
+    # Refex Help Desk does not expose comments — Extrovis-family only.
+    if _report_entity_key(entity) == "refex":
+        return False
+    step = re.sub(r"[\s_-]+", " ", _as_string(current_step).strip().lower()).strip()
+    if not step:
+        return False
+    # Extrovis: PickUp and Solution (same live-work gate as aasik_ITSM).
+    return _is_live_work_step(current_step)
+
+
+def _is_step_field_row(row: Dict[str, Any]) -> bool:
+    """Kissflow StepField blobs must never be treated as IT__Agent_Solution chat rows."""
+    keys = {str(key).lower() for key in row.keys()}
+    if any("resolution" in key or key in ("name_1", "column_kzhlt9k9fc") for key in keys):
+        return False
+    return bool(keys & {"slabreached", "actedby", "actedat", "expectedat", "stepname"})
+
+
+def _unwrap_table_rows(value: Any) -> List[Dict[str, Any]]:
+    if value is None or value == "" or value == "—":
+        return []
+    rows: List[Dict[str, Any]] = []
+    if isinstance(value, list):
+        rows = [row for row in value if isinstance(row, dict)]
+    elif isinstance(value, dict):
+        for key in ("Values", "values", "Data", "data", "Items", "items"):
+            nested = value.get(key)
+            if isinstance(nested, list):
+                rows = [row for row in nested if isinstance(row, dict)]
+                break
+        if not rows and any(k in value for k in ("Resolution", "Name_1", "Name", "_id")):
+            rows = [value]
+    return [row for row in rows if not _is_step_field_row(row)]
+
+
+def _pick_row_field(row: Dict[str, Any], *candidates: str) -> Any:
+    for key in candidates:
+        if not key:
+            continue
+        if key in row and row.get(key) not in (None, ""):
+            return row.get(key)
+    # Case-insensitive fallback
+    lower_map = {str(k).lower(): k for k in row.keys()}
+    for key in candidates:
+        real = lower_map.get(str(key).lower())
+        if real is not None and row.get(real) not in (None, ""):
+            return row.get(real)
+    return None
+
+
+def _person_label(value: Any) -> str:
+    if value is None or value == "" or value == "—":
+        return ""
+    if isinstance(value, list):
+        parts = [_person_label(v) for v in value]
+        return ", ".join(p for p in parts if p)
+    if isinstance(value, dict):
+        for key in ("Name", "name", "FullName", "displayName", "Name_1"):
+            label = _as_string(value.get(key)).strip()
+            if label and not _looks_like_email(label):
+                return label
+        for key in ("Name", "name", "Email", "email"):
+            label = _as_string(value.get(key)).strip()
+            if label:
+                return label
+        return ""
+    return _as_string(value).strip()
+
+
+def _comment_author_role(name: str, requester_email: str = "", requester_name: str = "") -> str:
+    """Kissflow Comments: employee vs agent is Name_1, not Stages_1 (often always InProgress)."""
+    label = (name or "").strip()
+    low = label.lower()
+    if not low:
+        return "itAgent"
+    if low in ("employee", "you", "requester"):
+        return "employee"
+    req_email = _normalize_email(requester_email)
+    if _looks_like_email(label) and req_email and _normalize_email(label) == req_email:
+        return "employee"
+    req_name = (requester_name or "").strip().lower()
+    if req_name:
+        if low == req_name:
+            return "employee"
+        first_a = re.split(r"[\s@._-]+", low)[0] if low else ""
+        first_b = re.split(r"[\s@._-]+", req_name)[0] if req_name else ""
+        if first_a and first_b and first_a == first_b and len(first_a) > 2:
+            return "employee"
+    return "itAgent"
+
+
+def _unwrap_process_item(payload: Any) -> Optional[Dict[str, Any]]:
+    """Kissflow instance GET often wraps the item in Data/Item."""
+    if isinstance(payload, list):
+        for entry in payload:
+            found = _unwrap_process_item(entry)
+            if found:
+                return found
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("error_code") or str(payload.get("type") or "") == "ValidationExceptions":
+        return None
+
+    def _has_ticket_fields(item: Dict[str, Any]) -> bool:
+        keys = {str(key) for key in item.keys()}
+        lowered = {key.lower() for key in keys}
+        return bool(
+            keys & {
+                "Request_ID",
+                "Requester_Email",
+                "Requester_Name",
+                "Description",
+                "Table::IT__Agent_Solution",
+                "IT__Agent_Solution",
+            }
+            or any(key.startswith("Table::") for key in keys)
+            or "table::it__agent_solution" in lowered
+            or item.get("_current_step")
+            or item.get("Statu_1")
+        )
+
+    if _has_ticket_fields(payload):
+        return payload
+    data = payload.get("Data")
+    if data is None:
+        data = payload.get("data")
+    # Live instance GET is {Status, Id, Data}. Data is the ticket even when
+    # fields use Column_* ids instead of Request_ID / Table:: names.
+    if isinstance(data, dict) and data:
+        nested = _unwrap_process_item(data)
+        if nested:
+            return nested
+        return data
+    if isinstance(data, list):
+        nested = _unwrap_process_item(data)
+        if nested:
+            return nested
+    for key in ("Item", "item", "Instance", "instance", "Details", "details"):
+        nested = _unwrap_process_item(payload.get(key))
+        if nested:
+            return nested
+    return payload if payload.get("_id") or payload.get("Id") else None
+
+
+def _comment_created_at_ok(date_time: Any, created_at: Any) -> bool:
+    """Drop nested-table rows that predate the ticket (Kissflow report leak)."""
+    created = _datetime_from_value(created_at)
+    stamped = _datetime_from_value(date_time)
+    if created is None or stamped is None:
+        return True
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    if stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=timezone.utc)
+    return stamped + timedelta(minutes=2) >= created
+
+
+def _parse_agent_solutions(
+    data: Dict[str, Any],
+    field_ids: Dict[str, List[str]],
+    scalar_solution: str = "",
+    requester_email: str = "",
+    requester_name: str = "",
+    created_at: Any = None,
+) -> List[Dict[str, Any]]:
+    """Build conversation entries from IT__Agent_Solution nested table only."""
+    del scalar_solution  # textarea / StepField — never a chat row (aasik placeholder).
+    raw_table = _raw_field(data, *field_ids.get("solution_table", []))
+    if raw_table in (None, "", [], {}):
+        raw_table = (
+            data.get("Table::IT__Agent_Solution")
+            or data.get("IT__Agent_Solution")
+            or data.get("table::IT__Agent_Solution")
+        )
+    rows = _unwrap_table_rows(raw_table)
+    name_cols = field_ids.get("solution_table_name") or ["Name_1", "Name"]
+    res_cols = field_ids.get("solution_table_resolution") or ["Resolution"]
+    dt_cols = field_ids.get("solution_table_datetime") or ["ITAgentDate_Time", "Date_Time"]
+    stage_cols = field_ids.get("solution_table_stages") or ["Stages_1", "Stages"]
+
+    out: List[Dict[str, Any]] = []
+    seen_text: Set[str] = set()
+    for row in rows:
+        resolution = _field_text(_pick_row_field(row, *res_cols)).strip()
+        if not resolution or resolution == "—" or _looks_like_kissflow_id(resolution):
+            continue
+        raw_name = _as_string(_pick_row_field(row, *name_cols)).strip()
+        name = _person_label(_pick_row_field(row, *name_cols)) or raw_name or "IT Support"
+        if _looks_like_kissflow_id(name) or _looks_like_kissflow_id(raw_name):
+            name = "IT Support"
+        if name.lower().startswith("live it service request"):
+            name = "IT Support"
+        if _looks_like_email(name) and requester_name:
+            name = requester_name
+        stages = _as_string(_pick_row_field(row, *stage_cols)).strip()
+        date_time = _pick_row_field(row, *dt_cols) or row.get("_created_at") or row.get("_modified_at")
+        if not _comment_created_at_ok(date_time, created_at):
+            continue
+        record_id = _as_string(row.get("_id") or "").strip()
+        role = _comment_author_role(raw_name or name, requester_email, requester_name)
+        if resolution.lower() in seen_text and not record_id:
+            continue
+        seen_text.add(resolution.lower())
+        out.append({
+            "id": record_id or f"solution-{len(out)}",
+            "recordId": record_id or f"solution-{len(out)}",
+            "userName": name,
+            "comment": resolution,
+            "resolution": resolution,
+            "dateTime": date_time,
+            "stages": stages,
+            "role": role,
+        })
+    return out
+
+
+def _thread_from_instance_payload(
+    payload: Any,
+    field_ids: Dict[str, List[str]],
+    activity_id: str = "",
+) -> Dict[str, Any]:
+    item = _unwrap_process_item(payload)
+    if not isinstance(item, dict):
+        return {"comments": [], "activityInstanceId": activity_id}
+    requester_name = _person_label(item.get("Requester_Name")) or ""
+    requester_email = _normalize_email(item.get("Requester_Email") or "")
+    comments = _parse_agent_solutions(
+        item,
+        field_ids,
+        "",
+        requester_email,
+        requester_name,
+        created_at=item.get("_created_at") or item.get("_submitted_at"),
+    )
+    assigned = _format_person(item.get("_current_assigned_to"))
+    return {
+        "comments": comments,
+        "activityInstanceId": activity_id or _as_string(item.get("_activity_instance_id")),
+        "requestId": _as_string(item.get("Request_ID")),
+        "description": _as_string(item.get("Description")),
+        "entity": _as_string(item.get("Entity")),
+        "status": _as_string(item.get("Statu_1") or item.get("_status") or item.get("Stages")),
+        "currentStep": _as_string(item.get("_current_step")),
+        "requesterName": requester_name or _person_label(item.get("_created_by")),
+        "requesterEmail": requester_email or _as_string(item.get("Requester_Email")),
+        "assignedTo": assigned,
+        "createdAt": item.get("_created_at"),
+        "modifiedAt": item.get("_modified_at"),
+        "source": _as_string(item.get("Source")),
+        "location": _as_string(item.get("Location")),
+        "progress": item.get("_progress"),
+        "messageCount": len(comments),
+        "_last_completed_step": _as_string(item.get("_last_completed_step")),
+    }
+
+
+async def _load_instance_comment_thread(
+    cfg: Dict[str, Any],
+    entity: Optional[str],
+    instance_id: str,
+    hinted_activity: str = "",
+    viewer_email: str = "",
+) -> Dict[str, Any]:
+    """Load Table::IT__Agent_Solution. Live activity GET often 400s for the integration key."""
+    process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
+    field_ids = REPORT_FIELD_IDS.get(_report_entity_key(entity), REPORT_FIELD_IDS["refex"])
+    params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
+    activity_id = await _resolve_open_work_activity_id(cfg, instance_id, hinted_activity, entity=entity)
+    base = f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}"
+
+    # Live activity first — instance GET is step-scoped and usually has no nested table.
+    paths: List[str] = []
+    for aid in (activity_id, hinted_activity):
+        usable = _usable_activity_id(aid, instance_id)
+        if usable:
+            path = f"{base}/{usable}"
+            if path not in paths:
+                paths.append(path)
+
+    progress = await _kf_get_json(cfg, f"{base}/progress", params)
+    for node in _walk_progress_nodes(progress):
+        if not isinstance(node, dict):
+            continue
+        aid = _usable_activity_id(
+            node.get("_activity_instance_id") or node.get("_id") or node.get("Id"),
+            instance_id,
+        )
+        if not aid:
+            continue
+        path = f"{base}/{aid}"
+        if path not in paths:
+            paths.append(path)
+    if base not in paths:
+        paths.append(base)
+
+    best: Dict[str, Any] = {"comments": [], "activityInstanceId": activity_id or hinted_activity or ""}
+    for path in paths:
+        payload = await _kf_get_json(cfg, path, params)
+        thread = _thread_from_instance_payload(
+            payload,
+            field_ids,
+            activity_id or hinted_activity or "",
+        )
+        extra = _usable_activity_id(thread.get("_last_completed_step"), instance_id)
+        if extra:
+            extra_path = f"{base}/{extra}"
+            if extra_path not in paths:
+                paths.append(extra_path)
+        thread.pop("_last_completed_step", None)
+        if isinstance(payload, dict) and not thread.get("comments"):
+            data = payload.get("Data") if isinstance(payload.get("Data"), dict) else {}
+            logger.info(
+                "ITSM comments miss path=%s keys=%s data_keys=%s",
+                path,
+                list(payload.keys())[:30],
+                list(data.keys())[:40] if data else [],
+            )
+        if len(thread.get("comments") or []) > len(best.get("comments") or []):
+            best = thread
+        elif not best.get("requestId") and thread.get("requestId"):
+            best = {**best, **{k: v for k, v in thread.items() if v not in (None, "", [])}}
+        if best.get("comments"):
+            break
+
+    if not best.get("comments"):
+        email = (best.get("requesterEmail") or viewer_email or "").strip()
+        if email:
+            try:
+                report_profile = {
+                    "process_id": process_id,
+                    "report_id": cfg.get("report_id") or _report_profile(entity)["report_id"],
+                }
+                rows = await _load_kissflow_report_tickets(cfg, report_profile, email, entity)
+                match = next((row for row in rows if str(row.get("id") or "") == instance_id), None)
+                if match and match.get("agentSolutions"):
+                    created = match.get("createdOn") or best.get("createdAt")
+                    kept = []
+                    for entry in match.get("agentSolutions") or []:
+                        if isinstance(entry, dict) and _comment_created_at_ok(
+                            entry.get("dateTime"), created
+                        ):
+                            kept.append(entry)
+                    best["comments"] = kept
+                    best["messageCount"] = len(kept)
+                    best["requestId"] = best.get("requestId") or match.get("requestId") or ""
+                    best["description"] = best.get("description") or match.get("description") or ""
+                    best["currentStep"] = best.get("currentStep") or match.get("currentStep") or ""
+                    best["assignedTo"] = best.get("assignedTo") or match.get("assignedTo") or ""
+                    logger.info(
+                        "ITSM comments from report instance=%s count=%s",
+                        instance_id,
+                        best["messageCount"],
+                    )
+            except Exception as exc:
+                logger.warning("ITSM comments report fallback failed instance=%s: %s", instance_id, exc)
+    env_name = cfg.get("environment") or "development"
+    best["comments"] = _attach_ledger_comments(best.get("comments"), env_name, instance_id)
+    best["messageCount"] = len(best.get("comments") or [])
+    if not best.get("comments"):
+        logger.warning(
+            "ITSM comments empty instance=%s env=%s tried=%s",
+            instance_id,
+            env_name,
+            len(paths),
+        )
+    return best
 
 
 def _emails_from_value(value: Any) -> Set[str]:
@@ -1048,6 +1931,28 @@ def _activity_entry_id(entry: Dict[str, Any]) -> str:
     if aid.startswith("Activity_") or aid.startswith("Employee_Confirmation_"):
         return ""
     return aid
+
+
+def _looks_like_kissflow_id(value: str) -> bool:
+    """Kissflow instance/activity ids (e.g. PkE9xix1RGXR) must never render as chat text."""
+    return bool(re.fullmatch(r"Pk[A-Za-z0-9]{8,}", (value or "").strip()))
+
+
+def _is_kissflow_queue_error(text: Any, status_code: int = 0) -> bool:
+    blob = str(text or "").lower()
+    if status_code in (401, 403):
+        return True
+    return any(
+        token in blob
+        for token in (
+            "out of your queue",
+            "moved out",
+            "don't have permission",
+            "do not have permission",
+            "permission to submit",
+            "permission to update",
+        )
+    )
 
 
 def _usable_activity_id(value: Any, instance_id: str = "") -> str:
@@ -1683,11 +2588,13 @@ def _parse_report_ticket(
         "Ticket_Status",
         "Ticket Status",
     )
-    solution = _lookup_field(
-        data,
-        *field_ids.get("solution", []),
-        "It_Agent_Solution",
-        "IT_Agent_Solution",
+    solution = _field_text(
+        _raw_field(
+            data,
+            *field_ids.get("solution", []),
+            "It_Agent_Solution",
+            "IT_Agent_Solution",
+        )
     )
     employee_rating = _parse_rating(
         _raw_field(data, *field_ids.get("employee_rating", []), "Ratings_emp")
@@ -1782,12 +2689,25 @@ def _parse_report_ticket(
     )
     owner_emails = _row_owner_emails(data, field_ids)
     requester_email = next(iter(sorted(owner_emails)), "")
+    requester_name = (
+        _person_label(_raw_field(data, *field_ids.get("requester_name", []), "Requester_Name"))
+        or _person_label(_raw_field(data, *field_ids.get("created_by", []), "_created_by"))
+    )
+    agent_solutions = _parse_agent_solutions(
+        data,
+        field_ids,
+        solution,
+        requester_email,
+        requester_name,
+        created_at=created_on,
+    )
     return {
         "id": instance_id,
         "requestId": request_id or "—",
         "description": description,
         "status": status,
         "solution": solution,
+        "agentSolutions": agent_solutions,
         "assignedTo": assigned_to or "—",
         "closedBy": closed_by or "—",
         "createdOn": created_on,
@@ -1799,15 +2719,58 @@ def _parse_report_ticket(
         "activityInstanceId": activity_instance_id,
         "sendbackId": sendback_id,
         "canReopen": _can_reopen_ticket(current_step, workflow_status, data, field_ids),
+        "canComment": (
+            status not in ("Closed", "Failed", "Rejected")
+            and not reopen_hold
+            and _can_comment_on_step(current_step, entity)
+        ),
+        "commentStep": _comment_step_for_entity(entity),
         "slaBreached": _open_sla_breached(data, field_ids, status),
         "localStatus": "created",
         "requesterEmail": requester_email,
+        "requesterName": requester_name,
         "_ownerEmails": list(owner_emails),
     }
 
 
 def _norm_text(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def _comment_fingerprint(entry: Dict[str, Any]) -> str:
+    text = _norm_text(str(entry.get("comment") or entry.get("resolution") or ""))
+    stamped = _datetime_from_value(entry.get("dateTime"))
+    iso = stamped.astimezone(timezone.utc).isoformat() if stamped else ""
+    return f"{text}|{iso}"
+
+
+def _scrub_cross_ticket_comment_leaks(tickets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Kissflow nested-table report columns can copy another ticket's rows."""
+    oldest: Dict[str, str] = {}
+    indexed: List[Tuple[str, Dict[str, Any]]] = []
+    for ticket in tickets:
+        created = _as_string(ticket.get("createdOn") or "")
+        indexed.append((created, ticket))
+        for entry in ticket.get("agentSolutions") or []:
+            if not isinstance(entry, dict):
+                continue
+            key = _comment_fingerprint(entry)
+            if not key.startswith("|"):
+                prev = oldest.get(key)
+                if prev is None or (created and (not prev or created < prev)):
+                    oldest[key] = created
+    for created, ticket in indexed:
+        rows = []
+        for entry in ticket.get("agentSolutions") or []:
+            if not isinstance(entry, dict):
+                continue
+            key = _comment_fingerprint(entry)
+            owner = oldest.get(key)
+            if owner and created and owner < created:
+                continue
+            rows.append(entry)
+        ticket["agentSolutions"] = rows
+    return tickets
 
 
 def _public_local_ticket(doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -1835,6 +2798,10 @@ def _public_local_ticket(doc: Dict[str, Any]) -> Dict[str, Any]:
         "employeeRating": _parse_rating(doc.get("employee_rating")),
         "reopened": bool(doc.get("reopened")),
         "canReopen": local_status == "created" and bool(doc.get("can_reopen")),
+        "canComment": False,
+        "commentStep": "",
+        "currentStep": doc.get("kissflow_current_step") or "",
+        "agentSolutions": doc.get("agent_solutions") or [],
         "activityInstanceId": doc.get("kissflow_activity_instance_id") or "",
         "sendbackId": (
             doc.get("kissflow_sendback_id")
@@ -1928,6 +2895,7 @@ async def _load_kissflow_report_tickets(
         len(collected),
     )
     parsed = [_parse_report_ticket(row, columns, i, entity) for i, row in enumerate(collected)]
+    parsed = _scrub_cross_ticket_comment_leaks(parsed)
     want = _normalize_email(email)
     if not want:
         return []
@@ -1950,6 +2918,16 @@ async def _load_kissflow_report_tickets(
         len(mine),
         len(parsed),
     )
+    env_name = cfg.get("environment") or "development"
+    for ticket in mine:
+        inst = str(ticket.get("id") or "")
+        if not inst:
+            continue
+        ticket["agentSolutions"] = _attach_ledger_comments(
+            ticket.get("agentSolutions"),
+            env_name,
+            inst,
+        )
     return mine
 
 
@@ -1966,6 +2944,18 @@ class EmployeeRatingRequest(BaseModel):
     instance_id: str = Field(..., min_length=1)
     activity_instance_id: Optional[str] = None
     rating: int = Field(..., ge=1, le=5)
+
+
+class TicketCommentRequest(BaseModel):
+    """Employee comment — appends a row to Table::IT__Agent_Solution on the current InProgress step."""
+
+    entity: str = Field(..., min_length=1)
+    instance_id: str = Field(..., min_length=1)
+    activity_instance_id: Optional[str] = None
+    comment: str = Field(..., min_length=1)
+    solution_row_id: Optional[str] = None
+    commenter_name: Optional[str] = None
+    environment: Optional[str] = None
 
 
 class KissflowEntityApis(BaseModel):
@@ -2003,13 +2993,18 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             raise HTTPException(status_code=403, detail="Admin only")
 
     async def _list_entity_docs(org_id: str, enabled_only: bool = False) -> List[Dict[str, Any]]:
-        if db is None:
+        if not _itsm_db_usable(db):
             return []
-        query: Dict[str, Any] = {"org_id": org_id}
-        if enabled_only:
-            query["enabled"] = {"$ne": False}
-        docs = await db[COLLECTION].find(query, {"_id": 0}).sort("sort_order", 1).to_list(200)
-        return docs
+        try:
+            query: Dict[str, Any] = {"org_id": org_id}
+            if enabled_only:
+                query["enabled"] = {"$ne": False}
+            docs = await db[COLLECTION].find(query, {"_id": 0}).sort("sort_order", 1).to_list(200)
+            return docs
+        except Exception as exc:
+            _trip_itsm_db_circuit(exc)
+            logger.warning("ITSM entity list skipped (DB unavailable): %s", exc)
+            return []
 
     async def _entity_options(org_id: str) -> List[str]:
         docs = await _list_entity_docs(org_id, enabled_only=True)
@@ -2019,42 +3014,85 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
 
     async def _load_environment_doc() -> Optional[Dict[str, Any]]:
         """One Kissflow env for the whole app — not per logged-in user's org_id."""
-        if db is None:
-            return None
-        doc = await db[ENV_COLLECTION].find_one({"scope": "global"}, {"_id": 0})
-        if doc:
-            return doc
-        docs = await db[ENV_COLLECTION].find({}, {"_id": 0}).sort("updated_at", -1).to_list(20)
-        if not docs:
-            return None
-        return docs[0]
+        global _ENV_RUNTIME
+        if _itsm_db_usable(db):
+            try:
+                doc = await db[ENV_COLLECTION].find_one({"scope": "global"}, {"_id": 0})
+                if doc:
+                    _ENV_RUNTIME = dict(doc)
+                    return doc
+                docs = await db[ENV_COLLECTION].find({}, {"_id": 0}).sort("updated_at", -1).to_list(20)
+                if docs:
+                    _ENV_RUNTIME = dict(docs[0])
+                    return docs[0]
+            except Exception as exc:
+                _trip_itsm_db_circuit(exc)
+                logger.warning("ITSM env doc skipped (DB unavailable): %s", exc)
+        if _ENV_RUNTIME:
+            return dict(_ENV_RUNTIME)
+        stored = _read_env_runtime_file()
+        if stored:
+            _ENV_RUNTIME = dict(stored)
+            return dict(stored)
+        return None
+
+    def _cache_environment_doc(doc: Dict[str, Any]) -> None:
+        global _ENV_RUNTIME
+        _ENV_RUNTIME = dict(doc)
+        _write_env_runtime_file(doc)
+
+    async def _persist_environment_doc(doc: Dict[str, Any]) -> str:
+        """Write Setup env to Mongo; fall back to process memory if DB is down."""
+        _cache_environment_doc(doc)
+        if not _itsm_db_usable(db) or db is None:
+            logger.warning("ITSM environments saved in memory only (Mongo unavailable)")
+            return "memory"
+        try:
+            await db[ENV_COLLECTION].update_one(
+                {"scope": "global"},
+                {"$set": doc},
+                upsert=True,
+            )
+            return "mongo"
+        except Exception as exc:
+            _trip_itsm_db_circuit(exc)
+            logger.warning("ITSM environments Mongo save failed; using memory: %s", exc)
+            return "memory"
 
     async def _load_environments(org_id: str) -> Dict[str, Any]:
         builtin = _builtin_environments()
-        if db is None:
-            return builtin
-        doc = await _load_environment_doc()
-        if not doc:
-            seeded = {
-                "scope": "global",
-                "org_id": org_id,
-                **builtin,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-                "updated_by": "system",
+        try:
+            doc = await _load_environment_doc()
+            if not doc:
+                if _itsm_db_usable(db):
+                    try:
+                        seeded = {
+                            "scope": "global",
+                            "org_id": org_id,
+                            **builtin,
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                            "updated_by": "system",
+                        }
+                        await db[ENV_COLLECTION].update_one(
+                            {"scope": "global"}, {"$set": seeded}, upsert=True
+                        )
+                    except Exception as exc:
+                        _trip_itsm_db_circuit(exc)
+                        logger.warning("ITSM env seed skipped (DB unavailable): %s", exc)
+                return builtin
+            shared_src = doc.get("shared") if isinstance(doc.get("shared"), dict) else {}
+            if not shared_src:
+                shared_src = _shared_from_legacy_block(doc.get("development") or {})
+            return {
+                "active": (doc.get("active") or "development").strip().lower(),
+                "shared": _merge_shared(builtin["shared"], shared_src),
+                "development": _merge_connection(builtin["development"], doc.get("development") or {}),
+                "live": _merge_connection(builtin["live"], doc.get("live") or {}),
             }
-            await db[ENV_COLLECTION].update_one(
-                {"scope": "global"}, {"$set": seeded}, upsert=True
-            )
+        except Exception as exc:
+            _trip_itsm_db_circuit(exc)
+            logger.warning("ITSM env load failed; using builtins: %s", exc)
             return builtin
-        shared_src = doc.get("shared") if isinstance(doc.get("shared"), dict) else {}
-        if not shared_src:
-            shared_src = _shared_from_legacy_block(doc.get("development") or {})
-        return {
-            "active": (doc.get("active") or "development").strip().lower(),
-            "shared": _merge_shared(builtin["shared"], shared_src),
-            "development": _merge_connection(builtin["development"], doc.get("development") or {}),
-            "live": _merge_connection(builtin["live"], doc.get("live") or {}),
-        }
 
     def _dump_model(model) -> Dict[str, Any]:
         return model.model_dump() if hasattr(model, "model_dump") else model.dict()
@@ -2066,10 +3104,35 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         out["process_id"] = _process_id_for_entity(entity)
         return out
 
-    async def _resolve_config(org_id: str, entity: Optional[str]) -> Dict[str, Any]:
-        """Active Kissflow env only — Live never falls back to Development keys/URL."""
+    async def _resolve_config(
+        org_id: str,
+        entity: Optional[str] = None,
+        force_env: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Resolve Kissflow connection.
+        - Default: ITSM Setup active (development | live)
+        - force_env='live'|'development': override for a specific call
+          (approval-matrix always uses live; create/reports follow Setup)
+        """
         envs = await _load_environments(org_id)
-        name = envs.get("active") if envs.get("active") in ("development", "live") else "development"
+        setup_active = (
+            envs.get("active")
+            if envs.get("active") in ("development", "live")
+            else "development"
+        )
+        if force_env in ("development", "live"):
+            name = force_env
+        else:
+            # ITSM Setup active wins. ITSM_FORCE_DEVELOPMENT only applies when nothing was saved.
+            force_dev = os.environ.get("ITSM_FORCE_DEVELOPMENT", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            name = setup_active
+            if force_dev and not await _load_environment_doc():
+                name = "development"
         builtin = _builtin_environments()
         same_builtin = builtin.get(name) if isinstance(builtin.get(name), dict) else {}
         conn = envs.get(name) if isinstance(envs.get(name), dict) else {}
@@ -2088,13 +3151,24 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         access_key_secret = (
             conn.get("access_key_secret") or same_builtin.get("access_key_secret") or ""
         ).strip()
+        # ITSM Setup saved values win. Server env only fills blanks (local helper fallback).
+        if name == "live":
+            if not base_url:
+                base_url = os.environ.get("ITSM_LIVE_BASE_URL", "").strip().rstrip("/")
+            if not account_id:
+                account_id = os.environ.get("ITSM_LIVE_ACCOUNT_ID", "").strip()
+            if not access_key_id:
+                access_key_id = os.environ.get("ITSM_LIVE_ACCESS_KEY_ID", "").strip()
+            if not access_key_secret:
+                access_key_secret = os.environ.get("ITSM_LIVE_ACCESS_KEY_SECRET", "").strip()
         if not base_url or not account_id or not access_key_id or not access_key_secret:
             label = "Live" if name == "live" else "Development"
             raise HTTPException(
                 status_code=400,
                 detail=(
                     f"Kissflow {label} environment is incomplete. "
-                    f"Set base URL, account ID, and access keys in ITSM Setup, then activate {label}."
+                    f"Set base URL, account ID, and access keys in ITSM Setup"
+                    f"{'' if force_env else f', then activate {label}'}."
                 ),
             )
         shared = envs.get("shared") or {}
@@ -2102,6 +3176,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         webhook = sl["webhook_path"] or _webhook_path_for_entity(entity)
         resolved = {
             "environment": name,
+            "setup_environment": setup_active,
             "kissflow_base_url": base_url,
             "account_id": account_id,
             "application_id": shared.get("application_id") or KISSFLOW_APPLICATION_ID,
@@ -2113,7 +3188,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             "access_key_secret": access_key_secret,
             "source": "environment",
         }
-        if entity and db is not None:
+        if entity and _itsm_db_usable(db):
             docs = await _list_entity_docs(org_id, enabled_only=True)
             want = _normalize_entity_key(entity)
             for d in docs:
@@ -2128,8 +3203,9 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                     resolved["source"] = "environment+entity"
                     break
         logger.info(
-            "ITSM resolve env=%s base=%s account=%s entity=%s",
+            "ITSM resolve env=%s setup=%s base=%s account=%s entity=%s",
             name,
+            setup_active,
             base_url,
             account_id,
             entity or "",
@@ -2156,59 +3232,181 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         }
 
     async def _fetch_matrix(cfg: Dict[str, Any]) -> Dict[str, Any]:
-        path = (
-            f"/form/2/{cfg['account_id']}/{cfg['approval_matrix_id']}/list"
-            f"?page_number=1&page_size={APPROVAL_MATRIX_PAGE_SIZE}"
-            f"&_application_id={cfg['application_id']}"
+        cache_key = (
+            f"{cfg.get('kissflow_base_url')}|{cfg.get('account_id')}|"
+            f"{cfg.get('approval_matrix_id')}|{cfg.get('application_id')}"
         )
-        url = f"{cfg['kissflow_base_url']}{path}"
-        last_error: Optional[Exception] = None
-        for attempt in range(1, 4):
-            try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    response = await client.get(url, headers=_kissflow_headers(cfg))
-                if response.status_code >= 400:
-                    body_snip = (response.text or "")[:240]
-                    raise HTTPException(
-                        status_code=502,
-                        detail=(
-                            f"Failed to load approval matrix from "
-                            f"{cfg['kissflow_base_url']} "
-                            f"(Kissflow HTTP {response.status_code}). "
-                            f"Check entity base URL / access keys in ITSM Setup. "
-                            f"{body_snip}"
-                        ).strip(),
+        cached = _MATRIX_CACHE.get(cache_key)
+        if cached and (time.monotonic() - cached[0]) < _MATRIX_CACHE_TTL_SEC:
+            logger.info("ITSM approval matrix cache hit key=%s", cache_key)
+            return dict(cached[1])
+
+        existing = _MATRIX_INFLIGHT.get(cache_key)
+        if existing is not None and not existing.done():
+            logger.info("ITSM approval matrix join in-flight fetch key=%s", cache_key)
+            return dict(await existing)
+
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        _MATRIX_INFLIGHT[cache_key] = fut
+
+        async def _do_fetch() -> Dict[str, Any]:
+            path = (
+                f"/form/2/{cfg['account_id']}/{cfg['approval_matrix_id']}/list"
+                f"?page_number=1&page_size={APPROVAL_MATRIX_PAGE_SIZE}"
+                f"&_application_id={cfg['application_id']}"
+            )
+            url = f"{cfg['kissflow_base_url']}{path}"
+            last_error: Optional[Exception] = None
+            for attempt in range(1, 6):
+                try:
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        response = await client.get(url, headers=_kissflow_headers(cfg))
+                    if response.status_code == 429:
+                        retry_after = response.headers.get("Retry-After")
+                        try:
+                            wait_s = float(retry_after) if retry_after else min(2 ** attempt, 20)
+                        except ValueError:
+                            wait_s = min(2 ** attempt, 20)
+                        logger.warning(
+                            "Approval matrix rate-limited (429) attempt=%s wait=%.1fs",
+                            attempt,
+                            wait_s,
+                        )
+                        await asyncio.sleep(wait_s)
+                        continue
+                    if response.status_code >= 400:
+                        body_snip = (response.text or "")[:240]
+                        raise HTTPException(
+                            status_code=502,
+                            detail=(
+                                f"Failed to load approval matrix from "
+                                f"{cfg['kissflow_base_url']} "
+                                f"(Kissflow HTTP {response.status_code}). "
+                                f"Check Live access keys in ITSM Setup. "
+                                f"{body_snip}"
+                            ).strip(),
+                        )
+                    payload = response.json()
+                    columns = payload.get("Columns") or []
+                    data = payload.get("Data") or []
+                    records = [
+                        _parse_matrix_record(row, columns, i)
+                        for i, row in enumerate(data)
+                    ]
+                    sub_types = sorted(
+                        {
+                            r["subType"].strip()
+                            for r in records
+                            if r.get("subType", "").strip()
+                        }
                     )
-                payload = response.json()
-                columns = payload.get("Columns") or []
-                data = payload.get("Data") or []
-                records = [
-                    _parse_matrix_record(row, columns, i)
-                    for i, row in enumerate(data)
-                ]
-                sub_types = sorted(
-                    {
-                        r["subType"].strip()
-                        for r in records
-                        if r.get("subType", "").strip()
+                    result = {
+                        "records": records,
+                        "subTypes": sub_types,
+                        "subCategories": sub_types,
+                        "criticalityOptions": CRITICALITY_OPTIONS,
+                        "config_source": cfg.get("source"),
                     }
-                )
-                return {
-                    "records": records,
-                    "subTypes": sub_types,
-                    "subCategories": sub_types,
-                    "criticalityOptions": CRITICALITY_OPTIONS,
-                    "config_source": cfg.get("source"),
-                }
-            except HTTPException:
-                raise
-            except Exception as exc:
-                last_error = exc
-                logger.warning("Approval matrix attempt %s failed: %s", attempt, exc)
-        raise HTTPException(
-            status_code=502,
-            detail=f"Unable to load approval matrix: {last_error}",
+                    _MATRIX_CACHE[cache_key] = (time.monotonic(), result)
+                    return dict(result)
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    last_error = exc
+                    logger.warning("Approval matrix attempt %s failed: %s", attempt, exc)
+                    await asyncio.sleep(min(2 ** attempt, 8))
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Unable to load approval matrix after retries "
+                    f"(often Kissflow rate limit): {last_error}"
+                ),
+            )
+
+        try:
+            result = await _do_fetch()
+            if not fut.done():
+                fut.set_result(result)
+            return result
+        except Exception as exc:
+            if not fut.done():
+                fut.set_exception(exc)
+            raise
+        finally:
+            if _MATRIX_INFLIGHT.get(cache_key) is fut:
+                _MATRIX_INFLIGHT.pop(cache_key, None)
+
+    async def _upsert_environments(body: KissflowEnvironmentsUpsert, user: dict) -> Dict[str, Any]:
+        org_id = user.get("org_id") or ""
+        builtin = _builtin_environments()
+        existing = (await _load_environment_doc()) or {}
+        active = (body.active or "development").strip().lower()
+        if active == "production":
+            active = "live"
+        if active not in ("development", "live"):
+            raise HTTPException(status_code=400, detail="active must be development or live")
+        existing_shared = existing.get("shared") if isinstance(existing.get("shared"), dict) else {}
+        if not existing_shared:
+            existing_shared = _shared_from_legacy_block(existing.get("development") or {})
+        shared = _merge_shared(
+            _merge_shared(builtin["shared"], existing_shared),
+            _dump_model(body.shared),
         )
+        development = _merge_connection(
+            _merge_connection(builtin["development"], existing.get("development") or {}),
+            _dump_model(body.development),
+        )
+        live = _merge_connection(
+            _merge_connection(builtin["live"], existing.get("live") or {}),
+            _dump_model(body.live),
+        )
+        if active == "live" and (
+            not live.get("kissflow_base_url")
+            or not live.get("account_id")
+            or not live.get("access_key_id")
+            or not live.get("access_key_secret")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Live is incomplete. Fill Live URL, account ID, and access keys before activating Live.",
+            )
+        doc = {
+            "scope": "global",
+            "org_id": org_id,
+            "active": active,
+            "shared": shared,
+            "development": development,
+            "live": live,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_by": user.get("email"),
+        }
+        persisted = await _persist_environment_doc(doc)
+        logger.info(
+            "ITSM environments saved by=%s org=%s active=%s persist=%s host=%s",
+            user.get("email"),
+            org_id,
+            active,
+            persisted,
+            (development if active == "development" else live).get("kissflow_base_url") or "",
+        )
+        return {
+            "ok": True,
+            "active": active,
+            "persisted": persisted,
+            "shared": _public_shared(shared),
+            "development": _public_connection(development),
+            "live": _public_connection(live),
+        }
+
+    def _public_environments_payload(envs: Dict[str, Any]) -> Dict[str, Any]:
+        active = envs.get("active") if envs.get("active") in ("development", "live") else "development"
+        return {
+            "active": active,
+            "shared": _public_shared(envs.get("shared") or {}),
+            "development": _public_connection(envs["development"]),
+            "live": _public_connection(envs["live"]),
+        }
 
     @api_router.get("/itsm/config")
     async def itsm_config(user: dict = Depends(get_current_user)):
@@ -2238,6 +3436,23 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 await _list_entity_docs(org_id, enabled_only=True)
             ),
         }
+
+    @api_router.get("/itsm/config/environments")
+    async def get_runtime_environments(user: dict = Depends(get_current_user)):
+        """Dev/Live switch used by local dashboard/reports (does not require admin)."""
+        envs = await _load_environments(user.get("org_id") or "")
+        return _public_environments_payload(envs)
+
+    @api_router.put("/itsm/config/environments")
+    async def sync_runtime_environments(
+        body: KissflowEnvironmentsUpsert,
+        user: dict = Depends(get_current_user),
+    ):
+        """
+        Persist the Dev/Live switch on this backend (file + memory when Mongo is down).
+        Reports, comments, and create-ticket read this — not production Mongo.
+        """
+        return await _upsert_environments(body, user)
 
     @api_router.get("/itsm/kissflow-status")
     async def kissflow_status(user: dict = Depends(get_current_user)):
@@ -2299,13 +3514,16 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         entity: Optional[str] = Query(None),
         user: dict = Depends(get_current_user),
     ):
+        """Catalog always from Live Kissflow; create/submit still follow ITSM Setup active env."""
         org_id = user.get("org_id") or ""
         entities = await _entity_options(org_id)
-        cfg = await _resolve_config(org_id, entity)
+        cfg = await _resolve_config(org_id, entity, force_env="live")
         result = await _fetch_matrix(cfg)
         result["entityOptions"] = entities
         result["resolved_entity"] = entity
-        result["activeEnvironment"] = cfg.get("environment") or "development"
+        # Badge / ops env = ITSM Setup toggle; matrix host is always Live.
+        result["activeEnvironment"] = cfg.get("setup_environment") or "development"
+        result["matrixEnvironment"] = "live"
         result["kissflowBaseUrl"] = cfg.get("kissflow_base_url") or ""
         return result
 
@@ -2374,8 +3592,20 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             "created_at": now,
             "updated_at": now,
         }
-        if db is not None:
-            await db[LOCAL_TICKETS].insert_one(dict(local_doc))
+
+        async def _persist_local(fields: Optional[Dict[str, Any]] = None) -> None:
+            if not _itsm_db_usable(db):
+                return
+            try:
+                if fields is None:
+                    await db[LOCAL_TICKETS].insert_one(dict(local_doc))
+                else:
+                    await db[LOCAL_TICKETS].update_one({"id": ticket_id}, {"$set": fields})
+            except Exception as exc:
+                _trip_itsm_db_circuit(exc)
+                logger.warning("ITSM local ticket persist skipped (DB unavailable): %s", exc)
+
+        await _persist_local()
 
         url = f"{cfg['kissflow_base_url']}{cfg['webhook_path']}"
         raw = None
@@ -2395,12 +3625,11 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             local_doc["local_status"] = "failed"
             local_doc["error"] = str(exc)
             local_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
-            if db is not None:
-                await db[LOCAL_TICKETS].update_one({"id": ticket_id}, {"$set": {
-                    "local_status": "failed",
-                    "error": str(exc),
-                    "updated_at": local_doc["updated_at"],
-                }})
+            await _persist_local({
+                "local_status": "failed",
+                "error": str(exc),
+                "updated_at": local_doc["updated_at"],
+            })
             return {
                 "success": False,
                 "status": "failed",
@@ -2423,20 +3652,28 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         except HTTPException:
             report_profile = None
 
-        if webhook_ok and report_profile and db is not None:
-            claimed = {
-                d.get("kissflow_instance_id")
-                for d in await db[LOCAL_TICKETS].find(
-                    {
-                        "user_id": user.get("id") or "",
-                        "local_status": "created",
-                        "kissflow_instance_id": {"$nin": ["", None]},
-                    },
-                    {"_id": 0, "kissflow_instance_id": 1},
-                ).to_list(1000)
-            }
-            claimed.discard(None)
-            claimed.discard("")
+        claimed: Set[str] = set()
+        if webhook_ok and report_profile and _itsm_db_usable(db):
+            try:
+                claimed = {
+                    d.get("kissflow_instance_id")
+                    for d in await db[LOCAL_TICKETS].find(
+                        {
+                            "user_id": user.get("id") or "",
+                            "local_status": "created",
+                            "kissflow_instance_id": {"$nin": ["", None]},
+                        },
+                        {"_id": 0, "kissflow_instance_id": 1},
+                    ).to_list(1000)
+                }
+                claimed.discard(None)
+                claimed.discard("")
+            except Exception as exc:
+                _trip_itsm_db_circuit(exc)
+                logger.warning("ITSM claimed-ticket lookup skipped (DB unavailable): %s", exc)
+                claimed = set()
+
+        if webhook_ok and report_profile:
             for _attempt in range(VERIFY_ATTEMPTS):
                 await asyncio.sleep(VERIFY_DELAY_SEC)
                 report_tickets = await _load_kissflow_report_tickets(
@@ -2454,17 +3691,16 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             local_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
             local_doc["can_reopen"] = bool(matched.get("canReopen"))
             local_doc["kissflow_current_step"] = matched.get("currentStep") or ""
-            if db is not None:
-                await db[LOCAL_TICKETS].update_one({"id": ticket_id}, {"$set": {
-                    "local_status": "created",
-                    "kissflow_request_id": local_doc["kissflow_request_id"],
-                    "kissflow_instance_id": local_doc["kissflow_instance_id"],
-                    "kissflow_status": local_doc["kissflow_status"],
-                    "can_reopen": local_doc["can_reopen"],
-                    "kissflow_current_step": local_doc["kissflow_current_step"],
-                    "updated_at": local_doc["updated_at"],
-                    "webhook_http_ok": webhook_ok,
-                }})
+            await _persist_local({
+                "local_status": "created",
+                "kissflow_request_id": local_doc["kissflow_request_id"],
+                "kissflow_instance_id": local_doc["kissflow_instance_id"],
+                "kissflow_status": local_doc["kissflow_status"],
+                "can_reopen": local_doc["can_reopen"],
+                "kissflow_current_step": local_doc["kissflow_current_step"],
+                "updated_at": local_doc["updated_at"],
+                "webhook_http_ok": webhook_ok,
+            })
             return {
                 "success": True,
                 "status": "created",
@@ -2473,17 +3709,51 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "ticket": _public_local_ticket(local_doc),
             }
 
+        # Without usable local Mongo we cannot always confirm via report matching — trust webhook 2xx.
+        if webhook_ok and not _itsm_db_usable(db):
+            local_doc["local_status"] = "created"
+            local_doc["kissflow_status"] = "Submitted"
+            local_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+            return {
+                "success": True,
+                "status": "created",
+                "message": "Ticket submitted to Kissflow.",
+                "entity": entity,
+                "ticket": _public_local_ticket(local_doc),
+            }
+
+        if webhook_ok:
+            # DB present but report match failed — still treat webhook success as submitted
+            # when we couldn't query claimed set due to DB errors (claimed empty + no match).
+            local_doc["local_status"] = "created"
+            local_doc["kissflow_status"] = "Submitted"
+            local_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+            await _persist_local({
+                "local_status": "created",
+                "kissflow_status": local_doc["kissflow_status"],
+                "updated_at": local_doc["updated_at"],
+                "webhook_http_ok": True,
+                "webhook_raw": str(raw)[:500] if raw is not None else "",
+                "note": "Webhook accepted; report match pending",
+            })
+            return {
+                "success": True,
+                "status": "created",
+                "message": "Ticket submitted to Kissflow (report confirmation pending).",
+                "entity": entity,
+                "ticket": _public_local_ticket(local_doc),
+            }
+
         local_doc["local_status"] = "failed"
         local_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
         local_doc["error"] = "Not found in Kissflow report after submit"
-        if db is not None:
-            await db[LOCAL_TICKETS].update_one({"id": ticket_id}, {"$set": {
-                "local_status": "failed",
-                "updated_at": local_doc["updated_at"],
-                "error": local_doc["error"],
-                "webhook_http_ok": webhook_ok,
-                "webhook_raw": str(raw)[:500] if raw is not None else "",
-            }})
+        await _persist_local({
+            "local_status": "failed",
+            "updated_at": local_doc["updated_at"],
+            "error": local_doc["error"],
+            "webhook_http_ok": webhook_ok,
+            "webhook_raw": str(raw)[:500] if raw is not None else "",
+        })
         return {
             "success": False,
             "status": "failed",
@@ -2514,13 +3784,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
     async def admin_get_environments(user: dict = Depends(get_current_user)):
         _require_admin(user)
         envs = await _load_environments(user.get("org_id") or "")
-        active = envs.get("active") if envs.get("active") in ("development", "live") else "development"
-        return {
-            "active": active,
-            "shared": _public_shared(envs.get("shared") or {}),
-            "development": _public_connection(envs["development"]),
-            "live": _public_connection(envs["live"]),
-        }
+        return _public_environments_payload(envs)
 
     @api_router.put("/itsm/admin/environments")
     async def admin_save_environments(
@@ -2528,68 +3792,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         user: dict = Depends(get_current_user),
     ):
         _require_admin(user)
-        if db is None:
-            raise HTTPException(status_code=500, detail="Database unavailable")
-        org_id = user.get("org_id") or ""
-        builtin = _builtin_environments()
-        existing = (await _load_environment_doc()) or {}
-        active = (body.active or "development").strip().lower()
-        if active not in ("development", "live"):
-            raise HTTPException(status_code=400, detail="active must be development or live")
-        existing_shared = existing.get("shared") if isinstance(existing.get("shared"), dict) else {}
-        if not existing_shared:
-            existing_shared = _shared_from_legacy_block(existing.get("development") or {})
-        shared = _merge_shared(
-            _merge_shared(builtin["shared"], existing_shared),
-            _dump_model(body.shared),
-        )
-        development = _merge_connection(
-            _merge_connection(builtin["development"], existing.get("development") or {}),
-            _dump_model(body.development),
-        )
-        live = _merge_connection(
-            _merge_connection(builtin["live"], existing.get("live") or {}),
-            _dump_model(body.live),
-        )
-        if active == "live" and (
-            not live.get("kissflow_base_url")
-            or not live.get("account_id")
-            or not live.get("access_key_id")
-            or not live.get("access_key_secret")
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="Live is incomplete. Fill Live URL, account ID, and access keys before activating Live.",
-            )
-        doc = {
-            "scope": "global",
-            "org_id": org_id,
-            "active": active,
-            "shared": shared,
-            "development": development,
-            "live": live,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "updated_by": user.get("email"),
-        }
-        await db[ENV_COLLECTION].update_one(
-            {"scope": "global"},
-            {"$set": doc},
-            upsert=True,
-        )
-        logger.info(
-            "ITSM environments saved by=%s org=%s active=%s live_host=%s",
-            user.get("email"),
-            org_id,
-            active,
-            live.get("kissflow_base_url") or "",
-        )
-        return {
-            "ok": True,
-            "active": active,
-            "shared": _public_shared(shared),
-            "development": _public_connection(development),
-            "live": _public_connection(live),
-        }
+        return await _upsert_environments(body, user)
 
     @api_router.post("/itsm/admin/entities")
     async def admin_create_entity(
@@ -2782,8 +3985,6 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         email = (user.get("email") or "").strip()
         if not email:
             raise HTTPException(status_code=400, detail="User email is required to load tickets.")
-        if db is None:
-            raise HTTPException(status_code=500, detail="Database unavailable")
 
         cfg = await _resolve_config(user.get("org_id") or "", entity)
         active_env = cfg.get("environment") or "development"
@@ -2801,10 +4002,18 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             local_query["$or"] = [{"user_id": user_id}, {"email": email_rx}]
         else:
             local_query["email"] = email_rx
-        all_local = await db[LOCAL_TICKETS].find(
-            local_query,
-            {"_id": 0},
-        ).sort("created_at", -1).to_list(500)
+
+        all_local: List[Dict[str, Any]] = []
+        if _itsm_db_usable(db):
+            try:
+                all_local = await db[LOCAL_TICKETS].find(
+                    local_query,
+                    {"_id": 0},
+                ).sort("created_at", -1).to_list(500)
+            except Exception as exc:
+                _trip_itsm_db_circuit(exc)
+                logger.warning("ITSM local tickets skipped (DB unavailable): %s", exc)
+                all_local = []
 
         def _local_env(doc: Dict[str, Any]) -> str:
             return str(doc.get("kissflow_env") or "").strip().lower()
@@ -2890,7 +4099,12 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             }
             doc.update(updates)
             claimed.add(str(doc.get("kissflow_instance_id") or ""))
-            await db[LOCAL_TICKETS].update_one({"id": doc["id"]}, {"$set": updates})
+            if _itsm_db_usable(db):
+                try:
+                    await db[LOCAL_TICKETS].update_one({"id": doc["id"]}, {"$set": updates})
+                except Exception as exc:
+                    _trip_itsm_db_circuit(exc)
+                    logger.warning("ITSM local ticket sync skipped (DB unavailable): %s", exc)
 
         # Active Kissflow report is the source of truth; only add in-flight local rows
         # that are not already present in the report.
@@ -3027,21 +4241,25 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                     ).strip(),
                 )
             # Immediately mark as Reopened so KPI updates before Kissflow report refreshes.
-            if db is not None:
+            if _itsm_db_usable(db):
                 now = datetime.now(timezone.utc).isoformat()
-                await db[LOCAL_TICKETS].update_many(
-                    {
-                        "user_id": user.get("id") or "",
-                        "kissflow_instance_id": instance_id,
-                    },
-                    {"$set": {
-                        "kissflow_status": "Reopened",
-                        "reopened": True,
-                        "can_reopen": False,
-                        "reopen_note": kissflow_note,
-                        "updated_at": now,
-                    }},
-                )
+                try:
+                    await db[LOCAL_TICKETS].update_many(
+                        {
+                            "user_id": user.get("id") or "",
+                            "kissflow_instance_id": instance_id,
+                        },
+                        {"$set": {
+                            "kissflow_status": "Reopened",
+                            "reopened": True,
+                            "can_reopen": False,
+                            "reopen_note": kissflow_note,
+                            "updated_at": now,
+                        }},
+                    )
+                except Exception as exc:
+                    _trip_itsm_db_circuit(exc)
+                    logger.warning("ITSM reopen local update skipped (DB unavailable): %s", exc)
             return {
                 "success": True,
                 "message": success_text or "Sent back successfully",
@@ -3079,16 +4297,22 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         if not instance_id:
             raise HTTPException(status_code=400, detail="Ticket id is required")
         rating = int(body.rating)
-        if db is not None:
-            existing = await db[LOCAL_TICKETS].find_one(
-                {
-                    "user_id": user.get("id") or "",
-                    "kissflow_instance_id": instance_id,
-                },
-                {"_id": 0, "employee_rating": 1, "can_reopen": 1},
-            )
-            if existing and _parse_rating(existing.get("employee_rating")):
-                raise HTTPException(status_code=400, detail="Rating is already submitted for this ticket.")
+        if _itsm_db_usable(db):
+            try:
+                existing = await db[LOCAL_TICKETS].find_one(
+                    {
+                        "user_id": user.get("id") or "",
+                        "kissflow_instance_id": instance_id,
+                    },
+                    {"_id": 0, "employee_rating": 1, "can_reopen": 1},
+                )
+                if existing and _parse_rating(existing.get("employee_rating")):
+                    raise HTTPException(status_code=400, detail="Rating is already submitted for this ticket.")
+            except HTTPException:
+                raise
+            except Exception as exc:
+                _trip_itsm_db_circuit(exc)
+                logger.warning("ITSM rating local lookup skipped (DB unavailable): %s", exc)
 
         activity_instance_id = (body.activity_instance_id or "").strip() or instance_id
         process_id = cfg.get("process_id") or _report_profile(body.entity)["process_id"]
@@ -3120,15 +4344,19 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             saved = rating
             if isinstance(raw, dict):
                 saved = _parse_rating(raw.get("Ratings_emp")) or rating
-            if db is not None:
+            if _itsm_db_usable(db):
                 now = datetime.now(timezone.utc).isoformat()
-                await db[LOCAL_TICKETS].update_many(
-                    {
-                        "user_id": user.get("id") or "",
-                        "kissflow_instance_id": instance_id,
-                    },
-                    {"$set": {"employee_rating": saved, "updated_at": now}},
-                )
+                try:
+                    await db[LOCAL_TICKETS].update_many(
+                        {
+                            "user_id": user.get("id") or "",
+                            "kissflow_instance_id": instance_id,
+                        },
+                        {"$set": {"employee_rating": saved, "updated_at": now}},
+                    )
+                except Exception as exc:
+                    _trip_itsm_db_circuit(exc)
+                    logger.warning("ITSM rating local update skipped (DB unavailable): %s", exc)
             return {
                 "success": True,
                 "rating": saved,
@@ -3147,3 +4375,209 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         elif raw:
             detail = str(raw)[:240]
         raise HTTPException(status_code=502, detail=str(detail))
+
+    @api_router.get("/itsm/reports/comments")
+    async def get_ticket_comments(
+        entity: str = Query(...),
+        instance_id: str = Query(...),
+        activity_instance_id: Optional[str] = Query(None),
+        environment: Optional[str] = Query(None),
+        user: dict = Depends(get_current_user),
+    ):
+        """Load the full IT__Agent_Solution table from the process instance GET."""
+        instance_id = (instance_id or "").strip()
+        if not instance_id:
+            raise HTTPException(status_code=400, detail="Ticket id is required")
+        cfg = await _resolve_config(
+            user.get("org_id") or "",
+            entity,
+            force_env=_client_env_name(environment),
+        )
+        process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
+        cfg = {**cfg, "process_id": process_id}
+        thread = await _load_instance_comment_thread(
+            cfg,
+            entity,
+            instance_id,
+            (activity_instance_id or "").strip(),
+            viewer_email=(user.get("email") or "").strip(),
+        )
+        env_name = cfg.get("environment") or "development"
+        merged = _merge_comment_lists(thread.get("comments") or [], _ledger_comments(env_name, instance_id))
+        thread["comments"] = merged
+        thread["messageCount"] = len(merged)
+        return {"success": True, **thread}
+
+    @api_router.post("/itsm/reports/comment")
+    async def submit_ticket_comment(
+        body: TicketCommentRequest,
+        user: dict = Depends(get_current_user),
+    ):
+        """
+        Employee comment on an open ticket.
+        Appends a row to `Table::IT__Agent_Solution` on the current InProgress work step
+        (save only — never /submit, and never the scalar `It_Agent_Solution` field).
+        """
+        cfg = await _resolve_config(
+            user.get("org_id") or "",
+            body.entity,
+            force_env=_client_env_name(body.environment),
+        )
+        instance_id = (body.instance_id or "").strip()
+        comment = (body.comment or "").strip()
+        if not instance_id:
+            raise HTTPException(status_code=400, detail="Ticket id is required")
+        if not comment:
+            raise HTTPException(status_code=400, detail="Please enter a comment.")
+
+        requester_name = _commenter_display_name(user, body.commenter_name)
+
+        process_id = cfg.get("process_id") or _report_profile(body.entity)["process_id"]
+        cfg = {**cfg, "process_id": process_id}
+        activity_candidates = await _list_open_work_activity_ids(
+            cfg,
+            instance_id,
+            (body.activity_instance_id or "").strip(),
+            entity=body.entity,
+        )
+        activity_instance_id = activity_candidates[0] if activity_candidates else ""
+        if not activity_instance_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Could not find an open work step for this ticket. "
+                    "Comments are only allowed while IT is working on it."
+                ),
+            )
+
+        # Enforce step gate on the activity we are about to POST to.
+        progress = await _kf_get_json(
+            cfg,
+            f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}/progress",
+            {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID},
+        )
+        live_step = ""
+        live_assignee = ""
+        for step in _current_branch_steps(progress) or _iter_progress_steps(progress):
+            ids = _step_activity_ids(step, instance_id)
+            if activity_instance_id in ids:
+                live_step = _as_string(step.get("Name") or step.get("ActivityName")).strip()
+                live_assignee = _step_assignee_detail(step) or _step_assignee_name(step)
+                break
+        if not live_step:
+            for step in _current_branch_steps(progress) or _iter_progress_steps(progress):
+                token = _status_token(str(step.get("_status") or step.get("Status") or ""))
+                if token == "inprogress":
+                    live_step = _as_string(step.get("Name") or step.get("ActivityName")).strip()
+                    live_assignee = _step_assignee_detail(step) or _step_assignee_name(step)
+        if not _can_comment_on_step(live_step, body.entity):
+            want = _comment_step_for_entity(body.entity)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Comments are only allowed when the ticket is at '{want}'. "
+                    f"Current step: {live_step or 'unknown'}."
+                ),
+            )
+
+        row_id = (body.solution_row_id or "").strip() or f"IT__Agent_Solution_{uuid.uuid4().hex[:10]}"
+        # Extrovis nested table includes Stages_1; Refex does not — sending it returns
+        # "The field {field_name} does not exist in the flow {model_name}."
+        row: Dict[str, Any] = {
+            "_id": row_id,
+            "Name_1": requester_name,
+            "Resolution": comment,
+        }
+        if _report_entity_key(body.entity) != "refex":
+            row["Stages_1"] = "InProgress"
+
+        # aasik_ITSM saveAgentSolutionComment:
+        # POST /{instanceId}/{step._id} with {_id, Table::IT__Agent_Solution:[{_id, Name_1, Resolution, Stages_1?}]}
+        # never /submit, never instance-only.
+        save_ids = list(activity_candidates)
+        params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
+        payload = {
+            "_id": instance_id,
+            "Table::IT__Agent_Solution": [row],
+        }
+        env_name = cfg.get("environment") or "development"
+        last_detail = "Unable to save comment."
+        last_status = 502
+
+        def _comment_ok(message: str, activity_id: str) -> Dict[str, Any]:
+            local_entry = {
+                "id": row_id,
+                "recordId": row_id,
+                "userName": requester_name,
+                "comment": comment,
+                "resolution": comment,
+                "dateTime": datetime.now(timezone.utc).isoformat(),
+                "stages": "InProgress",
+                "role": "employee",
+            }
+            _append_ledger_comment(env_name, instance_id, local_entry)
+            return {
+                "success": True,
+                "message": message,
+                "instanceId": instance_id,
+                "activityInstanceId": activity_id,
+                "solutionRowId": row_id,
+                "kissflowSynced": True,
+                "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
+                "activeEnvironment": env_name,
+                "comments": _merge_comment_lists(
+                    [local_entry],
+                    _ledger_comments(env_name, instance_id),
+                ),
+            }
+
+        for save_activity in save_ids:
+            path = f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}/{save_activity}"
+            logger.info(
+                "ITSM comment Kissflow POST %s env=%s account=%s key=%s activity=%s table_row=%s",
+                path,
+                env_name,
+                cfg.get("account_id") or "",
+                (cfg.get("access_key_id") or "")[:12],
+                save_activity,
+                row_id,
+            )
+            try:
+                status_code, raw, success_text = await _kf_post_json(cfg, path, payload, params)
+            except Exception as exc:
+                logger.exception("ITSM ticket comment Kissflow failed instance=%s path=%s", instance_id, path)
+                last_detail = f"Unable to save comment: {exc}"
+                last_status = 502
+                continue
+            if _comment_write_accepted(status_code, raw, success_text):
+                return _comment_ok(success_text or "Comment saved", save_activity)
+            last_detail = _kissflow_response_text(raw, last_detail)
+            last_status = status_code
+            if _is_kissflow_queue_error(last_detail, status_code):
+                who = live_assignee or "the assigned IT agent"
+                last_detail = (
+                    f"Kissflow still has this ticket with {who} on '{live_step or 'the live step'}'. "
+                    "RefexOne posts as the ITSM BOT user key. Adding the ITSM Bot role does not put "
+                    "the work item in that user's queue while a person (for example Vishnu) remains "
+                    "a User assignee. Assign the BOT user account (Kind: User), or remove the human "
+                    "assignee and leave the step only on a role the BOT user belongs to."
+                )
+                continue
+
+        if last_status == 404 or re.search(
+            r"not found|could not be located|IdNotFound|DocumentNotFound",
+            last_detail or "",
+            re.I,
+        ):
+            host = cfg.get("kissflow_base_url") or env_name
+            last_detail = (
+                f"Kissflow could not find this ticket on {env_name} ({host}). "
+                "Open Help Desk again after switching Dev/Live so comments use the same account as the ticket."
+            )
+        raise HTTPException(
+            status_code=409 if _is_kissflow_queue_error(last_detail, last_status) else 502,
+            detail=last_detail or "Unable to save comment.",
+        )
+
+    from routes.refexions import register_refexions_routes
+    register_refexions_routes(api_router, get_current_user, _resolve_config)

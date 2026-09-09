@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { launchUrlAfterKissflowClear } from '../utils/nativeSession';
 import { BACKEND_ORIGIN, ITSM_API } from '../config/api';
 import RefexOneAppDownload from '../components/RefexOneAppDownload';
+import RefexionsChat from '../components/RefexionsChat';
 import {
   isItsmNamedApp as isItsmApp,
   isKissflowApp,
@@ -15,7 +16,7 @@ import {
   shouldHijackItsmLaunch,
 } from '../utils/launcherApps';
 import { toast } from 'sonner';
-import { Search, Lock, MessageCircle, X, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight, Headphones, Loader2, BarChart3 } from 'lucide-react';
+import { Search, Lock, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight, Headphones, Loader2, BarChart3 } from 'lucide-react';
 
 const ITSM_VIRTUAL_APP = {
   id: 'itsm-inapp',
@@ -185,7 +186,6 @@ const AppLauncher = () => {
   const [apps, setApps] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [chatOpen, setChatOpen] = useState(false);
   const [now, setNow] = useState(new Date());
   const [activeFilter, setActiveFilter] = useState('All');
   const [itsmChecking, setItsmChecking] = useState(false);
@@ -870,76 +870,8 @@ const AppLauncher = () => {
         </div>
       )}
 
-      {/* Refexions Chatbot - Bottom Right */}
       <div className="fixed right-6 z-50 safe-fixed-bottom bottom-6" data-testid="refexions-chatbot">
-        {chatOpen ? (
-          <div className="w-80 sm:w-96 h-[480px] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in slide-in-from-bottom-4">
-            {/* Chat Header */}
-            <div className="bg-gradient-to-r from-emerald-600 to-teal-600 px-5 py-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 bg-white/20 rounded-full flex items-center justify-center">
-                  <MessageCircle size={18} className="text-white" />
-                </div>
-                <div>
-                  <h3 className="text-white font-semibold text-sm">Refexions</h3>
-                  <p className="text-emerald-100 text-[11px]">AI Assistant</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setChatOpen(false)}
-                className="text-white/70 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors"
-                data-testid="close-chat"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            {/* Chat Body */}
-            <div className="flex-1 p-5 overflow-y-auto bg-slate-50">
-              <div className="flex gap-3">
-                <div className="w-7 h-7 rounded-full bg-emerald-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <MessageCircle size={12} className="text-emerald-600" />
-                </div>
-                <div className="bg-white rounded-xl rounded-tl-sm px-4 py-3 shadow-sm border border-slate-100 max-w-[85%]">
-                  <p className="text-sm text-slate-700 leading-relaxed">
-                    Hi {user?.name?.split(' ')[0] || 'there'}! I'm <strong>Refexions</strong>, your AI assistant. How can I help you today?
-                  </p>
-                  <div className="mt-3 space-y-1.5">
-                    {['Raise a support ticket', 'Check leave balance', 'IT helpdesk query'].map((q, i) => (
-                      <button key={i} className="block w-full text-left text-xs text-blue-600 bg-blue-50 hover:bg-blue-100 px-3 py-2 rounded-lg transition-colors">
-                        {q}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Chat Input */}
-            <div className="p-4 border-t border-slate-200 bg-white">
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  placeholder="Type your message..."
-                  className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                  data-testid="chat-input"
-                />
-                <button className="w-9 h-9 bg-emerald-600 hover:bg-emerald-700 rounded-full flex items-center justify-center transition-colors" data-testid="chat-send">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <button
-            onClick={() => setChatOpen(true)}
-            className="group flex items-center gap-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white pl-4 pr-5 py-3 rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-105 active:scale-95"
-            data-testid="open-chat"
-          >
-            <MessageCircle size={20} />
-            <span className="text-sm font-medium">Refexions</span>
-          </button>
-        )}
+        <RefexionsChat />
       </div>
     </div>
   );

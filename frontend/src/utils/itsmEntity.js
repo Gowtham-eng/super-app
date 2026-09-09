@@ -33,12 +33,26 @@ export const mapEntityFromUser = (user) => {
 export const locationFromUser = (user) =>
   (user?.location || user?.office_location || user?.branch_code || '').trim();
 
-export const profileFromUser = (user) => ({
-  name: (user?.name || user?.full_name || '').trim(),
-  email: (user?.email || '').trim(),
-  entity: mapEntityFromUser(user),
-  location: locationFromUser(user),
-});
+export const profileFromUser = (user) => {
+  const first = (user?.first_name || user?.firstName || '').trim();
+  const last = (user?.last_name || user?.lastName || '').trim();
+  const combined = [first, last].filter(Boolean).join(' ').trim();
+  const email = (user?.email || '').trim();
+  const rawName = (user?.name || user?.full_name || user?.display_name || '').trim();
+  // Prefer real person name; never treat email as the display name.
+  const name =
+    combined ||
+    (rawName && rawName.toLowerCase() !== email.toLowerCase() && !rawName.includes('@')
+      ? rawName
+      : '') ||
+    '';
+  return {
+    name,
+    email,
+    entity: mapEntityFromUser(user),
+    location: locationFromUser(user),
+  };
+};
 
 export const mergeItsmProfile = (user) => {
   const fromLogin = profileFromUser(user);

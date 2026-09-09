@@ -189,12 +189,13 @@ const ITSMSetup = () => {
     try {
       const res = await axios.get(`${itsmApi}/itsm/admin/environments`, getAuthHeader());
       const active = res.data.active === 'live' ? 'live' : 'development';
-      setActiveEnv(active);
-      setEnvForm({
+      const nextForm = {
         shared: hydrateShared(res.data.shared),
         development: hydrateConnection(res.data.development),
         live: hydrateConnection(res.data.live),
-      });
+      };
+      setActiveEnv(active);
+      setEnvForm(nextForm);
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Failed to load Kissflow environments'));
     } finally {
@@ -331,6 +332,9 @@ const ITSMSetup = () => {
       toast.success(
         `Active: ${savedActive === 'live' ? 'Live' : 'Development'}${host ? ` — ${host}` : ''}. Dashboard and create ticket now use this host.`
       );
+      if (res.data.persisted === 'memory') {
+        toast.message('Database is offline — this switch is kept in memory until Mongo is back.');
+      }
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Failed to save environments'));
     } finally {
@@ -502,6 +506,11 @@ const ITSMSetup = () => {
             </button>
           )}
         </div>
+        <p className="text-[11px] text-slate-500">
+          {envKey === 'live'
+            ? 'Live Kissflow access keys. When Live is active, Help Desk uses these for create, comments, reopen, and rating.'
+            : 'Development Kissflow access keys. When Dev is active, Help Desk uses these for create, comments, reopen, and rating.'}
+        </p>
         <div className="grid gap-3">
           <Field label="Kissflow URL" hint="Host only, no trailing slash">
             <input
@@ -624,9 +633,8 @@ const ITSMSetup = () => {
             ITSM Entity Setup
           </h1>
           <p className="text-sm text-slate-500 max-w-2xl">
-            Master config for Create IT Request. Each legal entity (Refex, Extrovis, ModePro, …) has its{' '}
-            <strong className="font-medium text-slate-700">own submit webhook</strong>, Kissflow account,
-            matrix, and access keys. Webhooks may look similar today — treat them as independent; they will change.
+            Kissflow host and access keys for Help Desk. Set Development and Live below, then activate one.
+            Ticket create, comments, reopen, and rating all use the <strong className="font-medium text-slate-700">active</strong> environment keys — not a hidden server-only secret.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -659,8 +667,8 @@ const ITSMSetup = () => {
           <div>
             <h2 className="font-heading font-semibold text-slate-900">Kissflow environments</h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Development vs live differ only by URL, account ID, and access keys. Click Development or
-              Live to switch immediately — create ticket, matrix, and dashboard then call that host.
+              Development vs Live differ by URL, account ID, and access keys. Activate Live or Dev —
+              Help Desk (create, comments, reopen, rating) and Refexions ticket create then call that Kissflow.
             </p>
           </div>
           <div className="flex items-center gap-2">
