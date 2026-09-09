@@ -63,6 +63,7 @@ const emptyConnection = () => ({
 const emptyShared = () => ({
   application_id: SHARED_DEFAULTS.application_id,
   approval_matrix_id: SHARED_DEFAULTS.approval_matrix_id,
+  refexions_policy_api_key: '',
   refex: { ...SHARED_DEFAULTS.refex },
   extrovis: { ...SHARED_DEFAULTS.extrovis },
 });
@@ -79,6 +80,8 @@ const hydrateConnection = (raw = {}) => ({
 const hydrateShared = (raw = {}) => ({
   application_id: String(raw.application_id || SHARED_DEFAULTS.application_id),
   approval_matrix_id: String(raw.approval_matrix_id || SHARED_DEFAULTS.approval_matrix_id),
+  refexions_policy_api_key: String(raw.refexions_policy_api_key || ''),
+  has_refexions_policy_api_key: Boolean(raw.has_refexions_policy_api_key || raw.refexions_policy_api_key),
   refex: {
     ...SHARED_DEFAULTS.refex,
     ...(raw.refex || {}),
@@ -109,6 +112,7 @@ const sharedPayload = (raw = {}) => {
   return {
     application_id: shared.application_id.trim(),
     approval_matrix_id: shared.approval_matrix_id.trim(),
+    refexions_policy_api_key: String(shared.refexions_policy_api_key || '').trim(),
     refex: {
       process_id: String(shared.refex.process_id || '').trim(),
       report_id: String(shared.refex.report_id || '').trim(),
@@ -601,6 +605,22 @@ const ITSMSetup = () => {
               className={monoClass}
               value={shared.approval_matrix_id}
               onChange={(e) => setSharedField('approval_matrix_id', e.target.value)}
+            />
+          </Field>
+        </div>
+        <div className="rounded-md border border-amber-100 bg-amber-50/70 p-3 space-y-3">
+          <p className="text-xs font-semibold text-amber-900">Refexions policy email</p>
+          <p className="text-[11px] text-amber-800">
+            Production has no local .env. Save the policy-sender API key here so live Refexions
+            can email policies. Leave blank when editing to keep the saved key.
+          </p>
+          <Field label="Policy API key" hint="REFEXIONS_POLICY_API_KEY">
+            <input
+              className={monoClass}
+              value={shared.refexions_policy_api_key || ''}
+              onChange={(e) => setSharedField('refexions_policy_api_key', e.target.value)}
+              autoComplete="off"
+              placeholder={shared.has_refexions_policy_api_key ? '•••• saved — paste to replace' : ''}
             />
           </Field>
         </div>

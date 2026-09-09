@@ -39,8 +39,14 @@ def _policy_send_url() -> str:
     return f"{base}/v1/documents/send"
 
 
-def _policy_api_key() -> str:
-    return (os.environ.get("REFEXIONS_POLICY_API_KEY") or "").strip()
+def _policy_api_key(cfg: Optional[Dict[str, Any]] = None) -> str:
+    from routes.itsm import resolve_refexions_policy_api_key
+
+    if isinstance(cfg, dict):
+        saved = str(cfg.get("refexions_policy_api_key") or "").strip()
+        if saved:
+            return saved
+    return resolve_refexions_policy_api_key()
 
 
 def _policy_template_id() -> str:
@@ -409,8 +415,17 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
         if not email or "@" not in email:
             raise HTTPException(status_code=400, detail="Your login email is required to send a policy.")
         service_url = _policy_service_url()
-        api_key = _policy_api_key()
+        cfg = {}
+        try:
+            cfg = await _live_cfg(user)
+        except Exception as exc:
+            logger.warning("Refexions policy send: Kissflow cfg unavailable: %s", exc)
+        api_key = _policy_api_key(cfg)
         if not service_url or not api_key:
+            logger.error(
+                "Refexions policy send skipped: REFEXIONS_POLICY_API_KEY is not set "
+                "(local .env or ITSM Setup → Shared APIs)"
+            )
             return {
                 "success": False,
                 "status": 503,

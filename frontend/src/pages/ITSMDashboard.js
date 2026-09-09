@@ -91,11 +91,73 @@ const isReopenHoldStep = (step) => {
     || text === 'ticket reopen'
     || (text.includes('ticket reopen') && !text.includes('reopened'))
     || text.includes('ticket can be reopened')
+    || text.includes('employee feedback')
+    || text.includes('employee verification')
+    || text.includes('employee confirmation')
   );
 };
 
 const ticketAllowsReopen = (ticket) =>
   Boolean(ticket?.canReopen) || isReopenHoldStep(ticket?.currentStep);
+
+/** Same gate as the Action-column stars — reopen-hold or already rated. */
+const showsEmployeeRating = (ticket) =>
+  Boolean(ticket) && (ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1);
+
+const REOPENED_IDS_KEY = 'itsmReopenedTicketIds.v1';
+
+const loadRememberedReopenedIds = () => {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(REOPENED_IDS_KEY) || '[]');
+    return new Set(Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : []);
+  } catch {
+    return new Set();
+  }
+};
+
+const rememberedReopenedIds = loadRememberedReopenedIds();
+
+const rememberReopenedTicket = (ticketId) => {
+  const id = String(ticketId || '').trim();
+  if (!id) return;
+  rememberedReopenedIds.add(id);
+  try {
+    sessionStorage.setItem(REOPENED_IDS_KEY, JSON.stringify([...rememberedReopenedIds]));
+  } catch {
+    // ignore quota / private mode
+  }
+};
+
+const reopenRelatedBlob = (ticket) =>
+  [
+    ticket?.status,
+    ticket?.currentStep,
+    ticket?.lastCompletedStep,
+  ]
+    .map((value) => String(value || '').toLowerCase())
+    .join(' ');
+
+/** Closed reopen-hold, sendback/reopened Open rows, or Reopened_Ticket — no Reply/compose. */
+const isReopenRelatedTicket = (ticket) => {
+  if (!ticket) return false;
+  if (showsEmployeeRating(ticket)) return true;
+  const id = String(ticket.id || ticket.localId || '').trim();
+  if (id && rememberedReopenedIds.has(id)) return true;
+  if (ticket.reopened || ticketAllowsReopen(ticket)) return true;
+  const blob = reopenRelatedBlob(ticket);
+  if (!blob.trim()) return false;
+  if (blob.includes('reopen')) return true;
+  return (
+    blob.includes('employee feedback')
+    || blob.includes('employee verification')
+    || blob.includes('employee confirmation')
+  );
+};
+
+const lockCommentsIfReopened = (ticket) => {
+  if (!ticket || !isReopenRelatedTicket(ticket)) return ticket;
+  return { ...ticket, canComment: false };
+};
 
 const ticketStatusKey = (ticket) => (ticket?.status || '').toLowerCase();
 
@@ -149,9 +211,11 @@ const TicketStatusTags = ({ ticket, size = 'md' }) => {
 const isRefexHelpdeskEntity = (entity) =>
   String(entity || '').trim().toLowerCase() === 'refex';
 
-/** Comments UI is Extrovis-family only — Refex Help Desk never shows a thread. */
+/** Comments UI is Extrovis-family only — Refex Help Desk never shows a thread.
+ *  Reopen tickets can view history but never Reply / compose. */
 const canShowTicketComments = (entity, ticket) =>
-  !isRefexHelpdeskEntity(entity) && !isRefexHelpdeskEntity(ticket?.entity);
+  !isRefexHelpdeskEntity(entity)
+  && !isRefexHelpdeskEntity(ticket?.entity);
 
 const isItsmBotAssignedPart = (value) => {
   const compact = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -177,9 +241,15 @@ const formatAssignedToDisplay = (value) => {
 };
 
 const canCommentTicket = (ticket, entity) => {
+  if (!ticket || showsEmployeeRating(ticket) || isReopenRelatedTicket(ticket)) return false;
   if (!canShowTicketComments(entity, ticket)) return false;
-  if (!ticket || !isOpenTicket(ticket)) return false;
-  if (typeof ticket.canComment === 'boolean') return ticket.canComment;
+  if (!isOpenTicket(ticket) || ticketAllowsReopen(ticket)) return false;
+  if (ticket.canComment === false) return false;
+  if (ticket.canComment === true) {
+    const step = String(ticket.currentStep || '').trim().toLowerCase();
+    if (step.includes('reopen') || isReopenHoldStep(step)) return false;
+    return true;
+  }
   const step = String(ticket.currentStep || '')
     .trim()
     .toLowerCase()
@@ -363,6 +433,10 @@ const TicketConversation = ({
   hydrateRef.current = onHydrated;
   ticketRef.current = ticket;
   const entries = revisionEntriesFromTicket(ticket);
+  const allowCompose =
+    Boolean(canComment)
+    && !showsEmployeeRating(ticket)
+    && !isReopenRelatedTicket(ticket);
 
   const loadComments = React.useCallback(async (force = false) => {
     const live = ticketRef.current;
@@ -405,8 +479,8 @@ const TicketConversation = ({
   }, [loadComments]);
 
   React.useEffect(() => {
-    if (autoFocus && canComment && inputRef.current) inputRef.current.focus();
-  }, [autoFocus, canComment, ticket?.id]);
+    if (autoFocus && allowCompose && inputRef.current) inputRef.current.focus();
+  }, [autoFocus, allowCompose, ticket?.id]);
 
   React.useEffect(() => {
     if (scrollerRef.current) scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
@@ -496,7 +570,7 @@ const TicketConversation = ({
             </span>
             <p className="text-sm font-semibold text-slate-800">{hydrating ? 'Loading comments…' : 'No comments yet'}</p>
             <p className="mt-1 max-w-xs text-xs leading-relaxed text-slate-500">
-              {canComment
+              {allowCompose
                 ? 'Write a comment below to start this ticket thread with IT Support.'
                 : 'Comments from you and IT Support will appear in this thread.'}
             </p>
@@ -574,7 +648,7 @@ const TicketConversation = ({
         )}
       </div>
 
-      {canComment ? (
+      {allowCompose ? (
         <div className="border-t border-slate-200 bg-white px-3 py-3 sm:px-4">
           <div className="mb-2 flex flex-wrap gap-1.5">
             {QUICK_REPLIES.map((item) => (
@@ -626,7 +700,9 @@ const TicketConversation = ({
         </div>
       ) : (
         <p className="border-t border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] text-slate-500">
-          Replies open when this ticket is with IT on the work step.
+          {isReopenRelatedTicket(ticket) || showsEmployeeRating(ticket)
+            ? 'Comments are disabled on reopened tickets.'
+            : 'Replies open when this ticket is with IT on the work step.'}
         </p>
       )}
     </div>
@@ -669,7 +745,7 @@ const ticketsCache = {
   fetchedAt: 0,
 };
 
-const TICKETS_CACHE_KEY = 'itsmTicketsCache.v6';
+const TICKETS_CACHE_KEY = 'itsmTicketsCache.v7';
 const COMMENTS_STORE_KEY = 'itsmCommentsStore.v1';
 const commentsStore = new Map();
 let ticketsInflight = null;
@@ -747,8 +823,10 @@ try {
           rememberComments(ticketKey, row.agentSolutions);
         }
         const stored = commentsFromStore(ticketKey);
-        if (!stored.length) return row;
-        return { ...row, agentSolutions: mergeCommentRows(realCommentRows(row.agentSolutions), stored) };
+        const withComments = stored.length
+          ? { ...row, agentSolutions: mergeCommentRows(realCommentRows(row.agentSolutions), stored) }
+          : row;
+        return lockCommentsIfReopened(withComments);
       });
     }
   }
@@ -907,13 +985,16 @@ const ITSMDashboard = () => {
         const storedComments = commentsBelongToTicket(commentsFromStore(ticketKey), row);
         const mergedComments = mergeCommentRows(nextComments, prevComments, storedComments);
         if (mergedComments.length) rememberComments(ticketKey, mergedComments);
-        return {
+        const remembered = Boolean(ticketKey && rememberedReopenedIds.has(String(ticketKey)));
+        return lockCommentsIfReopened({
           ...row,
+          reopened: Boolean(row.reopened || remembered),
+          canComment: remembered || row.reopened ? false : row.canComment,
           assignedTo: formatAssignedToDisplay(row.assignedTo || prev?.assignedTo),
           agentSolutions: mergedComments,
           requesterName: row.requesterName || prev?.requesterName,
           requesterEmail: row.requesterEmail || prev?.requesterEmail,
-        };
+        });
       });
       const nextEnv = res.data.activeEnvironment || '';
       const nextBase = res.data.kissflowBaseUrl || '';
@@ -1044,6 +1125,7 @@ const ITSMDashboard = () => {
         getAuthHeader()
       );
       toast.success(res.data.message || `Reopened ${ticket.requestId || 'ticket'}`);
+      rememberReopenedTicket(ticket.id);
       setReopenTicketTarget(null);
       setReopenNote('');
       await fetchTickets({ force: true, silent: true });
@@ -1191,7 +1273,10 @@ const ITSMDashboard = () => {
               const rowId = ticket.id || ticket.localId;
               const expanded = expandedIds.has(rowId);
               const showCommentSection = canShowTicketComments(entity, ticket);
-              const showComment = canCommentTicket(ticket, entity);
+              const showComment =
+                canCommentTicket(ticket, entity)
+                && !showsEmployeeRating(ticket)
+                && !isReopenRelatedTicket(ticket);
               const requestId = ticket.requestId || '—';
               const description = ticket.description || '—';
               return (
@@ -1293,7 +1378,10 @@ const ITSMDashboard = () => {
           const rowId = ticket.id || ticket.localId;
           const expanded = expandedIds.has(rowId);
           const showCommentSection = canShowTicketComments(entity, ticket);
-          const showComment = canCommentTicket(ticket, entity);
+          const showComment =
+            canCommentTicket(ticket, entity)
+            && !showsEmployeeRating(ticket)
+            && !isReopenRelatedTicket(ticket);
           return (
             <div key={rowId} className="rounded-xl border border-slate-200 bg-white p-4">
               <div className="flex items-start justify-between gap-3 mb-2">

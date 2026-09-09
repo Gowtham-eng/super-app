@@ -121,6 +121,21 @@ def _read_env_runtime_file() -> Optional[Dict[str, Any]]:
     return None
 
 
+def resolve_refexions_policy_api_key(shared: Optional[Dict[str, Any]] = None) -> str:
+    """Env first (local helper), then ITSM Setup shared key (production Mongo / runtime file)."""
+    env_key = (os.environ.get("REFEXIONS_POLICY_API_KEY") or "").strip()
+    if env_key:
+        return env_key
+    if isinstance(shared, dict):
+        saved = str(shared.get("refexions_policy_api_key") or "").strip()
+        if saved:
+            return saved
+    runtime = _ENV_RUNTIME if isinstance(_ENV_RUNTIME, dict) else None
+    stored = runtime or _read_env_runtime_file() or {}
+    shared_doc = stored.get("shared") if isinstance(stored.get("shared"), dict) else {}
+    return str(shared_doc.get("refexions_policy_api_key") or "").strip()
+
+
 def _write_env_runtime_file(doc: Dict[str, Any]) -> None:
     try:
         with open(_ENV_RUNTIME_FILE, "w", encoding="utf-8") as handle:
@@ -486,6 +501,7 @@ def _builtin_environments() -> Dict[str, Any]:
         "shared": {
             "application_id": KISSFLOW_APPLICATION_ID,
             "approval_matrix_id": KISSFLOW_APPROVAL_MATRIX_ID,
+            "refexions_policy_api_key": os.environ.get("REFEXIONS_POLICY_API_KEY", ""),
             "refex": {
                 "process_id": KISSFLOW_PROCESS_ID,
                 "report_id": "Service_Items_Refex_A00",
@@ -527,6 +543,8 @@ def _shared_from_legacy_block(block: Dict[str, Any]) -> Dict[str, Any]:
         out["application_id"] = block["application_id"]
     if block.get("approval_matrix_id"):
         out["approval_matrix_id"] = block["approval_matrix_id"]
+    if block.get("refexions_policy_api_key"):
+        out["refexions_policy_api_key"] = str(block.get("refexions_policy_api_key") or "").strip()
     for slice_key in ("refex", "extrovis"):
         cur = dict(out.get(slice_key) or {})
         nxt = block.get(slice_key) if isinstance(block.get(slice_key), dict) else {}
@@ -578,9 +596,12 @@ def _public_shared(shared: Dict[str, Any]) -> Dict[str, Any]:
     merged = _merge_shared(builtin, shared if isinstance(shared, dict) else {})
     refex = merged.get("refex") if isinstance(merged.get("refex"), dict) else {}
     extrovis = merged.get("extrovis") if isinstance(merged.get("extrovis"), dict) else {}
+    policy_key = (merged.get("refexions_policy_api_key") or "").strip()
     return {
         "application_id": merged.get("application_id") or "",
         "approval_matrix_id": merged.get("approval_matrix_id") or "",
+        "refexions_policy_api_key": policy_key,
+        "has_refexions_policy_api_key": bool(policy_key),
         "refex": {
             "process_id": refex.get("process_id") or "",
             "report_id": refex.get("report_id") or "",
@@ -626,6 +647,9 @@ def _merge_shared(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, A
         value = str(incoming.get(key) or "").strip()
         if value:
             out[key] = value
+    policy_key = str(incoming.get("refexions_policy_api_key") or "").strip()
+    if policy_key:
+        out["refexions_policy_api_key"] = policy_key
     for slice_key in ("refex", "extrovis"):
         cur = dict(out.get(slice_key) or {})
         nxt = incoming.get(slice_key) if isinstance(incoming.get(slice_key), dict) else {}
@@ -1902,7 +1926,36 @@ def _is_reopen_hold_step(step: str) -> bool:
         or "ticket can be reopened" in text
         or "employee feedback" in text
         or "employee verification" in text
+        or "employee confirmation" in text
     )
+
+
+def _comments_blocked_for_reopen(
+    reopened_raw: Any,
+    reopen_hold: bool,
+    current_step: str,
+    last_completed_step: str,
+) -> bool:
+    """No employee comments on reopen-hold or after sendback."""
+    if reopen_hold or _is_reopened_flag(reopened_raw):
+        return True
+    if _is_reopen_hold_step(current_step) or _is_reopen_hold_step(last_completed_step):
+        return True
+    blob = f"{current_step} {last_completed_step}".lower()
+    return "reopen" in blob
+
+
+def _progress_has_completed_reopen(progress: Any) -> bool:
+    for step in _iter_progress_steps(progress):
+        if not isinstance(step, dict):
+            continue
+        name = _as_string(step.get("Name") or step.get("ActivityName") or step.get("name"))
+        if not _is_reopen_hold_step(name):
+            continue
+        token = _status_token(str(step.get("_status") or step.get("Status") or step.get("status") or ""))
+        if token in ("completed", "complete", "submitted", "done", "closed"):
+            return True
+    return False
 
 
 def _is_live_work_step(step: str) -> bool:
@@ -2741,7 +2794,11 @@ def _parse_report_ticket(
         "createdOn": created_on,
         "closedOn": closed_on,
         "employeeRating": employee_rating,
-        "reopened": _is_reopened_flag(reopened_raw),
+        "reopened": _is_reopened_flag(reopened_raw)
+        or (
+            status not in ("Closed", "Failed", "Rejected")
+            and _is_reopen_hold_step(last_completed_step)
+        ),
         "currentStep": current_step,
         "lastCompletedStep": last_completed_step,
         "activityInstanceId": activity_instance_id,
@@ -2749,7 +2806,9 @@ def _parse_report_ticket(
         "canReopen": _can_reopen_ticket(current_step, workflow_status, data, field_ids),
         "canComment": (
             status not in ("Closed", "Failed", "Rejected")
-            and not reopen_hold
+            and not _comments_blocked_for_reopen(
+                reopened_raw, reopen_hold, current_step, last_completed_step
+            )
             and _can_comment_on_step(current_step, entity)
         ),
         "commentStep": _comment_step_for_entity(entity),
@@ -3004,6 +3063,7 @@ class KissflowConnectionBlock(BaseModel):
 class KissflowSharedApis(BaseModel):
     application_id: str = ""
     approval_matrix_id: str = ""
+    refexions_policy_api_key: Optional[str] = None
     refex: KissflowEntityApis = Field(default_factory=KissflowEntityApis)
     extrovis: KissflowEntityApis = Field(default_factory=KissflowEntityApis)
 
@@ -3241,6 +3301,10 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             "access_key_secret": access_key_secret,
             "bot_access_key_id": bot_access_key_id,
             "bot_access_key_secret": bot_access_key_secret,
+            "refexions_policy_api_key": (
+                (shared.get("refexions_policy_api_key") or "").strip()
+                or os.environ.get("REFEXIONS_POLICY_API_KEY", "").strip()
+            ),
             "source": "environment",
         }
         if entity and _itsm_db_usable(db):
@@ -4538,13 +4602,22 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 if token == "inprogress":
                     live_step = _as_string(step.get("Name") or step.get("ActivityName")).strip()
                     live_assignee = _step_assignee_detail(step) or _step_assignee_name(step)
-        if not _can_comment_on_step(live_step, body.entity):
+        if (
+            not _can_comment_on_step(live_step, body.entity)
+            or _is_reopen_hold_step(live_step)
+            or _progress_has_completed_reopen(progress)
+        ):
+            blocked_reopen = _is_reopen_hold_step(live_step) or _progress_has_completed_reopen(progress)
             want = _comment_step_for_entity(body.entity)
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Comments are only allowed when the ticket is at '{want}'. "
-                    f"Current step: {live_step or 'unknown'}."
+                    "Comments are disabled on reopened tickets."
+                    if blocked_reopen
+                    else (
+                        f"Comments are only allowed when the ticket is at '{want}'. "
+                        f"Current step: {live_step or 'unknown'}."
+                    )
                 ),
             )
 
