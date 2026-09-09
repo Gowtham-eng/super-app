@@ -82,6 +82,21 @@ const statusBadgeClass = (status = '') => {
   return 'bg-emerald-100 text-emerald-800 border-emerald-200';
 };
 
+const isReopenHoldStep = (step) => {
+  const text = String(step || '').trim().toLowerCase();
+  if (!text || text.includes('reopened')) return false;
+  return (
+    text.includes('it tech reopen')
+    || text.includes('reopen window')
+    || text === 'ticket reopen'
+    || (text.includes('ticket reopen') && !text.includes('reopened'))
+    || text.includes('ticket can be reopened')
+  );
+};
+
+const ticketAllowsReopen = (ticket) =>
+  Boolean(ticket?.canReopen) || isReopenHoldStep(ticket?.currentStep);
+
 const ticketStatusKey = (ticket) => (ticket?.status || '').toLowerCase();
 
 const matchesKpiFilter = (ticket, tab) => {
@@ -349,15 +364,15 @@ const TicketConversation = ({
   ticketRef.current = ticket;
   const entries = revisionEntriesFromTicket(ticket);
 
-  const loadComments = React.useCallback(async () => {
+  const loadComments = React.useCallback(async (force = false) => {
     const live = ticketRef.current;
     if (!ticket?.id || !live?.id || live.id !== ticket.id || !entity || typeof authRef.current !== 'function') return;
     const stored = commentsBelongToTicket(commentsFromStore(live.id), live);
-    if (stored.length && typeof hydrateRef.current === 'function') {
+    if (!force && stored.length && typeof hydrateRef.current === 'function') {
       hydrateRef.current(live.id, { comments: stored });
     }
     const hasLocal = stored.length > 0 || revisionEntriesFromTicket(live).length > 0;
-    if (!hasLocal) setHydrating(true);
+    if (force || !hasLocal) setHydrating(true);
     setLoadError('');
     try {
       const res = await axios.get(`${ITSM_API}/itsm/reports/comments`, {
@@ -366,6 +381,7 @@ const TicketConversation = ({
           instance_id: live.id,
           activity_instance_id: live.activityInstanceId || '',
           environment: environment || undefined,
+          ...(force ? { _t: Date.now() } : {}),
         },
         ...authRef.current(),
       });
@@ -451,10 +467,16 @@ const TicketConversation = ({
             </span>
             <button
               type="button"
-              onClick={() => loadComments()}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                loadComments(true);
+              }}
               disabled={hydrating}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-50"
+              className="relative z-10 inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-50"
               aria-label="Refresh comments"
+              data-testid={`itsm-comments-refresh-${ticket.id}`}
+              title="Refresh comments from Kissflow"
             >
               <RefreshCw size={13} className={hydrating ? 'animate-spin' : ''} />
             </button>
@@ -980,7 +1002,7 @@ const ITSMDashboard = () => {
   }, [statusTab]);
 
   const openReopenDialog = (ticket) => {
-    if (!ticket?.id || !ticket.canReopen) return;
+    if (!ticket?.id || !ticketAllowsReopen(ticket)) return;
     setReopenTicketTarget(ticket);
     setReopenNote('');
     setReopenError('');
@@ -996,7 +1018,7 @@ const ITSMDashboard = () => {
   const submitReopen = async () => {
     const ticket = reopenTicketTarget;
     const note = reopenNote.trim();
-    if (!ticket?.id || !ticket.canReopen) return;
+    if (!ticket?.id || !ticketAllowsReopen(ticket)) return;
     if (!note) {
       setReopenError('Please enter why you need to reopen this ticket.');
       return;
@@ -1115,7 +1137,7 @@ const ITSMDashboard = () => {
   };
 
   const submitRating = async (ticket, rating) => {
-    if (!ticket?.id || !ticket.canReopen || ticket.employeeRating) return;
+    if (!ticket?.id || !ticketAllowsReopen(ticket) || ticket.employeeRating) return;
     setRatingBusyId(ticket.id);
     try {
       const res = await axios.post(
@@ -1220,9 +1242,10 @@ const ITSMDashboard = () => {
                             Reply
                           </button>
                         ) : null}
-                        {ticket.canReopen ? (
+                        {ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1 ? (
                           <>
                             <EmployeeRatingStars ticket={ticket} ratingBusyId={ratingBusyId} onRate={submitRating} />
+                            {ticketAllowsReopen(ticket) ? (
                             <button
                               type="button"
                               onClick={() => openReopenDialog(ticket)}
@@ -1233,6 +1256,7 @@ const ITSMDashboard = () => {
                               {reopeningId === ticket.id ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
                               Reopen
                             </button>
+                            ) : null}
                           </>
                         ) : null}
                       </div>
@@ -1310,9 +1334,10 @@ const ITSMDashboard = () => {
                     Reply
                   </button>
                 ) : null}
-                {ticket.canReopen ? (
+                {ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1 ? (
                   <div className="space-y-2 w-full">
                     <EmployeeRatingStars ticket={ticket} ratingBusyId={ratingBusyId} onRate={submitRating} />
+                    {ticketAllowsReopen(ticket) ? (
                     <button
                       type="button"
                       onClick={() => openReopenDialog(ticket)}
@@ -1323,6 +1348,7 @@ const ITSMDashboard = () => {
                       {reopeningId === ticket.id ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
                       Reopen
                     </button>
+                    ) : null}
                   </div>
                 ) : null}
               </div>

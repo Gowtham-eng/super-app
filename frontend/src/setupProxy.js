@@ -26,14 +26,11 @@ module.exports = function proxy(app) {
     res.end(JSON.stringify({ detail }));
   };
 
-  // Production RefexOne does not serve these yet (FastAPI 404 / old Live key).
-  // Register /comments before /comment — Express does not treat "comment" as a prefix of "comments".
+  // Local backend (new ITSM + Refexions) + live RefexOne for login/launcher.
+  // /api/itsm must be registered before the catch-all /api → refexone.com.
   [
-    '/api/itsm/reports/comments',
-    '/api/itsm/reports/comment',
-    '/api/itsm/reports/reopen',
-    '/api/itsm/reports/rating',
     '/api/refexions',
+    '/api/itsm',
   ].forEach((pathPrefix) => {
     app.use(
       pathPrefix,

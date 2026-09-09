@@ -56,6 +56,8 @@ const emptyConnection = () => ({
   account_id: '',
   access_key_id: '',
   access_key_secret: '',
+  bot_access_key_id: '',
+  bot_access_key_secret: '',
 });
 
 const emptyShared = () => ({
@@ -70,6 +72,8 @@ const hydrateConnection = (raw = {}) => ({
   account_id: String(raw.account_id || ''),
   access_key_id: String(raw.access_key_id || ''),
   access_key_secret: String(raw.access_key_secret || ''),
+  bot_access_key_id: String(raw.bot_access_key_id || ''),
+  bot_access_key_secret: String(raw.bot_access_key_secret || ''),
 });
 
 const hydrateShared = (raw = {}) => ({
@@ -96,6 +100,8 @@ const connectionPayload = (raw = {}) => ({
   account_id: String(raw.account_id || '').trim(),
   access_key_id: String(raw.access_key_id || '').trim(),
   access_key_secret: String(raw.access_key_secret || '').trim(),
+  bot_access_key_id: String(raw.bot_access_key_id || '').trim(),
+  bot_access_key_secret: String(raw.bot_access_key_secret || '').trim(),
 });
 
 const sharedPayload = (raw = {}) => {
@@ -508,8 +514,8 @@ const ITSMSetup = () => {
         </div>
         <p className="text-[11px] text-slate-500">
           {envKey === 'live'
-            ? 'Live Kissflow access keys. When Live is active, Help Desk uses these for create, comments, reopen, and rating.'
-            : 'Development Kissflow access keys. When Dev is active, Help Desk uses these for create, comments, reopen, and rating.'}
+            ? 'Live Kissflow host and keys. When Live is active, Help Desk uses these for create, comments, reopen, and rating. Save here so production Mongo has the values even without server env.'
+            : 'Development Kissflow host and keys. When Dev is active, Help Desk uses these for create, comments, reopen, and rating.'}
         </p>
         <div className="grid gap-3">
           <Field label="Kissflow URL" hint="Host only, no trailing slash">
@@ -546,6 +552,32 @@ const ITSMSetup = () => {
               autoComplete="off"
             />
           </Field>
+          <div className="rounded-md border border-amber-100 bg-amber-50/70 p-3 space-y-3">
+            <p className="text-xs font-semibold text-amber-900">ITSM BOT user key</p>
+            <p className="text-[11px] text-amber-800">
+              Comments, reopen, and employee rating POST as this Kissflow user key. The ticket must
+              be in the BOT user pending queue. Production has no .env — save these here.
+            </p>
+            <Field label="ITSM BOT access key ID">
+              <input
+                className={monoClass}
+                value={block.bot_access_key_id}
+                onChange={(e) => setConnectionField(envKey, 'bot_access_key_id', e.target.value)}
+                placeholder={block.access_key_id || 'Ak…'}
+              />
+            </Field>
+            <Field
+              label="ITSM BOT access key secret"
+              hint="Leave blank when editing to keep the saved secret"
+            >
+              <input
+                className={monoClass}
+                value={block.bot_access_key_secret}
+                onChange={(e) => setConnectionField(envKey, 'bot_access_key_secret', e.target.value)}
+                autoComplete="off"
+              />
+            </Field>
+          </div>
         </div>
       </div>
     );

@@ -472,30 +472,44 @@ def _decode_external_jwt(token: str) -> dict:
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     payload = None
+    accept_external = os.environ.get("ITSM_ACCEPT_EXTERNAL_JWT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     try:
         payload = decode_token(token)
     except HTTPException:
-        if os.environ.get("ITSM_ACCEPT_EXTERNAL_JWT", "").strip().lower() in ("1", "true", "yes"):
+        if accept_external:
             payload = _decode_external_jwt(token)
         else:
             raise
-    user = await db.users.find_one({"id": payload.get("user_id")}, {"_id": 0, "password": 0, "admin_known_password": 0})
-    if not user:
-        email = normalize_email(payload.get("email") or "")
-        if email:
-            user = await db.users.find_one({"email": email}, {"_id": 0, "password": 0, "admin_known_password": 0})
-            if not user:
+    user = None
+    try:
+        user = await db.users.find_one(
+            {"id": payload.get("user_id")},
+            {"_id": 0, "password": 0, "admin_known_password": 0},
+        )
+        if not user:
+            email = normalize_email(payload.get("email") or "")
+            if email:
                 user = await db.users.find_one(
-                    {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}},
+                    {"email": email},
                     {"_id": 0, "password": 0, "admin_known_password": 0},
                 )
+                if not user:
+                    user = await db.users.find_one(
+                        {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}},
+                        {"_id": 0, "password": 0, "admin_known_password": 0},
+                    )
+    except Exception:
+        if not accept_external:
+            raise
+        user = None
     if user:
         return user
     email = normalize_email(payload.get("email") or "")
-    if (
-        email
-        and os.environ.get("ITSM_ACCEPT_EXTERNAL_JWT", "").strip().lower() in ("1", "true", "yes")
-    ):
+    if email and accept_external:
         return {
             "id": payload.get("user_id") or "",
             "email": email,

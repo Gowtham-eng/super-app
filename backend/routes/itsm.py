@@ -255,14 +255,20 @@ def _normalize_entity_key(value: str) -> str:
     return (value or "").strip().lower().replace("  ", " ")
 
 
-def _kissflow_headers(cfg: Dict[str, Any]) -> Dict[str, str]:
-    """Same auth for reports GET and process POST (ITSM Setup / env keys)."""
-    key_id = (cfg.get("access_key_id") or "").strip()
-    key_secret = (cfg.get("access_key_secret") or "").strip()
+def _kissflow_headers(cfg: Dict[str, Any], *, for_write: bool = False) -> Dict[str, str]:
+    """Reports GET use access keys; comments/reopen/rating POST as the ITSM BOT user key."""
+    if for_write:
+        key_id = (cfg.get("bot_access_key_id") or cfg.get("access_key_id") or "").strip()
+        key_secret = (cfg.get("bot_access_key_secret") or cfg.get("access_key_secret") or "").strip()
+        missing = "ITSM BOT access key id and secret are missing in ITSM Setup."
+    else:
+        key_id = (cfg.get("access_key_id") or cfg.get("bot_access_key_id") or "").strip()
+        key_secret = (cfg.get("access_key_secret") or cfg.get("bot_access_key_secret") or "").strip()
+        missing = "Kissflow access key id and secret are missing in ITSM Setup."
     if not key_id or not key_secret:
         raise HTTPException(
             status_code=400,
-            detail="Kissflow access key id and secret are missing in ITSM Setup.",
+            detail=missing,
         )
     return {
         "Accept": "application/json",
@@ -471,6 +477,10 @@ def _report_entity_key(entity: Optional[str]) -> str:
 def _builtin_environments() -> Dict[str, Any]:
     """Dev vs live differ only by URL, account id, and access keys. Process/report/webhooks are shared."""
     ext_webhook = ENTITY_WEBHOOK_PATHS.get("Extrovis") or ""
+    dev_id = KISSFLOW_ACCESS_KEY_ID
+    dev_secret = KISSFLOW_ACCESS_KEY_SECRET
+    live_id = os.environ.get("ITSM_LIVE_ACCESS_KEY_ID", "")
+    live_secret = os.environ.get("ITSM_LIVE_ACCESS_KEY_SECRET", "")
     return {
         "active": "development",
         "shared": {
@@ -490,16 +500,20 @@ def _builtin_environments() -> Dict[str, Any]:
         "development": {
             "kissflow_base_url": KISSFLOW_BASE_URL,
             "account_id": KISSFLOW_ACCOUNT_ID,
-            "access_key_id": KISSFLOW_ACCESS_KEY_ID,
-            "access_key_secret": KISSFLOW_ACCESS_KEY_SECRET,
+            "access_key_id": dev_id,
+            "access_key_secret": dev_secret,
+            "bot_access_key_id": os.environ.get("ITSM_BOT_ACCESS_KEY_ID", "") or dev_id,
+            "bot_access_key_secret": os.environ.get("ITSM_BOT_ACCESS_KEY_SECRET", "") or dev_secret,
         },
         "live": {
             "kissflow_base_url": os.environ.get(
                 "ITSM_LIVE_BASE_URL", "https://refexgroup.kissflow.com"
             ).rstrip("/"),
             "account_id": os.environ.get("ITSM_LIVE_ACCOUNT_ID", "AcCMptlq60zH"),
-            "access_key_id": os.environ.get("ITSM_LIVE_ACCESS_KEY_ID", ""),
-            "access_key_secret": os.environ.get("ITSM_LIVE_ACCESS_KEY_SECRET", ""),
+            "access_key_id": live_id,
+            "access_key_secret": live_secret,
+            "bot_access_key_id": os.environ.get("ITSM_LIVE_BOT_ACCESS_KEY_ID", "") or live_id,
+            "bot_access_key_secret": os.environ.get("ITSM_LIVE_BOT_ACCESS_KEY_SECRET", "") or live_secret,
         },
     }
 
@@ -546,12 +560,16 @@ def _entity_api_slice(shared: Dict[str, Any], entity: Optional[str]) -> Dict[str
 
 def _public_connection(block: Dict[str, Any]) -> Dict[str, Any]:
     secret = block.get("access_key_secret") or ""
+    bot_secret = block.get("bot_access_key_secret") or ""
     return {
         "kissflow_base_url": block.get("kissflow_base_url") or "",
         "account_id": block.get("account_id") or "",
         "access_key_id": block.get("access_key_id") or "",
         "access_key_secret": secret,
         "has_secret": bool(secret),
+        "bot_access_key_id": block.get("bot_access_key_id") or "",
+        "bot_access_key_secret": bot_secret,
+        "has_bot_secret": bool(bot_secret),
     }
 
 
@@ -582,13 +600,23 @@ def _merge_connection(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[st
         "account_id": base.get("account_id") or "",
         "access_key_id": base.get("access_key_id") or "",
         "access_key_secret": base.get("access_key_secret") or "",
+        "bot_access_key_id": base.get("bot_access_key_id") or "",
+        "bot_access_key_secret": base.get("bot_access_key_secret") or "",
     }
-    for key in ("kissflow_base_url", "account_id", "access_key_id"):
-        if incoming.get(key) is not None:
-            out[key] = str(incoming.get(key) or "").strip()
+    for key in ("kissflow_base_url", "account_id", "access_key_id", "bot_access_key_id"):
+        value = str(incoming.get(key) or "").strip()
+        if value:
+            out[key] = value
     secret = (incoming.get("access_key_secret") or "").strip()
     if secret:
         out["access_key_secret"] = secret
+    bot_secret = (incoming.get("bot_access_key_secret") or "").strip()
+    if bot_secret:
+        out["bot_access_key_secret"] = bot_secret
+    if not out.get("bot_access_key_id"):
+        out["bot_access_key_id"] = out.get("access_key_id") or ""
+    if not out.get("bot_access_key_secret"):
+        out["bot_access_key_secret"] = out.get("access_key_secret") or ""
     return out
 
 
@@ -818,7 +846,7 @@ async def _kf_post_json(
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             url,
-            headers=_kissflow_headers(cfg),
+            headers=_kissflow_headers(cfg, for_write=True),
             params=params or {},
             json=payload,
         )
@@ -2969,6 +2997,8 @@ class KissflowConnectionBlock(BaseModel):
     account_id: str = ""
     access_key_id: str = ""
     access_key_secret: Optional[str] = None
+    bot_access_key_id: str = ""
+    bot_access_key_secret: Optional[str] = None
 
 
 class KissflowSharedApis(BaseModel):
@@ -3151,6 +3181,12 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         access_key_secret = (
             conn.get("access_key_secret") or same_builtin.get("access_key_secret") or ""
         ).strip()
+        bot_access_key_id = (
+            conn.get("bot_access_key_id") or same_builtin.get("bot_access_key_id") or ""
+        ).strip()
+        bot_access_key_secret = (
+            conn.get("bot_access_key_secret") or same_builtin.get("bot_access_key_secret") or ""
+        ).strip()
         # ITSM Setup saved values win. Server env only fills blanks (local helper fallback).
         if name == "live":
             if not base_url:
@@ -3161,6 +3197,23 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 access_key_id = os.environ.get("ITSM_LIVE_ACCESS_KEY_ID", "").strip()
             if not access_key_secret:
                 access_key_secret = os.environ.get("ITSM_LIVE_ACCESS_KEY_SECRET", "").strip()
+            if not bot_access_key_id:
+                bot_access_key_id = os.environ.get("ITSM_LIVE_BOT_ACCESS_KEY_ID", "").strip()
+            if not bot_access_key_secret:
+                bot_access_key_secret = os.environ.get("ITSM_LIVE_BOT_ACCESS_KEY_SECRET", "").strip()
+        else:
+            if not bot_access_key_id:
+                bot_access_key_id = os.environ.get("ITSM_BOT_ACCESS_KEY_ID", "").strip()
+            if not bot_access_key_secret:
+                bot_access_key_secret = os.environ.get("ITSM_BOT_ACCESS_KEY_SECRET", "").strip()
+        if not access_key_id:
+            access_key_id = bot_access_key_id
+        if not access_key_secret:
+            access_key_secret = bot_access_key_secret
+        if not bot_access_key_id:
+            bot_access_key_id = access_key_id
+        if not bot_access_key_secret:
+            bot_access_key_secret = access_key_secret
         if not base_url or not account_id or not access_key_id or not access_key_secret:
             label = "Live" if name == "live" else "Development"
             raise HTTPException(
@@ -3186,6 +3239,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             "webhook_path": _webhook_path_with_account(webhook, account_id),
             "access_key_id": access_key_id,
             "access_key_secret": access_key_secret,
+            "bot_access_key_id": bot_access_key_id,
+            "bot_access_key_secret": bot_access_key_secret,
             "source": "environment",
         }
         if entity and _itsm_db_usable(db):
@@ -3361,6 +3416,18 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             _merge_connection(builtin["live"], existing.get("live") or {}),
             _dump_model(body.live),
         )
+        if not development.get("bot_access_key_id"):
+            development["bot_access_key_id"] = development.get("access_key_id") or ""
+        if not development.get("bot_access_key_secret"):
+            development["bot_access_key_secret"] = development.get("access_key_secret") or ""
+        if not live.get("bot_access_key_id"):
+            live["bot_access_key_id"] = live.get("access_key_id") or ""
+        if not live.get("bot_access_key_secret"):
+            live["bot_access_key_secret"] = live.get("access_key_secret") or ""
+        if not live.get("access_key_id"):
+            live["access_key_id"] = live.get("bot_access_key_id") or ""
+        if not live.get("access_key_secret"):
+            live["access_key_secret"] = live.get("bot_access_key_secret") or ""
         if active == "live" and (
             not live.get("kissflow_base_url")
             or not live.get("account_id")
@@ -4212,7 +4279,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
                     url,
-                    headers=_kissflow_headers(cfg),
+                    headers=_kissflow_headers(cfg, for_write=True),
                     params=params,
                     json=payload,
                 )
@@ -4326,7 +4393,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
                     url,
-                    headers=_kissflow_headers(cfg),
+                    headers=_kissflow_headers(cfg, for_write=True),
                     params=params,
                     json=payload,
                 )
@@ -4382,6 +4449,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         instance_id: str = Query(...),
         activity_instance_id: Optional[str] = Query(None),
         environment: Optional[str] = Query(None),
+        _t: Optional[str] = Query(None),
         user: dict = Depends(get_current_user),
     ):
         """Load the full IT__Agent_Solution table from the process instance GET."""

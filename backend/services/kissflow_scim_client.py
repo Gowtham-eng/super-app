@@ -32,7 +32,12 @@ RETRY_DELAY = 5  # seconds to wait on 429
 
 async def get_kissflow_scim_config(db, org_id: str) -> dict:
     """Get Kissflow SCIM config for an org. Falls back to env vars."""
-    config = await db.kissflow_scim_config.find_one({"org_id": org_id}, {"_id": 0})
+    config = None
+    try:
+        if db is not None:
+            config = await db.kissflow_scim_config.find_one({"org_id": org_id}, {"_id": 0})
+    except Exception:
+        config = None
     if config and config.get("base_url") and config.get("token"):
         return config
 
@@ -497,13 +502,16 @@ async def check_user_kissflow_access(
         local_kf_id = None
         local_user = None
         if db is not None:
-            q = {"id": user_id} if user_id else {"email": email, "org_id": org_id}
-            local_user = await db.users.find_one(q, {"_id": 0, "id": 1, "email": 1, "kissflow_user_id": 1})
-            if not local_user and not user_id:
-                local_user = await db.users.find_one(
-                    {"email": email},
-                    {"_id": 0, "id": 1, "email": 1, "kissflow_user_id": 1},
-                )
+            try:
+                q = {"id": user_id} if user_id else {"email": email, "org_id": org_id}
+                local_user = await db.users.find_one(q, {"_id": 0, "id": 1, "email": 1, "kissflow_user_id": 1})
+                if not local_user and not user_id:
+                    local_user = await db.users.find_one(
+                        {"email": email},
+                        {"_id": 0, "id": 1, "email": 1, "kissflow_user_id": 1},
+                    )
+            except Exception:
+                local_user = None
             local_kf_id = (local_user or {}).get("kissflow_user_id")
         has_local_id = bool(local_kf_id and str(local_kf_id).strip())
         has_app = False
