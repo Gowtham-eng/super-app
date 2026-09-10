@@ -746,7 +746,7 @@ const ticketsCache = {
   fetchedAt: 0,
 };
 
-const TICKETS_CACHE_KEY = 'itsmTicketsCache.v8';
+const TICKETS_CACHE_KEY = 'itsmTicketsCache.v9';
 const COMMENTS_STORE_KEY = 'itsmCommentsStore.v1';
 const commentsStore = new Map();
 let ticketsInflight = null;

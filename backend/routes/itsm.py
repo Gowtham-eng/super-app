@@ -4296,7 +4296,6 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         }
         claimed.discard("")
 
-        matched_local_ids: Set[str] = set()
         for doc in local_docs:
             local_status = (doc.get("local_status") or "").lower()
             inst = str(doc.get("kissflow_instance_id") or "")
@@ -4310,7 +4309,6 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 matched = _match_report_ticket(report_tickets, doc.get("description") or "", skip_ids)
             if not matched:
                 continue
-            matched_local_ids.add(str(doc.get("id") or ""))
             req_id = matched.get("requestId") or ""
             if req_id in ("", "—"):
                 req_id = doc.get("kissflow_request_id") or ""
@@ -4351,8 +4349,9 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                     _trip_itsm_db_circuit(exc)
                     logger.warning("ITSM local ticket sync skipped (DB unavailable): %s", exc)
 
-        # Active Kissflow report is the source of truth; only add in-flight local rows
-        # that are not already present in the report.
+        # Kissflow report is the source of truth. Only surface in-flight local rows
+        # (pending/failed). Never re-inject unmatched "created" locals — those are
+        # orphans after Kissflow delete / report lag and cause false Help Desk rows in prod.
         tickets: List[Dict[str, Any]] = list(report_tickets)
         seen_ids = {str(t.get("id") or "") for t in tickets}
         for doc in local_docs:
@@ -4362,14 +4361,6 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 continue
             if local_status in ("pending", "failed"):
                 tickets.append(_public_local_ticket(doc))
-                continue
-            # Created locally for this env but not yet visible in the report.
-            if local_status == "created" and _local_env(doc) == active_env and str(doc.get("id") or "") not in matched_local_ids:
-                pub = _public_local_ticket(doc)
-                rid = str(pub.get("id") or "")
-                if rid and rid not in seen_ids:
-                    tickets.append(pub)
-                    seen_ids.add(rid)
 
         return {
             "entity": entity,
