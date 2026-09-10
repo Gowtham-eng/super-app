@@ -1261,6 +1261,69 @@ async def _fetch_process_report(
     return url, response
 
 
+async def _fetch_kissflow_report_count(
+    cfg: Dict[str, Any],
+    profile: Dict[str, str],
+    email: str,
+) -> Tuple[int, str]:
+    """
+    Kissflow process-report count — same report URL + `/count`.
+    Example response: {"count": "23"}
+    """
+    process_id = (profile.get("process_id") or "").strip()
+    report_id = (profile.get("report_id") or "").strip()
+    account_id = (cfg.get("account_id") or "").strip()
+    base = (cfg.get("kissflow_base_url") or "").rstrip("/")
+    app_id = cfg.get("application_id") or REPORT_APPLICATION_ID
+    if not (base and account_id and process_id and report_id and email):
+        raise HTTPException(status_code=400, detail="Kissflow report count is missing configuration.")
+
+    path = f"/process-report/2/{account_id}/{process_id}/{report_id}/count"
+    url = f"{base}{path}"
+    last_detail = "Unable to read Kissflow report count."
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        for email_param in ("$requestor_email", "$Email"):
+            params = {
+                email_param: email,
+                "page_number": 1,
+                "page_size": REPORT_PAGE_SIZE,
+                "_application_id": app_id,
+            }
+            try:
+                response = await client.get(url, headers=_kissflow_headers(cfg), params=params)
+            except Exception as exc:
+                last_detail = str(exc)
+                continue
+            if response.status_code >= 400:
+                last_detail = f"Kissflow count HTTP {response.status_code}"
+                continue
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {}
+            raw = None
+            if isinstance(payload, dict):
+                raw = payload.get("count")
+                if raw is None:
+                    raw = payload.get("Count") or payload.get("total") or payload.get("Total")
+            try:
+                count = int(float(str(raw).strip()))
+            except (TypeError, ValueError):
+                last_detail = f"Unexpected Kissflow count body: {str(payload)[:160]}"
+                continue
+            if count < 0:
+                last_detail = f"Invalid Kissflow count: {count}"
+                continue
+            logger.info(
+                "ITSM Kissflow report count entity_report=%s filter=%s count=%s",
+                report_id,
+                email_param,
+                count,
+            )
+            return count, url
+    raise HTTPException(status_code=502, detail=last_detail)
+
+
 REOPEN_STEP_ACTIVITY_IDS = {
     "refex": ["Activity_Ot8GrzZvSl", "Activity_OCGdY6c0WJ"],
     "extrovis": ["Activity_7rCa3_zSic"],
@@ -4105,6 +4168,57 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             doc.pop("_id", None)
             created.append(_public_entity(doc))
         return {"seeded": len(created), "entities": created}
+
+    @api_router.get("/itsm/reports/count")
+    async def count_my_tickets(
+        entity: str = Query(...),
+        user: dict = Depends(get_current_user),
+    ):
+        """Kissflow process-report `/count` — used before full /itsm/reports when cache exists."""
+        email = (user.get("email") or "").strip()
+        if not email:
+            raise HTTPException(status_code=400, detail="User email is required to load tickets.")
+
+        cfg = await _resolve_config(user.get("org_id") or "", entity)
+        active_env = cfg.get("environment") or "development"
+        report_profile = {
+            "process_id": cfg.get("process_id") or "",
+            "report_id": cfg.get("report_id") or _report_profile(entity)["report_id"],
+        }
+
+        report_error = None
+        count = 0
+        count_url = ""
+        try:
+            count, count_url = await _fetch_kissflow_report_count(cfg, report_profile, email)
+        except HTTPException as exc:
+            report_error = str(exc.detail or "Unable to read Kissflow report count.")
+            logger.warning(
+                "ITSM Kissflow /count failed env=%s base=%s: %s",
+                active_env,
+                cfg.get("kissflow_base_url"),
+                report_error,
+            )
+        except Exception as exc:
+            report_error = str(exc)
+            logger.warning(
+                "ITSM Kissflow /count failed env=%s base=%s: %s",
+                active_env,
+                cfg.get("kissflow_base_url"),
+                exc,
+            )
+
+        return {
+            "entity": entity,
+            "requestorEmail": email,
+            "activeEnvironment": active_env,
+            "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
+            "reportId": report_profile.get("report_id") or "",
+            "processId": report_profile.get("process_id") or "",
+            "countUrl": count_url or None,
+            "reportError": report_error,
+            "count": count,
+        }
 
     @api_router.get("/itsm/reports")
     async def list_my_tickets(

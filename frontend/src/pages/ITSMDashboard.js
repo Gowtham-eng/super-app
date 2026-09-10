@@ -740,15 +740,30 @@ const EmployeeRatingStars = ({ ticket, ratingBusyId, onRate }) => {
 const ticketsCache = {
   entityKey: '',
   tickets: [],
+  ticketIds: [],
   activeEnvironment: '',
   kissflowBaseUrl: '',
   fetchedAt: 0,
 };
 
-const TICKETS_CACHE_KEY = 'itsmTicketsCache.v7';
+const TICKETS_CACHE_KEY = 'itsmTicketsCache.v8';
 const COMMENTS_STORE_KEY = 'itsmCommentsStore.v1';
 const commentsStore = new Map();
 let ticketsInflight = null;
+
+const ticketIdsFingerprint = (rows = []) =>
+  [...new Set(
+    (Array.isArray(rows) ? rows : [])
+      .map((row) => String(row?.id || row?.localId || row || '').trim())
+      .filter(Boolean)
+  )].sort();
+
+const sameTicketIdSet = (left = [], right = []) => {
+  const a = ticketIdsFingerprint(left);
+  const b = ticketIdsFingerprint(right);
+  if (a.length !== b.length) return false;
+  return a.every((id, index) => id === b[index]);
+};
 
 const persistCommentsStore = () => {
   try {
@@ -796,6 +811,7 @@ const persistTicketsCache = () => {
       JSON.stringify({
         entityKey: ticketsCache.entityKey,
         tickets: ticketsCache.tickets,
+        ticketIds: ticketsCache.ticketIds,
         activeEnvironment: ticketsCache.activeEnvironment,
         kissflowBaseUrl: ticketsCache.kissflowBaseUrl,
         fetchedAt: ticketsCache.fetchedAt,
@@ -813,6 +829,9 @@ try {
     if (parsed?.entityKey) {
       ticketsCache.entityKey = parsed.entityKey;
       ticketsCache.tickets = Array.isArray(parsed.tickets) ? parsed.tickets : [];
+      ticketsCache.ticketIds = Array.isArray(parsed.ticketIds)
+        ? ticketIdsFingerprint(parsed.ticketIds)
+        : ticketIdsFingerprint(ticketsCache.tickets);
       ticketsCache.activeEnvironment = parsed.activeEnvironment || '';
       ticketsCache.kissflowBaseUrl = parsed.kissflowBaseUrl || '';
       ticketsCache.fetchedAt = Number(parsed.fetchedAt) || 0;
@@ -936,6 +955,10 @@ const ITSMDashboard = () => {
 
     const hasRows = ticketsCache.entityKey === key && ticketsCache.tickets.length > 0;
     if (hasRows) {
+      setTickets(ticketsCache.tickets);
+      setActiveEnvironment(ticketsCache.activeEnvironment);
+      setKissflowBaseUrl(ticketsCache.kissflowBaseUrl);
+      setLastFetchedAt(ticketsCache.fetchedAt);
       setLoading(false);
       setRefreshing(true);
     } else {
@@ -964,6 +987,43 @@ const ITSMDashboard = () => {
     }
 
     ticketsInflight = (async () => {
+      // Count-first: if session cache matches Kissflow fingerprint, skip heavy /reports.
+      if (hasRows && !force) {
+        try {
+          const countRes = await axios.get(`${ITSM_API}/itsm/reports/count`, {
+            ...getAuthHeader(),
+            params: { entity },
+            timeout: 60000,
+          });
+          const remoteCount = Number(countRes.data?.count);
+          const remoteEnv = countRes.data?.activeEnvironment || '';
+          const remoteBase = countRes.data?.kissflowBaseUrl || '';
+          const sameHost =
+            ticketsCache.activeEnvironment === remoteEnv
+            && ticketsCache.kissflowBaseUrl === remoteBase;
+          const countMatch =
+            Number.isFinite(remoteCount)
+            && !countRes.data?.reportError
+            && remoteCount === ticketsCache.tickets.length;
+          // Kissflow `/count` returns only {"count":"N"} — match on count alone.
+          if (sameHost && countMatch) {
+            ticketsCache.fetchedAt = Date.now();
+            ticketsCache.ticketIds = ticketIdsFingerprint(ticketsCache.tickets);
+            persistTicketsCache();
+            return {
+              skippedFull: true,
+              activeEnvironment: remoteEnv,
+              kissflowBaseUrl: remoteBase,
+              reportError: countRes.data?.reportError || null,
+              count: remoteCount,
+              tickets: ticketsCache.tickets,
+            };
+          }
+        } catch (err) {
+          // Count probe failed — fall through to full reports.
+        }
+      }
+
       const res = await axios.get(`${ITSM_API}/itsm/reports`, {
         ...getAuthHeader(),
         params: { entity },
@@ -1001,6 +1061,7 @@ const ITSMDashboard = () => {
       const fetchedAt = Date.now();
       ticketsCache.entityKey = key;
       ticketsCache.tickets = nextTickets;
+      ticketsCache.ticketIds = ticketIdsFingerprint(nextTickets);
       ticketsCache.activeEnvironment = nextEnv;
       ticketsCache.kissflowBaseUrl = nextBase;
       ticketsCache.fetchedAt = fetchedAt;
@@ -1042,7 +1103,8 @@ const ITSMDashboard = () => {
     }
     const hasCache = ticketsCache.entityKey === entityKey && ticketsCache.tickets.length > 0;
     fetchTickets({
-      force: true,
+      // First visit / after create: full load. Returning with cache: count-first.
+      force: shouldRefresh || !hasCache,
       silent: hasCache && !shouldRefresh,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1052,7 +1114,8 @@ const ITSMDashboard = () => {
     const maybeRefresh = () => {
       if (!entityKey) return;
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      fetchTickets({ force: true, silent: true });
+      // Count-first on focus — full /reports only when Kissflow count/ids changed.
+      fetchTickets({ force: false, silent: true });
     };
     window.addEventListener('focus', maybeRefresh);
     document.addEventListener('visibilitychange', maybeRefresh);
