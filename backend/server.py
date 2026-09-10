@@ -17,7 +17,7 @@ import hmac
 import ipaddress
 
 from services.email_service import send_email, build_access_request_email, build_request_status_email, build_sync_report_email
-from services.adrenalin_sync import sync_employees
+from services.adrenalin_sync import sync_employees, resolve_hr_sync_org_id, hr_test_org_ids, primary_hr_org_id
 from services.kissflow_scim_client import (
     sync_to_kissflow,
     push_single_user_to_kissflow,
@@ -62,13 +62,23 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 scheduler = AsyncIOScheduler()
 
 async def scheduled_hr_sync():
-    """Run Adrenalin HR sync for all organizations that have it configured"""
+    """Run Adrenalin HR sync for the primary org only (not test / empty-catalog orgs)."""
     logger = logging.getLogger("hr_sync")
     logger.info("Starting scheduled HR sync...")
-    orgs = await db.organizations.find({"adrenalin_sync_enabled": True}, {"_id": 0}).to_list(100)
-    if not orgs:
-        # Default: sync for Refex org
-        orgs = await db.organizations.find({}, {"_id": 0}).to_list(1)
+    primary = primary_hr_org_id()
+    test_ids = hr_test_org_ids()
+    if primary:
+        orgs = await db.organizations.find({"id": primary}, {"_id": 0}).to_list(1)
+        if not orgs:
+            orgs = [{"id": primary}]
+    else:
+        orgs = await db.organizations.find({"adrenalin_sync_enabled": True}, {"_id": 0}).to_list(100)
+        orgs = [o for o in orgs if o.get("id") not in test_ids]
+        if not orgs:
+            orgs = await db.organizations.find(
+                {"id": {"$nin": list(test_ids)}} if test_ids else {},
+                {"_id": 0},
+            ).to_list(1)
     for org in orgs:
         try:
             result = await sync_employees(db, org["id"])
@@ -3295,23 +3305,45 @@ async def get_audit_summary(user: dict = Depends(get_current_user)):
 
 # ===================== APP LAUNCHER / CATALOG ROUTES =====================
 
+async def _org_ids_with_launcher_apps() -> set:
+    """Org ids that actually have SAML/OIDC/mobile apps to launch."""
+    orgs = set()
+    for coll in (db.saml_apps, db.oidc_apps, db.mobile_apps):
+        ids = await coll.distinct("org_id")
+        orgs.update(oid for oid in ids if oid)
+    return orgs
+
+
+def _launcher_inactive(app_doc: dict) -> bool:
+    status = (app_doc.get("status") or "active").strip().lower()
+    return status in ("inactive", "disabled", "deleted")
+
+
 @api_router.get("/launcher/apps")
 async def get_user_apps(request: Request, user: dict = Depends(get_current_user)):
-    """Get all apps the user has access to"""
-    org_id = user['org_id']
-    
-    # Get all SAML apps (exclude hidden ones)
-    saml_apps = await db.saml_apps.find({"org_id": org_id, "status": "active", "show_in_launcher": {"$ne": False}}, {"_id": 0, "private_key": 0, "certificate": 0}).to_list(100)
-    # Get all OIDC apps  
-    oidc_apps = await db.oidc_apps.find({"org_id": org_id, "status": "active"}, {"_id": 0, "client_secret": 0}).to_list(100)
-    # Get all Mobile apps
-    mobile_apps = await db.mobile_apps.find({"org_id": org_id, "status": "active"}, {"_id": 0}).to_list(100)
-    
+    """Return all launcher apps. Not filtered by user.org_id (single-tenant).
+
+    Users in a company org with no catalog (e.g. venwindrefex.com Azure sync)
+    otherwise get [] even though Kissflow/OIDC apps exist on the primary org.
+    """
+    saml_apps = await db.saml_apps.find(
+        {"show_in_launcher": {"$ne": False}},
+        {"_id": 0, "private_key": 0, "certificate": 0},
+    ).to_list(500)
+    oidc_apps = await db.oidc_apps.find(
+        {"show_in_launcher": {"$ne": False}},
+        {"_id": 0, "client_secret": 0},
+    ).to_list(500)
+    mobile_apps = await db.mobile_apps.find(
+        {"show_in_launcher": {"$ne": False}},
+        {"_id": 0},
+    ).to_list(500)
+
     accessible_apps = []
-    
-    # Get usage counts per app for this user (from audit logs)
+    seen_ids = set()
+
     usage_pipeline = [
-        {"$match": {"org_id": org_id, "user_id": user["id"], "action": {"$in": ["saml_sso_initiated", "oidc_auth_started"]}}},
+        {"$match": {"user_id": user["id"], "action": {"$in": ["saml_sso_initiated", "oidc_auth_started"]}}},
         {"$group": {"_id": "$resource_id", "count": {"$sum": 1}, "last_used": {"$max": "$timestamp"}}},
     ]
     usage_cursor = db.audit_logs.aggregate(usage_pipeline)
@@ -3328,7 +3360,20 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
             return is_admin_role  # only admins can launch restricted apps
         return True  # restricted OFF → everyone allowed
 
+    def take_app(app_doc):
+        app_id = app_doc.get("id")
+        if not app_id or app_id in seen_ids:
+            return False
+        if app_doc.get("show_in_launcher") is False:
+            return False
+        if _launcher_inactive(app_doc):
+            return False
+        seen_ids.add(app_id)
+        return True
+
     for app in saml_apps:
+        if not take_app(app):
+            continue
         has_access = resolve_access(app)
         allowed, reason = await check_access_policies(user, app, request)
         usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
@@ -3354,6 +3399,8 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
         })
     
     for app in oidc_apps:
+        if not take_app(app):
+            continue
         has_access = resolve_access(app)
         allowed, reason = await check_access_policies(user, app, request)
         usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
@@ -3377,6 +3424,8 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
         })
 
     for app in mobile_apps:
+        if not take_app(app):
+            continue
         has_access = resolve_access(app)
         allowed, reason = await check_access_policies(user, app, request)
         usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
@@ -3401,10 +3450,95 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
         })
     
     # Sort by category order, then sort_order within category
-    category_order = {"Expense": 0, "Productivity": 1, "Facility": 2, "Reports": 3, "Support": 4}
+    category_order = {"Expense": 0, "Productivity": 1, "Facility": 2, "Reports": 3, "Support": 4, "HR": 5}
     accessible_apps.sort(key=lambda a: (category_order.get(a.get("category", ""), 99), a.get("sort_order", 99)))
     
     return accessible_apps
+
+@api_router.get("/launcher/coverage")
+async def launcher_coverage(
+    email: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    """Count active users whose org has no launcher apps (empty AppLauncher)."""
+    if user.get("role") not in ("org_admin", "owner", "admin", "super_admin"):
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    app_orgs = await _org_ids_with_launcher_apps()
+    app_orgs_list = sorted(app_orgs)
+
+    saml_n = await db.saml_apps.count_documents({"org_id": {"$in": app_orgs_list}} ) if app_orgs_list else 0
+    oidc_n = await db.oidc_apps.count_documents({"org_id": {"$in": app_orgs_list}} ) if app_orgs_list else 0
+    mobile_n = await db.mobile_apps.count_documents({"org_id": {"$in": app_orgs_list}} ) if app_orgs_list else 0
+
+    empty_org_filter = {"status": "active"}
+    if app_orgs_list:
+        empty_org_filter["org_id"] = {"$nin": app_orgs_list}
+
+    affected_total = await db.users.count_documents(empty_org_filter)
+
+    domain_pipeline = [
+        {"$match": empty_org_filter},
+        {"$project": {
+            "domain": {
+                "$toLower": {
+                    "$arrayElemAt": [{"$split": [{"$ifNull": ["$email", ""]}, "@"]}, 1]
+                }
+            },
+            "org_id": 1,
+        }},
+        {"$group": {"_id": "$domain", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]
+    by_domain = []
+    async for row in db.users.aggregate(domain_pipeline):
+        by_domain.append({"domain": row.get("_id") or "(none)", "count": row.get("count", 0)})
+
+    org_pipeline = [
+        {"$match": empty_org_filter},
+        {"$group": {"_id": "$org_id", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]
+    by_org = []
+    async for row in db.users.aggregate(org_pipeline):
+        oid = row.get("_id")
+        org = await db.organizations.find_one({"id": oid}, {"_id": 0, "name": 1, "domain": 1}) if oid else None
+        by_org.append({
+            "org_id": oid,
+            "org_name": (org or {}).get("name"),
+            "org_domain": (org or {}).get("domain"),
+            "count": row.get("count", 0),
+        })
+
+    example = None
+    lookup_email = normalize_email(email or "dilli.s@venwindrefex.com")
+    example_user = await db.users.find_one(
+        {"email": {"$regex": f"^{re.escape(lookup_email)}$", "$options": "i"}},
+        {"_id": 0, "id": 1, "email": 1, "name": 1, "org_id": 1, "status": 1, "source": 1, "role": 1},
+    )
+    if example_user:
+        example_org = await db.organizations.find_one(
+            {"id": example_user.get("org_id")}, {"_id": 0, "name": 1, "domain": 1}
+        )
+        example = {
+            **example_user,
+            "org_name": (example_org or {}).get("name"),
+            "org_has_apps": example_user.get("org_id") in app_orgs,
+            "launcher_would_be_empty_before_fix": example_user.get("org_id") not in app_orgs,
+        }
+
+    venwind = next((d["count"] for d in by_domain if d["domain"] == "venwindrefex.com"), 0)
+
+    return {
+        "issue": "GET /launcher/apps was scoped to user.org_id; orgs with no app catalog returned []",
+        "orgs_with_apps": app_orgs_list,
+        "apps_in_those_orgs": {"saml": saml_n, "oidc": oidc_n, "mobile": mobile_n},
+        "affected_active_users": affected_total,
+        "affected_venwindrefex_com": venwind,
+        "affected_by_domain": by_domain,
+        "affected_by_org": by_org,
+        "example_user": example,
+    }
 
 @api_router.get("/catalog/apps")
 async def get_app_catalog(user: dict = Depends(get_current_user)):
@@ -3667,32 +3801,42 @@ async def update_access_request(request_id: str, body: dict, user: dict = Depend
 
 @api_router.post("/hr-sync/trigger")
 async def trigger_hr_sync(background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
-    """Admin manually triggers HR sync"""
+    """Admin manually triggers HR sync.
+
+    Always writes into PRIMARY_HR_ORG_ID when set so a later midnight sync
+    cannot recreate users on an org that has no launcher apps.
+    """
     if user.get("role") != "org_admin":
         raise HTTPException(status_code=403, detail="Only admins can trigger HR sync")
 
-    result = await sync_employees(db, user["org_id"], skip_kissflow=True)
+    sync_org = resolve_hr_sync_org_id(user.get("org_id") or "")
+    if not sync_org:
+        raise HTTPException(status_code=400, detail="No HR sync organization configured")
+    if sync_org in hr_test_org_ids():
+        raise HTTPException(status_code=400, detail="HR sync is disabled for the test organization")
+
+    result = await sync_employees(db, sync_org, skip_kissflow=True)
 
     if result.get("errors") and not result.get("total"):
         raise HTTPException(status_code=502, detail=result["errors"][0])
 
     # Log the sync
     log_doc = {
-        "org_id": user["org_id"],
+        "org_id": sync_org,
         "triggered_by": user["id"],
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "result": result,
     }
     await db.hr_sync_logs.insert_one(log_doc)
 
-    # Enable adrenalin sync for this org
+    # Enable adrenalin sync for the catalog org (not a test / empty-apps org)
     await db.organizations.update_one(
-        {"id": user["org_id"]},
+        {"id": sync_org},
         {"$set": {"adrenalin_sync_enabled": True}}
     )
 
     if result.get("created") or result.get("updated") or result.get("disabled"):
-        background_tasks.add_task(_push_kissflow_scim_background, user["org_id"])
+        background_tasks.add_task(_push_kissflow_scim_background, sync_org)
 
     return result
 

@@ -20,6 +20,76 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 logger = logging.getLogger(__name__)
 
 
+def primary_hr_org_id() -> str:
+    """Refex Industries org that owns the launcher app catalog."""
+    return (os.environ.get("PRIMARY_HR_ORG_ID") or "").strip()
+
+
+def hr_test_org_ids() -> set:
+    raw = os.environ.get("HR_TEST_ORG_IDS") or ""
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def resolve_hr_sync_org_id(requested_org_id: str = "") -> str:
+    """Always sync into the primary org when set; never into test orgs."""
+    primary = primary_hr_org_id()
+    requested = (requested_org_id or "").strip()
+    test_ids = hr_test_org_ids()
+    if primary:
+        return primary
+    if requested and requested not in test_ids:
+        return requested
+    return requested
+
+
+async def _find_existing_hr_user(db, org_id: str, email: str, emp_id: str):
+    """Match an IAM user in this org first, then any org (Azure / other-company login).
+
+    Cross-org match prevents HR sync from creating a second account and leaving the
+    original one (e.g. dilli.s@venwindrefex.com) on an org with no launcher apps.
+    """
+    import re as _re
+
+    test_ids = list(hr_test_org_ids())
+
+    async def _by_emp(scope_org=None, skip_test=False):
+        if not emp_id:
+            return None
+        query = {"adrenalin_employee_id": emp_id}
+        if scope_org:
+            query["org_id"] = scope_org
+        elif skip_test and test_ids:
+            query["org_id"] = {"$nin": test_ids}
+        return await db.users.find_one(query, {"_id": 0})
+
+    async def _by_email(scope_org=None, skip_test=False):
+        if not email:
+            return None
+        query = {"email": email}
+        if scope_org:
+            query["org_id"] = scope_org
+        elif skip_test and test_ids:
+            query["org_id"] = {"$nin": test_ids}
+        found = await db.users.find_one(query, {"_id": 0})
+        if found:
+            return found
+        query = {"email": {"$regex": f"^{_re.escape(email)}$", "$options": "i"}}
+        if scope_org:
+            query["org_id"] = scope_org
+        elif skip_test and test_ids:
+            query["org_id"] = {"$nin": test_ids}
+        return await db.users.find_one(query, {"_id": 0})
+
+    return (
+        await _by_emp(org_id)
+        or await _by_email(org_id)
+        or await _by_emp(skip_test=True)
+        or await _by_email(skip_test=True)
+        or await _by_emp()
+        or await _by_email()
+    )
+
+
 def _get_config():
     load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)
     base_url = (os.environ.get("ADRENALIN_BASE_URL") or "").strip().rstrip("/")
@@ -207,7 +277,8 @@ async def sync_employees(db, org_id: str, *, skip_kissflow: bool = False) -> dic
     - Existing employees -> update ALL HR fields
     - Resolves L1 Manager (supervisor) and L2 Manager (supervisor's supervisor) emails
     """
-    result = {"created": 0, "disabled": 0, "updated": 0, "skipped": 0, "total": 0, "errors": []}
+    org_id = resolve_hr_sync_org_id(org_id)
+    result = {"created": 0, "disabled": 0, "updated": 0, "skipped": 0, "total": 0, "errors": [], "org_id": org_id}
 
     try:
         token = await get_adrenalin_token()
@@ -235,22 +306,8 @@ async def sync_employees(db, org_id: str, *, skip_kissflow: bool = False) -> dic
             full_name = f"{hr['first_name']} {hr['last_name']}".strip()
             is_active = _is_employment_active(hr)
 
-            existing_user = None
             emp_id = hr["adrenalin_employee_id"]
-            if emp_id:
-                existing_user = await db.users.find_one(
-                    {"org_id": org_id, "adrenalin_employee_id": emp_id},
-                    {"_id": 0},
-                )
-            if not existing_user:
-                existing_user = await db.users.find_one({"email": email, "org_id": org_id}, {"_id": 0})
-            # Defensive: legacy users may have mixed-case emails — try case-insensitive
-            if not existing_user:
-                import re as _re
-                existing_user = await db.users.find_one(
-                    {"email": {"$regex": f"^{_re.escape(email)}$", "$options": "i"}, "org_id": org_id},
-                    {"_id": 0},
-                )
+            existing_user = await _find_existing_hr_user(db, org_id, email, emp_id)
 
             # Common HR fields to store on every user
             hr_update = {
@@ -310,6 +367,9 @@ async def sync_employees(db, org_id: str, *, skip_kissflow: bool = False) -> dic
                     result["updated"] += 1
             else:
                 if is_active:
+                    if org_id in hr_test_org_ids():
+                        result["skipped"] += 1
+                        continue
                     new_user = {
                         "id": str(uuid.uuid4()),
                         "email": email,

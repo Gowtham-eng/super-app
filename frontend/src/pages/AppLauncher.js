@@ -566,7 +566,10 @@ const AppLauncher = () => {
       (a.description || '').toLowerCase().includes(search.toLowerCase()) ||
       (a.category || '').toLowerCase().includes(search.toLowerCase());
     if (!matchesSearch) return false;
-    if (activeFilter === 'All') return a.category !== 'Reports';
+    if (activeFilter === 'All') {
+      if (a.type === 'oidc') return true;
+      return a.category !== 'Reports';
+    }
     return a.category === activeFilter;
   });
 
