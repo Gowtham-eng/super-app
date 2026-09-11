@@ -33,6 +33,57 @@ export const mapEntityFromUser = (user) => {
 export const locationFromUser = (user) =>
   (user?.location || user?.office_location || user?.branch_code || '').trim();
 
+export const isRefexEntity = (entity = '') => normalize(entity) === 'refex';
+
+export const normalizeNonRefexEntityKey = (value = '') => {
+  const token = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_\n.-]+/g, '');
+  if (!token) return '';
+  if (token.startsWith('extrovis')) return 'Extrovis';
+  if (token.startsWith('modepro')) return 'ModePro';
+  if (token.startsWith('kavis')) return 'Kavis';
+  if (token.startsWith('pharma')) return 'Pharma Pack';
+  return String(value || '').trim();
+};
+
+export const normalizeNonRefexLocationKey = (value = '') => {
+  let token = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s._-]+/g, '');
+  if (!token) return '';
+  token = token.replace(/iii$/, '3').replace(/ii$/, '2').replace(/i$/, '1');
+  return token;
+};
+
+export const matchLocationOption = (userLocation = '', options = []) => {
+  const key = normalizeNonRefexLocationKey(userLocation);
+  if (!key) return '';
+  return options.find((opt) => normalizeNonRefexLocationKey(opt) === key) || '';
+};
+
+export const locationsForEntity = (rows = [], entity = '') => {
+  const key = normalizeNonRefexEntityKey(entity);
+  const filtered = key
+    ? rows.filter(
+        (row) => normalizeNonRefexEntityKey(row.entityKey || row.entity) === key
+      )
+    : rows;
+  const seen = new Set();
+  const out = [];
+  for (const row of filtered) {
+    const location = String(row?.location || '').trim();
+    if (!location) continue;
+    const matchKey = normalizeNonRefexLocationKey(location);
+    if (seen.has(matchKey)) continue;
+    seen.add(matchKey);
+    out.push(location);
+  }
+  return out;
+};
+
 export const profileFromUser = (user) => {
   const first = (user?.first_name || user?.firstName || '').trim();
   const last = (user?.last_name || user?.lastName || '').trim();

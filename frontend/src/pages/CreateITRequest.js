@@ -8,6 +8,9 @@ import { getApiErrorMessage } from '../utils/apiError';
 import {
   ITSM_ENTITIES,
   PROFILE_STORAGE_KEY,
+  isRefexEntity,
+  locationFromUser,
+  matchLocationOption,
   mergeEntityOptions,
   mergeItsmProfile,
 } from '../utils/itsmEntity';
@@ -90,8 +93,6 @@ const LOCATION_OPTIONS = [
 
 const normalizeKey = (value = '') => value.trim().toLowerCase().replace(/\s+/g, ' ');
 
-const isRefexEntity = (entity = '') => normalizeKey(entity) === 'refex';
-
 const isAllowedTicketType = (ticketType = '') =>
   ALLOWED_TICKET_TYPES.includes(normalizeKey(ticketType));
 
@@ -154,6 +155,10 @@ const CreateITRequest = () => {
 
   const [records, setRecords] = useState([]);
   const [entityOptions, setEntityOptions] = useState(ITSM_ENTITIES);
+  const [locationCatalog, setLocationCatalog] = useState([]);
+  const [loadingLocations, setLoadingLocations] = useState(false);
+  const [locationsReady, setLocationsReady] = useState(false);
+  const [locationError, setLocationError] = useState('');
 
   const [profile, setProfile] = useState(() => mergeItsmProfile(user));
 
@@ -184,6 +189,12 @@ const CreateITRequest = () => {
 
   const isRefex = isRefexEntity(profile.entity);
   const useManualCascade = !isRefex && manualEdit;
+  const locationOptions = useMemo(() => {
+    if (isRefex) return LOCATION_OPTIONS;
+    return locationCatalog
+      .map((row) => String(row?.location || '').trim())
+      .filter(Boolean);
+  }, [isRefex, locationCatalog]);
 
   /** Quick Search + non-Refex cascade: Refex entity rows, Incident / Service Request only. */
   const entityRecords = useMemo(
@@ -423,7 +434,8 @@ const CreateITRequest = () => {
         name: next.name || prev.name,
         email: next.email || prev.email,
         entity: next.entity || prev.entity,
-        location: next.location || prev.location,
+        // Keep an already-chosen location; catalog attach owns non-Refex matching.
+        location: prev.location || next.location,
       };
     });
   }, [user]);
@@ -433,6 +445,68 @@ const CreateITRequest = () => {
     fetchMatrix(profile.entity.trim());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile.entity]);
+
+  useEffect(() => {
+    const entity = profile.entity.trim();
+    if (!entity) return;
+    if (isRefexEntity(entity)) {
+      setLocationCatalog([]);
+      setLocationError('');
+      setLoadingLocations(false);
+      setLocationsReady(true);
+      return;
+    }
+
+    let cancelled = false;
+    const loadLocations = async () => {
+      setLoadingLocations(true);
+      setLocationError('');
+      setLocationsReady(false);
+      try {
+        const res = await axios.get(`${itsmApi}/itsm/non-refex-locations`, {
+          ...getAuthHeader(),
+          params: { entity },
+        });
+        if (cancelled) return;
+        setLocationCatalog(Array.isArray(res.data?.locations) ? res.data.locations : []);
+      } catch (err) {
+        if (cancelled) return;
+        setLocationCatalog([]);
+        setLocationError(
+          getApiErrorMessage(err, 'Unable to load locations for this entity. Please retry.')
+        );
+      } finally {
+        if (!cancelled) {
+          setLoadingLocations(false);
+          setLocationsReady(true);
+        }
+      }
+    };
+    loadLocations();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile.entity]);
+
+  useEffect(() => {
+    if (isRefex || !locationsReady || loadingLocations) return;
+    setProfile((prev) => {
+      const alreadyValid = matchLocationOption(prev.location, locationOptions);
+      if (alreadyValid) {
+        if (alreadyValid === prev.location) return prev;
+        const next = { ...prev, location: alreadyValid };
+        persistProfile(next);
+        return next;
+      }
+      const fromLogin = matchLocationOption(locationFromUser(user), locationOptions);
+      const nextLocation = fromLogin || '';
+      if (prev.location === nextLocation) return prev;
+      const next = { ...prev, location: nextLocation };
+      persistProfile(next);
+      return next;
+    });
+  }, [isRefex, locationsReady, loadingLocations, locationOptions, user]);
 
   useEffect(() => {
     if (isRefex) setManualEdit(false);
@@ -834,29 +908,39 @@ const CreateITRequest = () => {
               )}
               <InlineField icon={MapPin} label="Location" required>
                 <select
-                  value={LOCATION_OPTIONS.includes(profile.location) ? profile.location : ''}
+                  value={locationOptions.includes(profile.location) ? profile.location : ''}
                   onChange={(e) => updateProfileField('location', e.target.value)}
                   className="input-brutalist w-full mb-2"
                   data-testid="itsm-inline-location-select"
+                  disabled={!isRefex && loadingLocations}
                 >
-                  <option value="">Select location</option>
-                  {LOCATION_OPTIONS.map((opt) => (
+                  <option value="">
+                    {!isRefex && loadingLocations ? 'Loading locations…' : 'Select location'}
+                  </option>
+                  {locationOptions.map((opt) => (
                     <option key={opt} value={opt}>{opt}</option>
                   ))}
                 </select>
-                <input
-                  value={profile.location}
-                  onChange={(e) => updateProfileField('location', e.target.value)}
-                  placeholder="Or type a custom location"
-                  list="itsm-location-suggestions"
-                  className="input-brutalist w-full"
-                  data-testid="itsm-inline-location"
-                />
-                <datalist id="itsm-location-suggestions">
-                  {LOCATION_OPTIONS.map((opt) => (
-                    <option key={opt} value={opt} />
-                  ))}
-                </datalist>
+                {isRefex && (
+                  <>
+                    <input
+                      value={profile.location}
+                      onChange={(e) => updateProfileField('location', e.target.value)}
+                      placeholder="Or type a custom location"
+                      list="itsm-location-suggestions"
+                      className="input-brutalist w-full"
+                      data-testid="itsm-inline-location"
+                    />
+                    <datalist id="itsm-location-suggestions">
+                      {LOCATION_OPTIONS.map((opt) => (
+                        <option key={opt} value={opt} />
+                      ))}
+                    </datalist>
+                  </>
+                )}
+                {!isRefex && locationError && (
+                  <p className="mt-2 text-xs text-red-600">{locationError}</p>
+                )}
               </InlineField>
             </div>
           </section>

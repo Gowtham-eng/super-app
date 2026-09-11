@@ -80,6 +80,74 @@ ENTITY_WEBHOOK_PATHS = {
     ),
 }
 ENTITY_OPTIONS_FALLBACK = ["Refex", "Extrovis", "ModePro", "Kavis", "Pharma Pack"]
+NON_REFEX_LOCATION_DATAFORM_ID = "Non_Refex_Location_Dataform_A00"
+_LOCATION_CACHE: Dict[str, Tuple[float, List[Dict[str, str]]]] = {}
+_LOCATION_CACHE_TTL_SEC = 10 * 60
+
+
+def normalize_non_refex_entity_key(value: str) -> str:
+    token = re.sub(r"[\s_\n.-]+", "", (value or "").strip().lower())
+    if not token:
+        return ""
+    if token.startswith("extrovis"):
+        return "Extrovis"
+    if token.startswith("modepro"):
+        return "ModePro"
+    if token.startswith("kavis"):
+        return "Kavis"
+    if token.startswith("pharma"):
+        return "Pharma Pack"
+    return (value or "").strip()
+
+
+def normalize_non_refex_location_key(value: str) -> str:
+    token = re.sub(r"[\s._-]+", "", (value or "").strip().lower())
+    if not token:
+        return ""
+    token = re.sub(r"iii$", "3", token)
+    token = re.sub(r"ii$", "2", token)
+    token = re.sub(r"i$", "1", token)
+    return token
+
+
+def parse_non_refex_location_rows(payload: Any) -> List[Dict[str, str]]:
+    if isinstance(payload, dict):
+        rows = payload.get("Data") or payload.get("data") or payload.get("Values") or []
+    elif isinstance(payload, list):
+        rows = payload
+    else:
+        rows = []
+    seen: Set[str] = set()
+    out: List[Dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        entity = _as_string(row.get("Entity") or row.get("entity"))
+        location = _as_string(row.get("Location_1") or row.get("Location") or row.get("location"))
+        if not entity or not location:
+            continue
+        entity_key = normalize_non_refex_entity_key(entity)
+        match_key = normalize_non_refex_location_key(location)
+        dedupe = f"{entity_key}::{match_key}"
+        if dedupe in seen:
+            continue
+        seen.add(dedupe)
+        out.append({
+            "id": _as_string(row.get("_id")) or dedupe,
+            "entity": entity.strip(),
+            "entityKey": entity_key,
+            "location": location,
+        })
+    return out
+
+
+def locations_for_entity(rows: List[Dict[str, str]], entity: str) -> List[Dict[str, str]]:
+    key = normalize_non_refex_entity_key(entity)
+    if not key:
+        return list(rows or [])
+    return [row for row in (rows or []) if row.get("entityKey") == key]
+
+
 EXTROVIS_PROCESS_ID = os.environ.get(
     "ITSM_EXTROVIS_PROCESS_ID", "Live_IT_Service_Request_Extrovis_A00"
 )
@@ -3702,6 +3770,71 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "error": str(exc),
                 **user_profile,
             }
+
+    async def _fetch_non_refex_locations(cfg: Dict[str, Any]) -> List[Dict[str, str]]:
+        cache_key = (
+            f"{cfg.get('kissflow_base_url')}|{cfg.get('account_id')}|"
+            f"{NON_REFEX_LOCATION_DATAFORM_ID}|{cfg.get('application_id')}"
+        )
+        cached = _LOCATION_CACHE.get(cache_key)
+        if cached and (time.monotonic() - cached[0]) < _LOCATION_CACHE_TTL_SEC:
+            return list(cached[1])
+
+        path = (
+            f"/form/2/{cfg['account_id']}/{NON_REFEX_LOCATION_DATAFORM_ID}/allitems/list"
+            f"?apply_preference=true&page_number=1&page_size=100"
+            f"&_application_id={cfg['application_id']}"
+        )
+        url = f"{cfg['kissflow_base_url']}{path}"
+        headers = _kissflow_headers(cfg)
+        last_error: Optional[Exception] = None
+        payload: Any = None
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for method in ("POST", "GET"):
+                try:
+                    response = await client.request(method, url, headers=headers, json={} if method == "POST" else None)
+                    if response.status_code >= 400:
+                        last_error = HTTPException(
+                            status_code=502,
+                            detail=(
+                                f"Failed to load non-Refex locations from Kissflow "
+                                f"(HTTP {response.status_code}). Check Live access keys in ITSM Setup."
+                            ),
+                        )
+                        continue
+                    payload = response.json()
+                    break
+                except HTTPException as exc:
+                    last_error = exc
+                except Exception as exc:
+                    last_error = exc
+        if payload is None:
+            if isinstance(last_error, HTTPException):
+                raise last_error
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to load non-Refex locations: {last_error}",
+            )
+        rows = parse_non_refex_location_rows(payload)
+        _LOCATION_CACHE[cache_key] = (time.monotonic(), rows)
+        return list(rows)
+
+    @api_router.get("/itsm/non-refex-locations")
+    async def get_non_refex_locations(
+        entity: Optional[str] = Query(None),
+        user: dict = Depends(get_current_user),
+    ):
+        """Live Kissflow Non_Refex_Location_Dataform_A00 — uses existing ITSM Setup keys."""
+        org_id = user.get("org_id") or ""
+        cfg = await _resolve_config(org_id, entity, force_env="live")
+        rows = await _fetch_non_refex_locations(cfg)
+        filtered = locations_for_entity(rows, entity or "")
+        return {
+            "locations": filtered,
+            "allLocations": rows,
+            "resolved_entity": entity,
+            "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
+        }
 
     @api_router.get("/itsm/approval-matrix")
     async def get_approval_matrix(

@@ -3,8 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { Loader2, MessageCircle, Send, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { API } from '../config/api';
-import { mergeItsmProfile } from '../utils/itsmEntity';
+import { API, ITSM_API } from '../config/api';
+import {
+  isRefexEntity,
+  locationFromUser,
+  locationsForEntity,
+  matchLocationOption,
+  mergeItsmProfile,
+} from '../utils/itsmEntity';
 import { getApiErrorMessage } from '../utils/apiError';
 
 const FALLBACK_MAIN = ['Expense', 'Travel', 'IT HelpDesk', 'Policies'];
@@ -65,6 +71,7 @@ const RefexionsChat = () => {
   const [mainMessage, setMainMessage] = useState('Please choose from the following');
   const [mainOptions, setMainOptions] = useState(FALLBACK_MAIN);
   const [itDraft, setItDraft] = useState({ description: '', subType: '', entity: '', location: '' });
+  const [nonRefexLocations, setNonRefexLocations] = useState([]);
   const [policyDraft, setPolicyDraft] = useState(null);
   const scrollerRef = useRef(null);
   const inputRef = useRef(null);
@@ -123,7 +130,49 @@ const RefexionsChat = () => {
 
   const goMain = () => resetToMain(mainOptions, mainMessage);
 
-  const startItHelpdesk = () => {
+  const locationChipsFor = (entity, rows = nonRefexLocations) => {
+    if (!entity || isRefexEntity(entity)) return LOCATION_CHIPS;
+    return locationsForEntity(rows, entity);
+  };
+
+  const resolveItLocation = (entity, preferred, rows = nonRefexLocations) => {
+    if (!entity || isRefexEntity(entity)) return preferred || '';
+    const options = locationsForEntity(rows, entity);
+    return (
+      matchLocationOption(preferred, options) ||
+      matchLocationOption(locationFromUser(user), options) ||
+      ''
+    );
+  };
+
+  const loadNonRefexLocations = async (entity) => {
+    if (!entity || isRefexEntity(entity)) return [];
+    const res = await axios.get(`${ITSM_API}/itsm/non-refex-locations`, {
+      ...getAuthHeader(),
+      params: { entity },
+    });
+    const rows = Array.isArray(res.data?.locations) ? res.data.locations : [];
+    setNonRefexLocations(rows);
+    return rows;
+  };
+
+  const askItLocationOrReason = (entity, rows, preferred) => {
+    const resolved = resolveItLocation(entity, preferred, rows);
+    if (resolved) {
+      setItDraft((prev) => ({ ...prev, entity, location: resolved }));
+      setStep('it_reason');
+      setChips([BACK]);
+      push(botMsg('Describe the issue in one or two sentences.'));
+      return;
+    }
+    const chipsForEntity = locationChipsFor(entity, rows);
+    setItDraft((prev) => ({ ...prev, entity, location: '' }));
+    setStep('it_location');
+    setChips([BACK, ...chipsForEntity]);
+    push(botMsg('Which office / location should we use?', chipsForEntity));
+  };
+
+  const startItHelpdesk = async () => {
     const entity = profile.entity || '';
     const location = profile.location || '';
     setItDraft({ description: '', subType: '', entity, location });
@@ -134,15 +183,15 @@ const RefexionsChat = () => {
       push(botMsg('Which company is this ticket for?', entityChips));
       return;
     }
-    if (!location) {
-      setStep('it_location');
-      setChips([BACK, ...LOCATION_CHIPS]);
-      push(botMsg('Which office / location should we use?', LOCATION_CHIPS));
-      return;
+    setBusy(true);
+    try {
+      const rows = await loadNonRefexLocations(entity);
+      askItLocationOrReason(entity, rows, location);
+    } catch {
+      askItLocationOrReason(entity, [], location);
+    } finally {
+      setBusy(false);
     }
-    setStep('it_reason');
-    setChips([BACK]);
-    push(botMsg('Describe the issue in one or two sentences.'));
   };
 
   const runItMatch = async (description, entity, location) => {
@@ -307,17 +356,12 @@ const RefexionsChat = () => {
     if (step === 'it_entity') {
       const entity = matched || value;
       push(userMsg(entity));
-      const next = { ...itDraft, entity };
-      setItDraft(next);
-      if (!next.location) {
-        setStep('it_location');
-        setChips([BACK, ...LOCATION_CHIPS]);
-        push(botMsg('Which office / location should we use?', LOCATION_CHIPS));
-        return;
-      }
-      setStep('it_reason');
-      setChips([BACK]);
-      push(botMsg('Describe the issue in one or two sentences.'));
+      setItDraft((prev) => ({ ...prev, entity }));
+      setBusy(true);
+      loadNonRefexLocations(entity)
+        .then((rows) => askItLocationOrReason(entity, rows, itDraft.location || profile.location))
+        .catch(() => askItLocationOrReason(entity, [], itDraft.location || profile.location))
+        .finally(() => setBusy(false));
       return;
     }
 
