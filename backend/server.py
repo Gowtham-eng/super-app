@@ -18,6 +18,7 @@ import ipaddress
 
 from services.email_service import send_email, build_access_request_email, build_request_status_email, build_sync_report_email
 from services.adrenalin_sync import sync_employees, resolve_hr_sync_org_id, hr_test_org_ids, primary_hr_org_id
+from services.launcher_access import is_reports_app, user_can_see_reports
 from services.kissflow_scim_client import (
     sync_to_kissflow,
     push_single_user_to_kissflow,
@@ -29,6 +30,7 @@ from services.kissflow_scim_client import (
 from services.app_update import get_app_update_config, save_app_update_config, evaluate_update, effective_ios_store_url
 from services.oidc_crypto import get_jwks, sign_oidc_jwt, normalize_issuer, decode_oidc_jwt
 from routes import scim as scim_router_module
+from routes.user_master import register_user_master_routes
 from routes.itsm import register_itsm_routes
 from routes.azure_ad import register_azure_ad_routes
 from routes.google_oauth import register_google_oauth_routes
@@ -644,12 +646,15 @@ def generate_saml_metadata(app: dict, base_url: str) -> str:
 #    
 #    return False
 async def check_user_app_access(user: dict, app: dict) -> bool:
-    """Restricted-flag access model (aligned with launcher resolve_access).
+    """Launcher / SSO access model.
 
+    - Reports (and NE embed dashboards) → chief-position users only
     - restricted=True  → org_admin / owner / admin only
-    - restricted=False → all org users
+    - restricted=False → all users
     approved_user_ids / group assignments are NOT consulted for launch or SSO.
     """
+    if is_reports_app(app):
+        return user_can_see_reports(user)
     is_admin_role = user.get('role') in ('org_admin', 'owner', 'admin')
     if app.get('restricted'):
         return is_admin_role
@@ -2935,42 +2940,47 @@ async def oidc_authorize(
     base_url = get_public_base_url(request)
     
     if token:
+        user = None
         try:
             payload = decode_token(token)
             user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0})
-            if user:
-                # User is authenticated - generate authorization code
-                auth_code = str(uuid.uuid4()).replace('-', '')
-                
-                # Store auth code in DB with expiry
-                await db.oidc_auth_codes.insert_one({
-                    "code": auth_code,
-                    "client_id": client_id,
-                    "app_id": app.get('id'),
-                    "user_id": user['id'],
-                    "email": user['email'],
-                    "name": user.get('name', user.get('full_name', '')),
-                    "org_id": user.get('org_id', ''),
-                    "redirect_uri": redirect_uri,
-                    "scope": scope,
-                    "nonce": nonce,
-                    "created_at": datetime.now(timezone.utc),
-                    "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
-                    "used": False,
-                })
-                
-                # Redirect back to the app with authorization code
-                separator = '&' if '?' in redirect_uri else '?'
-                redirect_url = f"{redirect_uri}{separator}code={auth_code}"
-                if state:
-                    redirect_url += f"&state={state}"
-                
-                return Response(
-                    status_code=302,
-                    headers={"Location": redirect_url}
-                )
+        except HTTPException:
+            raise
         except Exception:
-            pass  # Token invalid, show login page
+            user = None  # Token invalid, show login page
+        if user:
+            if not await check_user_app_access(user, app):
+                raise HTTPException(status_code=403, detail="You don't have access to this application")
+            # User is authenticated - generate authorization code
+            auth_code = str(uuid.uuid4()).replace('-', '')
+
+            # Store auth code in DB with expiry
+            await db.oidc_auth_codes.insert_one({
+                "code": auth_code,
+                "client_id": client_id,
+                "app_id": app.get('id'),
+                "user_id": user['id'],
+                "email": user['email'],
+                "name": user.get('name', user.get('full_name', '')),
+                "org_id": user.get('org_id', ''),
+                "redirect_uri": redirect_uri,
+                "scope": scope,
+                "nonce": nonce,
+                "created_at": datetime.now(timezone.utc),
+                "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+                "used": False,
+            })
+
+            # Redirect back to the app with authorization code
+            separator = '&' if '?' in redirect_uri else '?'
+            redirect_url = f"{redirect_uri}{separator}code={auth_code}"
+            if state:
+                redirect_url += f"&state={state}"
+
+            return Response(
+                status_code=302,
+                headers={"Location": redirect_url}
+            )
     
     # No valid session - show login page that will redirect back after auth
     # Build the authorize URL to come back to after login
@@ -3353,9 +3363,13 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
 
     # Admin/owner bypass the per-app restricted toggle; everyone else is blocked when restricted=True.
     # When restricted=False, everyone has access (group/role assignments are no longer required).
+    # Reports tiles are visible only to chief-position users.
     is_admin_role = user.get('role') in ('org_admin', 'owner', 'admin')
+    can_see_reports = user_can_see_reports(user)
 
     def resolve_access(app_doc):
+        if is_reports_app(app_doc):
+            return can_see_reports
         if app_doc.get('restricted'):
             return is_admin_role  # only admins can launch restricted apps
         return True  # restricted OFF → everyone allowed
@@ -3367,6 +3381,8 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
         if app_doc.get("show_in_launcher") is False:
             return False
         if _launcher_inactive(app_doc):
+            return False
+        if is_reports_app(app_doc) and not can_see_reports:
             return False
         seen_ids.add(app_id)
         return True
@@ -3546,15 +3562,18 @@ async def get_app_catalog(user: dict = Depends(get_current_user)):
     org_id = user['org_id']
     
     saml_apps = await db.saml_apps.find({"org_id": org_id, "status": "active"}, 
-                                         {"_id": 0, "id": 1, "name": 1, "description": 1, "logo_url": 1, 
+                                         {"_id": 0, "id": 1, "name": 1, "description": 1, "logo_url": 1, "category": 1, "home_url": 1,
                                           "allowed_group_ids": 1, "allowed_role_ids": 1, "approved_user_ids": 1}).to_list(100)
     oidc_apps = await db.oidc_apps.find({"org_id": org_id, "status": "active"},
-                                         {"_id": 0, "id": 1, "name": 1, "description": 1, "logo_url": 1,
+                                         {"_id": 0, "id": 1, "name": 1, "description": 1, "logo_url": 1, "category": 1, "home_url": 1,
                                           "allowed_group_ids": 1, "allowed_role_ids": 1, "approved_user_ids": 1}).to_list(100)
     
     catalog = []
+    can_see_reports = user_can_see_reports(user)
     
     for app in saml_apps:
+        if is_reports_app(app) and not can_see_reports:
+            continue
         has_access = await check_user_app_access(user, app)
         # requires_approval is always true - explicit assignment needed
         catalog.append({
@@ -3568,6 +3587,8 @@ async def get_app_catalog(user: dict = Depends(get_current_user)):
         })
     
     for app in oidc_apps:
+        if is_reports_app(app) and not can_see_reports:
+            continue
         has_access = await check_user_app_access(user, app)
         catalog.append({
             "id": app['id'],
@@ -4187,6 +4208,15 @@ register_google_oauth_routes(
     normalize_email=normalize_email,
     jwt_secret=JWT_SECRET,
     public_url=PUBLIC_URL,
+)
+
+# User Master API for other clients (Bearer / X-API-Key)
+register_user_master_routes(
+    app,
+    api_router,
+    get_current_user,
+    db,
+    get_public_base_url,
 )
 
 # Include router

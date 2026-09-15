@@ -14,6 +14,9 @@ import {
   itsmKissflowFallbackReason,
   resolveKissflowLaunchApp,
   shouldHijackItsmLaunch,
+  filterReportsForUser,
+  isReportsLauncherApp,
+  userCanSeeReports,
 } from '../utils/launcherApps';
 import { toast } from 'sonner';
 import { Search, Lock, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight, Headphones, Loader2, BarChart3 } from 'lucide-react';
@@ -189,12 +192,18 @@ const AppLauncher = () => {
   const [now, setNow] = useState(new Date());
   const [activeFilter, setActiveFilter] = useState('All');
   const [itsmChecking, setItsmChecking] = useState(false);
+  const visibleApps = filterReportsForUser(apps, user);
+  const canSeeReports = userCanSeeReports(user);
+  const hasReports = canSeeReports && visibleApps.some((a) => a.category === 'Reports' || isNeEmbedApp(a));
 
   useEffect(() => { fetchApps(); }, []);
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 30000); // refresh every 30s
     return () => clearInterval(t);
   }, []);
+  useEffect(() => {
+    if (activeFilter === 'Reports' && !hasReports) setActiveFilter('All');
+  }, [activeFilter, hasReports]);
 
   // SSO error redirects from /api/saml/.../complete (missing/invalid token, etc.)
   useEffect(() => {
@@ -561,14 +570,16 @@ const AppLauncher = () => {
     }
   };
 
-  const filtered = apps.filter(a => {
+  const filtered = visibleApps.filter(a => {
     const matchesSearch = a.name.toLowerCase().includes(search.toLowerCase()) ||
       (a.description || '').toLowerCase().includes(search.toLowerCase()) ||
       (a.category || '').toLowerCase().includes(search.toLowerCase());
     if (!matchesSearch) return false;
     if (activeFilter === 'All') {
-      if (a.type === 'oidc') return true;
-      return a.category !== 'Reports';
+      return !isReportsLauncherApp(a);
+    }
+    if (activeFilter === 'Reports') {
+      return isReportsLauncherApp(a);
     }
     return a.category === activeFilter;
   });
@@ -577,6 +588,8 @@ const AppLauncher = () => {
   const grouped = {};
   if (activeFilter === 'All') {
     if (filtered.length > 0) grouped['All'] = filtered;
+  } else if (activeFilter === 'Reports') {
+    if (filtered.length > 0) grouped['Reports'] = filtered;
   } else {
     for (const cat of CATEGORY_ORDER) {
       const catApps = filtered.filter(a => a.category === cat);
@@ -680,7 +693,7 @@ const AppLauncher = () => {
       </div>
 
       {/* Category Filter Pills */}
-      <div className="hidden sm:flex items-center gap-2 mb-8 overflow-x-auto pb-1" data-testid="category-filters">
+      <div className="flex items-center gap-2 mb-6 sm:mb-8 overflow-x-auto pb-1" data-testid="category-filters">
         {[
           { key: 'All', label: 'All', icon: LayoutGrid, dot: '#10B981' },
           { key: 'Expense', label: 'Expense', icon: FileText, dot: '#F59E0B' },
@@ -688,7 +701,7 @@ const AppLauncher = () => {
           { key: 'Facility', label: 'Facility', icon: Building2, dot: '#3B82F6' },
           { key: 'Reports', label: 'Reports', icon: BarChart3, dot: '#14B8A6' },
           { key: 'Support', label: 'HR', icon: Heart, dot: '#F43F5E' },
-        ].map(f => {
+        ].filter((f) => f.key !== 'Reports' || hasReports).map(f => {
           const FilterIcon = f.icon;
           const isActive = activeFilter === f.key;
           return (

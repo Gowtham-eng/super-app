@@ -5,6 +5,11 @@ import {
   resolveKissflowLaunchApp,
   isKissflowApiOk,
   itsmKissflowFallbackReason,
+  userCanSeeReports,
+  userCanSeeKissflow,
+  filterLauncherAppsForUser,
+  isChiefPosition,
+  shouldShowOnAllTab,
 } from './launcherApps';
 
 const EMS = {
@@ -77,5 +82,35 @@ describe('launcher ITSM vs Reports vs EMS', () => {
     const hit = resolveKissflowLaunchApp([EMS, ITSM_SAML], VIRTUAL);
     expect(hit).toBe(ITSM_SAML);
     expect(hit.home_url).not.toContain('EMS_001_A00');
+  });
+});
+
+describe('Reports and Kissflow visibility', () => {
+  const rows = [EMS, ITSM_SAML, ITSM_OIDC, VIRTUAL, { id: 'r1', name: 'Consolidated Usage Report', category: 'Reports' }];
+
+  it('shows Reports only for chief-position users', () => {
+    expect(isChiefPosition({ designation: 'Chief Executive Officer' })).toBe(true);
+    expect(isChiefPosition({ designation: 'CEO' })).toBe(true);
+    expect(isChiefPosition({ job_title: 'Chief Financial Officer' })).toBe(true);
+    expect(isChiefPosition({ designation: 'Manager' })).toBe(false);
+    expect(isChiefPosition({ title: 'Mr.' })).toBe(false);
+    expect(userCanSeeReports({ designation: 'Chief Operating Officer' })).toBe(true);
+    expect(userCanSeeReports({ email: 'anyone@refex.co.in', designation: 'Analyst' })).toBe(false);
+    expect(userCanSeeReports({ role: 'org_admin', designation: 'Analyst' })).toBe(false);
+  });
+
+  it('keeps Reports tiles off the All tab', () => {
+    expect(shouldShowOnAllTab(ITSM_OIDC)).toBe(false);
+    expect(shouldShowOnAllTab({ id: 'r1', category: 'Reports' })).toBe(false);
+    expect(shouldShowOnAllTab(EMS)).toBe(true);
+    expect(shouldShowOnAllTab(ITSM_SAML)).toBe(true);
+  });
+
+  it('shows Kissflow apps for dinesh@refex.co.in like other users', () => {
+    expect(userCanSeeKissflow({ email: 'dinesh@refex.co.in' })).toBe(true);
+    const dinesh = filterLauncherAppsForUser(rows, { email: 'dinesh@refex.co.in', designation: 'Chief Executive Officer' }).map((a) => a.id);
+    expect(dinesh).toEqual(['saml-ems', 'saml-itsm', 'oidc-itsm', 'itsm-inapp', 'r1']);
+    const other = filterLauncherAppsForUser(rows, { email: 'anyone@refex.co.in', designation: 'Analyst' }).map((a) => a.id);
+    expect(other).toEqual(['saml-ems', 'saml-itsm', 'itsm-inapp']);
   });
 });

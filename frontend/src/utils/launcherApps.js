@@ -63,6 +63,65 @@ function usableLauncherApp(app) {
   );
 }
 
+const HONORIFIC_TITLE_RE = /^(mr|mrs|ms|miss|dr|sir|madam|mx)\.?$/i;
+const CHIEF_TITLE_RE = /\bchief\b|\bceo\b|\bcfo\b|\bcoo\b|\bcto\b|\bcio\b|\bcmo\b|\bchro\b|\bciso\b|\bcxo\b/i;
+
+export function isReportsLauncherApp(app = {}) {
+  if ((app.category || '').trim() === 'Reports') return true;
+  return isNeEmbedApp(app);
+}
+
+/** Reports stay on the Reports tab — never mix them into All Apps. */
+export function shouldShowOnAllTab(app = {}) {
+  return !isReportsLauncherApp(app);
+}
+
+function jobTitleFromUser(user = {}) {
+  for (const key of ['designation', 'job_title', 'position']) {
+    const title = String(user?.[key] || '').trim();
+    if (title) return title;
+  }
+  const title = String(user?.title || '').trim();
+  if (title && !HONORIFIC_TITLE_RE.test(title)) return title;
+  return '';
+}
+
+export function isChiefPosition(user = {}) {
+  const parts = [jobTitleFromUser(user), user?.designation, user?.job_title, user?.position];
+  const title = String(user?.title || '').trim();
+  if (title && !HONORIFIC_TITLE_RE.test(title)) parts.push(title);
+  const blob = parts.filter(Boolean).join(' ');
+  return Boolean(blob) && CHIEF_TITLE_RE.test(blob);
+}
+
+export function userCanSeeReports(user = {}) {
+  return isChiefPosition(user);
+}
+
+export function userCanSeeKissflow(_user = {}) {
+  return true;
+}
+
+export function isKissflowLauncherApp(app = {}) {
+  if (isReportsLauncherApp(app)) return false;
+  if (isKissflowApp(app)) return true;
+  if ((app.id || '') === ITSM_VIRTUAL_ID) return true;
+  return isItsmNamedApp(app);
+}
+
+export function filterLauncherAppsForUser(apps, user) {
+  const list = Array.isArray(apps) ? apps : [];
+  return list.filter((app) => {
+    if (isReportsLauncherApp(app) && !userCanSeeReports(user)) return false;
+    return true;
+  });
+}
+
+/** @deprecated use filterLauncherAppsForUser */
+export function filterReportsForUser(apps, user) {
+  return filterLauncherAppsForUser(apps, user);
+}
+
 /**
  * Resolve which Kissflow SAML app the virtual ITSM tile should open.
  * Prefer the tapped app, then an ITSM-named Kissflow SAML row — never the first

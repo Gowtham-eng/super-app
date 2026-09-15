@@ -26,10 +26,16 @@ const SCIMSetup = () => {
   const [logsLoading, setLogsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('outbound');
 
+  const [umTokens, setUmTokens] = useState([]);
+  const [umNewToken, setUmNewToken] = useState(null);
+  const [umLabel, setUmLabel] = useState('');
+  const [umCreating, setUmCreating] = useState(false);
+
   useEffect(() => {
     fetchTokens();
     fetchKfConfig();
     fetchSyncLogs();
+    fetchUmTokens();
   }, []);
 
   const fetchTokens = async () => {
@@ -174,13 +180,49 @@ const SCIMSetup = () => {
     toast.success('Copied to clipboard');
   };
 
+  const fetchUmTokens = async () => {
+    try {
+      const res = await axios.get(`${API}/user-master/tokens`, getAuthHeader());
+      setUmTokens(res.data);
+    } catch (err) {
+      console.error('Failed to load User Master API tokens');
+    }
+  };
+
+  const generateUmToken = async () => {
+    if (!umLabel.trim()) { toast.error('Enter a label for the token'); return; }
+    setUmCreating(true);
+    try {
+      const res = await axios.post(`${API}/user-master/tokens`, { label: umLabel.trim() }, getAuthHeader());
+      setUmNewToken(res.data);
+      setUmLabel('');
+      fetchUmTokens();
+      toast.success('User Master API token created');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to create token');
+    } finally {
+      setUmCreating(false);
+    }
+  };
+
+  const revokeUmToken = async (tokenId) => {
+    if (!window.confirm('Revoke this token? Any client using it will lose access.')) return;
+    try {
+      await axios.delete(`${API}/user-master/tokens/${tokenId}`, getAuthHeader());
+      toast.success('Token revoked');
+      fetchUmTokens();
+    } catch (err) {
+      toast.error('Failed to revoke token');
+    }
+  };
+
   if (loading || kfConfigLoading) return <div className="flex items-center justify-center h-64"><div className="spinner" /></div>;
 
   return (
     <div className="animate-fadeIn" data-testid="scim-setup-page">
       <div className="mb-6">
         <h1 className="font-heading text-2xl sm:text-3xl font-semibold text-slate-900 mb-1">SCIM User Provisioning</h1>
-        <p className="text-sm text-slate-400">Manage inbound SCIM tokens and outbound Kissflow user sync.</p>
+        <p className="text-sm text-slate-400">Manage inbound SCIM tokens, User Master API access for other clients, and outbound Kissflow user sync.</p>
       </div>
 
       {/* Tab Navigation */}
@@ -200,6 +242,14 @@ const SCIMSetup = () => {
         >
           <Key size={14} className="inline mr-1.5 -mt-0.5" />
           Inbound SCIM Tokens
+        </button>
+        <button
+          onClick={() => setActiveTab('user-master')}
+          data-testid="tab-user-master"
+          className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${activeTab === 'user-master' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+        >
+          <ExternalLink size={14} className="inline mr-1.5 -mt-0.5" />
+          User Master API
         </button>
       </div>
 
@@ -540,6 +590,124 @@ const SCIMSetup = () => {
                     <button
                       onClick={() => revokeToken(t.id)}
                       data-testid={`revoke-${t.id}`}
+                      className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'user-master' && (
+        <div className="space-y-6">
+          <div className="bg-teal-50 border border-teal-200 rounded-xl p-5" data-testid="user-master-guide">
+            <h3 className="font-semibold text-teal-800 text-sm mb-2 flex items-center gap-2">
+              <Shield size={16} /> User Master API for other clients
+            </h3>
+            <p className="text-sm text-teal-700 mb-3">
+              External apps can read the same employee directory as User Master. No passwords are returned.
+            </p>
+            <ol className="text-sm text-teal-700 space-y-2 list-decimal list-inside">
+              <li>Generate a token below (or set <code className="bg-white px-1 rounded">USER_MASTER_API_KEY</code> on the server)</li>
+              <li>Call <code className="bg-white px-1 rounded">GET /api/v1/user-master</code> with <code className="bg-white px-1 rounded">Authorization: Bearer &lt;token&gt;</code></li>
+              <li>Optional filters: <code className="bg-white px-1 rounded">email</code>, <code className="bg-white px-1 rounded">employee_id</code>, <code className="bg-white px-1 rounded">status</code>, <code className="bg-white px-1 rounded">q</code>, <code className="bg-white px-1 rounded">page</code></li>
+              <li>Single user: <code className="bg-white px-1 rounded">GET /api/v1/user-master/&#123;id-or-email&#125;</code></li>
+            </ol>
+          </div>
+
+          <div className="bg-white rounded-xl border border-slate-200 p-5">
+            <h2 className="font-heading font-semibold text-slate-800 mb-3">Generate API Token</h2>
+            <div className="flex gap-3">
+              <input
+                type="text"
+                value={umLabel}
+                onChange={(e) => setUmLabel(e.target.value)}
+                placeholder="Token label (e.g., Notification Engine)"
+                className="flex-1 px-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                data-testid="um-token-label-input"
+              />
+              <button
+                onClick={generateUmToken}
+                disabled={umCreating}
+                data-testid="um-generate-token-btn"
+                className="inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50"
+              >
+                <Plus size={16} /> {umCreating ? 'Creating...' : 'Generate'}
+              </button>
+            </div>
+          </div>
+
+          {umNewToken && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-5" data-testid="um-new-token-display">
+              <h3 className="font-semibold text-amber-800 text-sm mb-3">New Token Created - Copy Now!</h3>
+              <p className="text-xs text-amber-600 mb-3">This token will only be shown once. Copy it now.</p>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-slate-500 block mb-1">API Base URL</label>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 bg-white px-3 py-2 rounded-lg text-sm border border-amber-200 break-all" data-testid="um-base-url">
+                      {umNewToken.api_base_url}
+                    </code>
+                    <button onClick={() => copyToClipboard(umNewToken.api_base_url)} className="p-2 hover:bg-amber-100 rounded-lg">
+                      <Copy size={16} className="text-amber-600" />
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-500 block mb-1">Bearer Token</label>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 bg-white px-3 py-2 rounded-lg text-sm border border-amber-200 break-all font-mono" data-testid="um-bearer-token">
+                      {umNewToken.token}
+                    </code>
+                    <button onClick={() => copyToClipboard(umNewToken.token)} className="p-2 hover:bg-amber-100 rounded-lg">
+                      <Copy size={16} className="text-amber-600" />
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-500 block mb-1">Example</label>
+                  <code className="block bg-white px-3 py-2 rounded-lg text-xs border border-amber-200 break-all font-mono">
+                    {`curl -H "Authorization: Bearer ${umNewToken.token}" ${umNewToken.api_base_url}`}
+                  </code>
+                </div>
+              </div>
+              <button onClick={() => setUmNewToken(null)} className="mt-3 text-xs text-amber-600 hover:text-amber-800">
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          <div className="bg-white rounded-xl border border-slate-200">
+            <div className="px-5 py-4 border-b border-slate-100">
+              <h2 className="font-heading font-semibold text-slate-800">Active Tokens</h2>
+            </div>
+            {umTokens.length === 0 ? (
+              <div className="p-8 text-center text-slate-400 text-sm">
+                <Key size={32} className="mx-auto mb-3 text-slate-300" />
+                No User Master API tokens yet. Generate one for the other client.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {umTokens.map((t) => (
+                  <div key={t.id} className="px-5 py-4 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-slate-800 flex items-center gap-2">
+                        <Key size={14} className="text-teal-500" />
+                        {t.label}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Created {new Date(t.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
+                        <ExternalLink size={10} /> {t.api_base_url}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => revokeUmToken(t.id)}
                       className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                     >
                       <Trash2 size={16} />
