@@ -355,6 +355,7 @@ export default function CommentAttachmentPreview({
               <img
                 src={href}
                 alt={label}
+                referrerPolicy="no-referrer"
                 className="h-auto max-h-[min(78dvh,820px)] w-auto max-w-full object-contain"
               />
             ) : kind === 'pdf' && objectUrl ? (
@@ -405,14 +406,15 @@ export default function CommentAttachmentPreview({
           event.stopPropagation();
         }}
         onClick={show}
-        className="relative z-20 block cursor-pointer overflow-hidden rounded-md border border-slate-200 bg-white text-left shadow-sm hover:ring-2 hover:ring-teal-500"
+        className="relative z-20 block shrink-0 cursor-pointer overflow-hidden rounded-md border border-slate-200 bg-white text-left shadow-sm hover:ring-2 hover:ring-teal-500 max-xl:min-h-[4.5rem] max-xl:min-w-[4.5rem]"
       >
         {image && thumbUrl && !failed ? (
           <img
             src={thumbUrl}
             alt={label}
+            referrerPolicy="no-referrer"
             draggable={false}
-            className="pointer-events-none h-24 w-24 object-cover"
+            className="pointer-events-none h-24 w-24 object-cover max-xl:h-[4.5rem] max-xl:w-[4.5rem]"
             onError={() => setFailed(true)}
           />
         ) : (

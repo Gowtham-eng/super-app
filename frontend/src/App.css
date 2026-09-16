@@ -281,6 +281,23 @@ button:not(.btn-primary):not(.btn-secondary):not(.btn-danger):not(.btn-ghost):no
   max-width: 56rem;
 }
 
+/* Mobile/tablet cards only — desktop MIS table conversation stays unchanged. */
+@media (max-width: 1279px) {
+  .itsm-conversation {
+    overflow: visible;
+    max-width: 100%;
+  }
+  .itsm-thread {
+    max-height: min(28rem, 60dvh);
+    overflow-x: visible;
+  }
+  .itsm-conversation [data-testid="itsm-comment-attachment"] {
+    flex-shrink: 0;
+    min-width: 4.5rem;
+    min-height: 4.5rem;
+  }
+}
+
 .itsm-thread {
   position: relative;
   background: #f8fafc;

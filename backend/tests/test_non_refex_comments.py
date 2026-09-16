@@ -10,6 +10,7 @@ from routes.itsm import (
     _normalize_comment_channel,
     _parse_agent_solutions,
     _parse_comment_attachments,
+    _parse_report_ticket,
     _ticket_webhook_body,
     _uses_extrovis_flow,
     REPORT_FIELD_IDS,
@@ -33,18 +34,110 @@ def test_help_desk_shows_user_comments_only():
     rows = [
         {"comment": "agent note", "commentsType": "External"},
         {"comment": "employee note", "commentsType": "User"},
+        {"comment": "user comments alias", "commentsType": "User Comments"},
+        {"comment": "employee alias", "commentsType": "Employee"},
         {"comment": "old note", "commentsType": ""},
         {"comment": "internal note", "commentsType": "Internal"},
     ]
     visible = _employee_visible_comments(rows, "Extrovis")
     texts = [row["comment"] for row in visible]
-    assert texts == ["employee note"]
+    assert texts == ["employee note", "user comments alias", "employee alias"]
     assert [row["comment"] for row in _employee_visible_comments(rows, "Refex")] == [
         "agent note",
         "employee note",
+        "user comments alias",
+        "employee alias",
         "old note",
         "internal note",
     ]
+
+
+def test_keeps_all_user_comments_when_attachment_table_is_shorter():
+    field_ids = REPORT_FIELD_IDS["extrovis"]
+    data = {
+        "Column_qr_9gP_vE5": [
+            {"Name_1": "Vishnu", "Resolution": "hi how r u", "Comments_2": "User"},
+            {"Name_1": "Aasik", "Resolution": "ya fine", "Comments_2": "User Comments"},
+            {"Name_1": "Aasik", "Resolution": "i have attached the screenshot", "Comments_2": "User"},
+            {"Name_1": "Agent", "Resolution": "internal only", "Comments_2": "Internal"},
+        ],
+        "Table::IT__Agent_Solution": {
+            "0": {
+                "_id": "IT__Agent_Solution_aaaaaaaaaa",
+                "Name_1": "Aasik",
+                "Resolution": "i have attached the screenshot",
+                "Comments_2": "User",
+                "Attachments": [{"id": "Attach_1", "name": "shot.png", "key": "k1"}],
+            }
+        },
+    }
+    parsed = _parse_agent_solutions(data, field_ids, requester_name="Aasik")
+    visible = _employee_visible_comments(parsed, "Extrovis")
+    texts = [row["comment"] for row in visible]
+    assert texts == [
+        "hi how r u",
+        "ya fine",
+        "i have attached the screenshot",
+    ]
+    attached = next(row for row in visible if "attached" in row["comment"])
+    assert attached["id"] == "IT__Agent_Solution_aaaaaaaaaa"
+    assert attached["attachments"][0]["name"] == "shot.png"
+    assert all(_normalize_comment_channel(row["commentsType"]) == "User" for row in visible)
+
+
+def test_numeric_nested_table_keeps_attachments():
+    field_ids = REPORT_FIELD_IDS["extrovis"]
+    data = {
+        "Column_qr_9gP_vE5": [
+            {"Name_1": "Aasik", "Resolution": "i have attached the screenshot", "Comments_2": "User"},
+        ],
+        "Table::IT__Agent_Solution": {
+            "0": {
+                "_id": "IT__Agent_Solution_aaaaaaaaaa",
+                "Name_1": "Aasik",
+                "Resolution": "i have attached the screenshot",
+                "Comments_2": "User",
+                "Attachments": [{"id": "Attach_1", "name": "shot.png", "key": "k1"}],
+            }
+        },
+    }
+    parsed = _parse_agent_solutions(data, field_ids, requester_name="Aasik")
+    assert len(parsed) == 1
+    assert parsed[0]["id"] == "IT__Agent_Solution_aaaaaaaaaa"
+    assert parsed[0]["attachments"][0]["name"] == "shot.png"
+
+
+def test_merge_keeps_files_when_refresh_returns_text_only():
+    text_only = {
+        "id": "solution-8",
+        "comment": "i have attached the screesnhot for your reference",
+        "attachments": [],
+    }
+    with_files = {
+        "id": "IT__Agent_Solution_aaaaaaaaaa",
+        "comment": "i have attached the screesnhot for your reference",
+        "attachments": [{"name": "shot.png", "key": "k1"}],
+    }
+    merged = _merge_comment_lists([text_only], [with_files])
+    assert len(merged) == 1
+    assert merged[0]["attachments"][0]["name"] == "shot.png"
+    field_ids = REPORT_FIELD_IDS["extrovis"]
+    data = {
+        "Table::IT__Agent_Solution": [
+            {
+                "_id": "IT__Agent_Solution_aaaaaaaaaa",
+                "Name_1": "Aasik",
+                "Resolution": "",
+                "Comments_2": "User",
+                "Attachments": [{"id": "Attach_1", "name": "shot.png", "key": "k1"}],
+            }
+        ]
+    }
+    parsed = _parse_agent_solutions(data, field_ids, requester_name="Aasik")
+    assert len(parsed) == 1
+    assert parsed[0]["comment"] == ""
+    assert parsed[0]["commentsType"] == "User"
+    assert parsed[0]["attachments"][0]["name"] == "shot.png"
 
 
 def test_parse_keeps_attachment_only_rows():
@@ -223,3 +316,25 @@ def test_non_refex_webhook_includes_subject():
         subject="ignored",
     )
     assert "Subject" not in refex
+
+
+def test_extrovis_report_ticket_includes_subject():
+    parsed = _parse_report_ticket(
+        {
+            "Column_HEiwMtIBBO": "Laptop is not working",
+            "Column_AS7UbLz7Mg": "screen flicker",
+            "_id": "PkSubjectRow",
+        },
+        [],
+        0,
+        "Extrovis",
+    )
+    assert parsed["subject"] == "Laptop is not working"
+    assert parsed["description"] == "screen flicker"
+    refex = _parse_report_ticket(
+        {"Description": "vpn down", "Subject": "ignored"},
+        [],
+        0,
+        "Refex",
+    )
+    assert refex.get("subject", "") == ""

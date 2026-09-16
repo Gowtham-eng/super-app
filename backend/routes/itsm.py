@@ -23,6 +23,19 @@ from pydantic import BaseModel, EmailStr, Field
 
 logger = logging.getLogger("itsm")
 
+try:
+    from starlette.formparsers import MultiPartParser
+
+    # Phone camera photos are often 6–12MB. Default Starlette/nginx 1MB spool
+    # returns 413 before Kissflow upload. Desktop file-picker images stay small.
+    MultiPartParser.spool_max_size = 25 * 1024 * 1024
+    if hasattr(MultiPartParser, "max_file_size"):
+        MultiPartParser.max_file_size = 25 * 1024 * 1024
+    if hasattr(MultiPartParser, "max_part_size"):
+        MultiPartParser.max_part_size = 25 * 1024 * 1024
+except Exception:
+    pass
+
 # Skip Mongo after first failure so ITSM routes don't stack serverSelection timeouts.
 _ITSM_DB_DOWN_UNTIL = 0.0
 _ITSM_DB_CIRCUIT_SEC = float(os.environ.get("MONGO_CIRCUIT_BREAKER_SEC", "90") or "90")
@@ -283,6 +296,8 @@ def _merge_comment_lists(*groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             if empty_text and not files:
                 continue
             cid = str(row.get("id") or row.get("recordId") or "").strip()
+            if _is_synthetic_comment_id(cid):
+                cid = ""
             text_key = "" if empty_text else text.lower()
             token = cid or text_key
             if not token:
@@ -316,6 +331,9 @@ def _attach_ledger_comments(
 ) -> List[Dict[str, Any]]:
     return _merge_comment_lists(comments or [], _ledger_comments(environment, instance_id))
 
+
+COMMENT_ATTACHMENT_MAX_BYTES = 1 * 1024 * 1024
+COMMENT_ATTACHMENT_LIMIT_MSG = "File limit is 1MB only"
 
 LOCAL_TICKETS = "itsm_local_tickets"
 VERIFY_ATTEMPTS = 3
@@ -1225,6 +1243,8 @@ async def _upload_comment_attachments(
         file_name = _safe_upload_file_name(file.filename or "file")
         mime_type = (file.content_type or "application/octet-stream").strip() or "application/octet-stream"
         content = await file.read()
+        if len(content) > COMMENT_ATTACHMENT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail=COMMENT_ATTACHMENT_LIMIT_MSG)
         attach_id = f"Attach_{uuid.uuid4().hex[:10]}"
         key = "/".join(
             [
@@ -1821,6 +1841,7 @@ REPORT_FIELD_IDS = {
         "solution_table_datetime": ["Column_R_u4Nyl5q_", "ITAgentDate_Time", "Date_Time"],
         "solution_table_stages": ["Column_EA6Nomn1w4", "Stages_1", "Stages"],
         "solution_table_comments_type": ["Column_x6WUN8QD4O", "Comments_2"],
+        "solution_table_attachments": ["Attachments", "Column_zXMX1EDrCx"],
         "subject": ["Column_HEiwMtIBBO", "Subject"],
     },
 }
@@ -1904,20 +1925,75 @@ def _is_step_field_row(row: Dict[str, Any]) -> bool:
 
 
 def _unwrap_table_rows(value: Any) -> List[Dict[str, Any]]:
-    if value is None or value == "" or value == "—":
+    if value is None or value == "" or value == "—" or isinstance(value, str):
         return []
     rows: List[Dict[str, Any]] = []
     if isinstance(value, list):
         rows = [row for row in value if isinstance(row, dict)]
     elif isinstance(value, dict):
-        for key in ("Values", "values", "Data", "data", "Items", "items"):
+        for key in ("Values", "values", "Data", "data", "Items", "items", "Rows", "rows"):
             nested = value.get(key)
             if isinstance(nested, list):
                 rows = [row for row in nested if isinstance(row, dict)]
                 break
-        if not rows and any(k in value for k in ("Resolution", "Name_1", "Name", "_id")):
+            if isinstance(nested, dict) and nested is not value:
+                nested_rows = _unwrap_table_rows(nested)
+                if nested_rows:
+                    rows = nested_rows
+                    break
+        if not rows:
+            numeric = sorted(
+                (key for key in value.keys() if str(key).isdigit()),
+                key=lambda key: int(str(key)),
+            )
+            if numeric:
+                rows = [value[key] for key in numeric if isinstance(value.get(key), dict)]
+        if not rows and any(
+            key in value for key in ("Resolution", "Name_1", "Name", "_id", "Attachments", "attachments")
+        ):
             rows = [value]
     return [row for row in rows if not _is_step_field_row(row)]
+
+
+def _agent_solution_table_candidates(data: Dict[str, Any], field_ids: Dict[str, List[str]]) -> List[Any]:
+    found: List[Any] = []
+    raw = _raw_field(data, *field_ids.get("solution_table", []))
+    if raw not in (None, "", [], {}):
+        found.append(raw)
+    for key in ("Table::IT__Agent_Solution", "IT__Agent_Solution", "table::IT__Agent_Solution"):
+        value = data.get(key)
+        if value not in (None, "", [], {}):
+            found.append(value)
+    inner = data.get("Data") if isinstance(data.get("Data"), dict) else None
+    if inner:
+        for key in ("Table::IT__Agent_Solution", "IT__Agent_Solution"):
+            value = inner.get(key)
+            if value not in (None, "", [], {}):
+                found.append(value)
+    return found
+
+
+def _is_synthetic_comment_id(cid: str) -> bool:
+    token = (cid or "").strip()
+    return (not token) or token.startswith("local-") or bool(re.fullmatch(r"solution-\d+", token, re.I))
+
+
+def _all_agent_solution_table_rows(
+    data: Dict[str, Any],
+    field_ids: Dict[str, List[str]],
+) -> List[List[Dict[str, Any]]]:
+    """Every nested-table copy Kissflow returned (Column_* and Table::)."""
+    groups: List[List[Dict[str, Any]]] = []
+    seen: Set[int] = set()
+    for raw in _agent_solution_table_candidates(data, field_ids):
+        marker = id(raw)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        rows = _unwrap_table_rows(raw)
+        if rows:
+            groups.append(rows)
+    return groups
 
 
 def _pick_row_field(row: Dict[str, Any], *candidates: str) -> Any:
@@ -2072,13 +2148,53 @@ def _as_attachment_list(raw: Any) -> List[Dict[str, Any]]:
     if not raw:
         return []
     if isinstance(raw, dict):
-        nested = raw.get("Data") or raw.get("data") or raw.get("Items") or raw.get("items")
+        nested = raw.get("Data") or raw.get("data") or raw.get("Items") or raw.get("items") or raw.get("Values") or raw.get("values")
         if isinstance(nested, list):
             return [item for item in nested if _looks_like_attachment_file(item)]
+        if isinstance(nested, dict) and nested is not raw:
+            nested_list = _as_attachment_list(nested)
+            if nested_list:
+                return nested_list
+        numeric = sorted(
+            (key for key in raw.keys() if str(key).isdigit()),
+            key=lambda key: int(str(key)),
+        )
+        if numeric:
+            return [raw[key] for key in numeric if _looks_like_attachment_file(raw.get(key))]
         return [raw] if _looks_like_attachment_file(raw) else []
     if isinstance(raw, list):
         return [item for item in raw if _looks_like_attachment_file(item)]
     return []
+
+
+def _parse_comment_attachments(
+    row: Dict[str, Any],
+    field_ids: Optional[Dict[str, List[str]]] = None,
+) -> List[Dict[str, Any]]:
+    """Kissflow nested rows store files on Attachments or a Column_* id — scan both."""
+    if not isinstance(row, dict):
+        return []
+    keys: List[str] = []
+    if field_ids:
+        keys.extend(field_ids.get("solution_table_attachments") or [])
+    keys.extend(["Attachments", "attachments"])
+    found: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    for key in keys:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        found = _as_attachment_list(row.get(key))
+        if found:
+            break
+    if not found:
+        for key, value in row.items():
+            if str(key) in seen:
+                continue
+            found = _as_attachment_list(value)
+            if found:
+                break
+    return [_normalize_comment_attachment(item) for item in found]
 
 
 def _normalize_comment_attachment(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -2104,19 +2220,6 @@ def _normalize_comment_attachment(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _parse_comment_attachments(row: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Kissflow nested rows store files on Attachments or a Column_* id — scan both."""
-    if not isinstance(row, dict):
-        return []
-    found = _as_attachment_list(row.get("Attachments") or row.get("attachments"))
-    if not found:
-        for value in row.values():
-            found = _as_attachment_list(value)
-            if found:
-                break
-    return [_normalize_comment_attachment(item) for item in found]
-
-
 def _employee_visible_comments(
     comments: Optional[List[Dict[str, Any]]],
     entity: Optional[str] = None,
@@ -2136,35 +2239,23 @@ def _employee_visible_comments(
     return visible
 
 
-def _parse_agent_solutions(
-    data: Dict[str, Any],
+def _parse_agent_solution_rows(
+    rows: List[Dict[str, Any]],
     field_ids: Dict[str, List[str]],
-    scalar_solution: str = "",
     requester_email: str = "",
     requester_name: str = "",
     created_at: Any = None,
 ) -> List[Dict[str, Any]]:
-    """Build conversation entries from IT__Agent_Solution nested table only."""
-    del scalar_solution  # textarea / StepField — never a chat row (aasik placeholder).
-    raw_table = _raw_field(data, *field_ids.get("solution_table", []))
-    if raw_table in (None, "", [], {}):
-        raw_table = (
-            data.get("Table::IT__Agent_Solution")
-            or data.get("IT__Agent_Solution")
-            or data.get("table::IT__Agent_Solution")
-        )
-    rows = _unwrap_table_rows(raw_table)
     name_cols = field_ids.get("solution_table_name") or ["Name_1", "Name"]
     res_cols = field_ids.get("solution_table_resolution") or ["Resolution"]
     dt_cols = field_ids.get("solution_table_datetime") or ["ITAgentDate_Time", "Date_Time"]
     stage_cols = field_ids.get("solution_table_stages") or ["Stages_1", "Stages"]
     type_cols = field_ids.get("solution_table_comments_type") or ["Comments_2", "Column_x6WUN8QD4O"]
-
     out: List[Dict[str, Any]] = []
-    seen_text: Set[str] = set()
+    seen_ids: Set[str] = set()
     for row in rows:
         resolution = _field_text(_pick_row_field(row, *res_cols)).strip()
-        attachments = _parse_comment_attachments(row)
+        attachments = _parse_comment_attachments(row, field_ids)
         empty_text = not resolution or resolution == "—" or _looks_like_kissflow_id(resolution)
         if empty_text and not attachments:
             continue
@@ -2183,12 +2274,12 @@ def _parse_agent_solutions(
         date_time = _pick_row_field(row, *dt_cols) or row.get("_created_at") or row.get("_modified_at")
         if not _comment_created_at_ok(date_time, created_at):
             continue
-        record_id = _as_string(row.get("_id") or "").strip()
-        role = _comment_author_role(raw_name or name, requester_email, requester_name)
-        if resolution and resolution.lower() in seen_text and not record_id:
+        record_id = _as_string(row.get("_id") or row.get("Id") or row.get("id") or "").strip()
+        if record_id and record_id in seen_ids:
             continue
-        if resolution:
-            seen_text.add(resolution.lower())
+        if record_id:
+            seen_ids.add(record_id)
+        role = _comment_author_role(raw_name or name, requester_email, requester_name)
         out.append({
             "id": record_id or f"solution-{len(out)}",
             "recordId": record_id or f"solution-{len(out)}",
@@ -2202,6 +2293,24 @@ def _parse_agent_solutions(
             "role": role,
         })
     return out
+
+
+def _parse_agent_solutions(
+    data: Dict[str, Any],
+    field_ids: Dict[str, List[str]],
+    scalar_solution: str = "",
+    requester_email: str = "",
+    requester_name: str = "",
+    created_at: Any = None,
+) -> List[Dict[str, Any]]:
+    """Build conversation entries from every IT__Agent_Solution table copy, then merge."""
+    del scalar_solution  # textarea / StepField — never a chat row (aasik placeholder).
+    groups = [
+        _parse_agent_solution_rows(rows, field_ids, requester_email, requester_name, created_at)
+        for rows in _all_agent_solution_table_rows(data, field_ids)
+    ]
+    groups = [group for group in groups if group]
+    return _merge_comment_lists(*groups) if groups else []
 
 
 def _thread_from_instance_payload(
@@ -2308,42 +2417,38 @@ async def _load_instance_comment_thread(
         merged_comments = _merge_comment_lists(best.get("comments") or [], thread.get("comments") or [])
         extras = {k: v for k, v in thread.items() if v not in (None, "", []) and k != "comments"}
         best = {**best, **extras, "comments": merged_comments}
-        # Keep scanning until a nested Attachments payload is found. An earlier
-        # activity GET often has comment text without files.
-        if merged_comments and any(_comment_file_count(row) for row in merged_comments):
-            break
 
-    if not best.get("comments"):
-        email = (best.get("requesterEmail") or viewer_email or "").strip()
-        if email:
-            try:
-                report_profile = {
-                    "process_id": process_id,
-                    "report_id": cfg.get("report_id") or _report_profile(entity)["report_id"],
-                }
-                rows = await _load_kissflow_report_tickets(cfg, report_profile, email, entity)
-                match = next((row for row in rows if str(row.get("id") or "") == instance_id), None)
-                if match and match.get("agentSolutions"):
-                    created = match.get("createdOn") or best.get("createdAt")
-                    kept = []
-                    for entry in match.get("agentSolutions") or []:
-                        if isinstance(entry, dict) and _comment_created_at_ok(
-                            entry.get("dateTime"), created
-                        ):
-                            kept.append(entry)
-                    best["comments"] = kept
-                    best["messageCount"] = len(kept)
-                    best["requestId"] = best.get("requestId") or match.get("requestId") or ""
-                    best["description"] = best.get("description") or match.get("description") or ""
-                    best["currentStep"] = best.get("currentStep") or match.get("currentStep") or ""
-                    best["assignedTo"] = best.get("assignedTo") or match.get("assignedTo") or ""
-                    logger.info(
-                        "ITSM comments from report instance=%s count=%s",
-                        instance_id,
-                        best["messageCount"],
-                    )
-            except Exception as exc:
-                logger.warning("ITSM comments report fallback failed instance=%s: %s", instance_id, exc)
+    email = (best.get("requesterEmail") or viewer_email or "").strip()
+    if email:
+        try:
+            report_profile = {
+                "process_id": process_id,
+                "report_id": cfg.get("report_id") or _report_profile(entity)["report_id"],
+            }
+            rows = await _load_kissflow_report_tickets(cfg, report_profile, email, entity)
+            match = next((row for row in rows if str(row.get("id") or "") == instance_id), None)
+            if match and match.get("agentSolutions"):
+                created = match.get("createdOn") or best.get("createdAt")
+                kept = []
+                for entry in match.get("agentSolutions") or []:
+                    if isinstance(entry, dict) and _comment_created_at_ok(
+                        entry.get("dateTime"), created
+                    ):
+                        kept.append(entry)
+                best["comments"] = _merge_comment_lists(best.get("comments") or [], kept)
+                best["messageCount"] = len(best.get("comments") or [])
+                best["requestId"] = best.get("requestId") or match.get("requestId") or ""
+                best["description"] = best.get("description") or match.get("description") or ""
+                best["currentStep"] = best.get("currentStep") or match.get("currentStep") or ""
+                best["assignedTo"] = best.get("assignedTo") or match.get("assignedTo") or ""
+                logger.info(
+                    "ITSM comments from report instance=%s count=%s files=%s",
+                    instance_id,
+                    best["messageCount"],
+                    sum(1 for row in best.get("comments") or [] if _comment_file_count(row)),
+                )
+        except Exception as exc:
+            logger.warning("ITSM comments report fallback failed instance=%s: %s", instance_id, exc)
     env_name = cfg.get("environment") or "development"
     best["comments"] = _attach_ledger_comments(best.get("comments"), env_name, instance_id)
     best["messageCount"] = len(best.get("comments") or [])
@@ -3225,6 +3330,13 @@ def _parse_report_ticket(
         "User_Description",
         "Requestor_Description",
     )
+    subject = ""
+    if field_ids.get("subject"):
+        subject = _lookup_field(
+            data,
+            *field_ids.get("subject", []),
+            "Subject",
+        )
     item_status = _lookup_field(
         data,
         *field_ids["item_status"],
@@ -3353,6 +3465,7 @@ def _parse_report_ticket(
     return {
         "id": instance_id,
         "requestId": request_id or "—",
+        "subject": subject,
         "description": description,
         "status": status,
         "solution": solution,
@@ -3442,6 +3555,7 @@ def _public_local_ticket(doc: Dict[str, Any]) -> Dict[str, Any]:
         "id": instance_id,
         "localId": doc.get("id"),
         "requestId": doc.get("kissflow_request_id") or "—",
+        "subject": doc.get("subject") or "",
         "description": doc.get("description") or "",
         "status": status,
         "localStatus": local_status,

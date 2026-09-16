@@ -1,5 +1,8 @@
 /** Normalize FastAPI / axios error payloads into a displayable string. */
 export function getApiErrorMessage(error, fallback = 'Something went wrong') {
+  if (error?.response?.status === 413) {
+    return 'File limit is 1MB only';
+  }
   const detail = error?.response?.data?.detail ?? error?.detail ?? error?.message;
   if (!detail) return fallback;
   if (typeof detail === 'string') return detail;

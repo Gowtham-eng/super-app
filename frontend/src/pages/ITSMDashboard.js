@@ -212,6 +212,100 @@ const TicketStatusTags = ({ ticket, size = 'md' }) => {
 
 const isRefexHelpdeskEntity = (entity) => isRefexEntity(entity);
 
+const ticketSubject = (ticket) => String(ticket?.subject || ticket?.Subject || '').trim();
+
+const isMobileHelpDeskView = () => {
+  if (typeof window === 'undefined') return false;
+  return (
+    window.matchMedia('(max-width: 1279px)').matches
+    || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+  );
+};
+
+const looksLikeCommentImage = (file) => {
+  const name = String(file?.name || '').toLowerCase();
+  const type = String(file?.type || '').toLowerCase();
+  return type.startsWith('image/')
+    || /\.(png|jpe?g|gif|webp|heic|heif|bmp|tif|tiff)$/i.test(name);
+};
+
+const COMMENT_FILE_MAX_BYTES = 1024 * 1024;
+const COMMENT_FILE_LIMIT_MESSAGE = 'File limit is 1MB only';
+const MOBILE_IMAGE_MAX_BYTES = COMMENT_FILE_MAX_BYTES;
+
+const compressMobileImage = (file, maxBytes = MOBILE_IMAGE_MAX_BYTES) => new Promise((resolve, reject) => {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    URL.revokeObjectURL(url);
+    const maxSide = 1280;
+    let { width, height } = img;
+    if (width > maxSide || height > maxSide) {
+      const scale = Math.min(maxSide / width, maxSide / height);
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, width);
+    canvas.height = Math.max(1, height);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      resolve(file);
+      return;
+    }
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const tryBlob = (quality) => {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          resolve(file);
+          return;
+        }
+        if (blob.size > maxBytes && quality > 0.45) {
+          tryBlob(Math.max(0.45, quality - 0.12));
+          return;
+        }
+        if (blob.size > maxBytes) {
+          reject(new Error(COMMENT_FILE_LIMIT_MESSAGE));
+          return;
+        }
+        const base = String(file.name || 'photo').replace(/\.[^.]+$/, '') || 'photo';
+        resolve(new File([blob], `${base}.jpg`, { type: 'image/jpeg' }));
+      }, 'image/jpeg', quality);
+    };
+    tryBlob(0.82);
+  };
+  img.onerror = () => {
+    URL.revokeObjectURL(url);
+    if (file.size > COMMENT_FILE_MAX_BYTES) {
+      reject(new Error(COMMENT_FILE_LIMIT_MESSAGE));
+      return;
+    }
+    resolve(file);
+  };
+  img.src = url;
+});
+
+const assertCommentFileLimit = (file) => {
+  if (file && file.size > COMMENT_FILE_MAX_BYTES) {
+    throw new Error(COMMENT_FILE_LIMIT_MESSAGE);
+  }
+};
+
+const prepareCommentFiles = async (files) => {
+  const out = [];
+  for (const file of files) {
+    let next = file;
+    if (isMobileHelpDeskView() && looksLikeCommentImage(file)) {
+      next = await compressMobileImage(file);
+    }
+    assertCommentFileLimit(next);
+    out.push(next);
+  }
+  return out;
+};
+
 /** Comments UI is Extrovis-family only — Refex Help Desk never shows a thread.
  *  Reopen tickets can view history but never Reply / compose. */
 const canShowTicketComments = (entity, ticket) =>
@@ -322,7 +416,7 @@ const isEmployeeVisibleComment = (entry, entity = '') => {
     .replace(/[\s_-]+/g, '');
   const entityName = typeof entity === 'string' ? entity : '';
   if (isRefexHelpdeskEntity(entityName)) return true;
-  return token === 'user';
+  return token === 'user' || token === 'usercomments' || token === 'employee';
 };
 
 const commentsBelongToTicket = (rows, ticket) => {
@@ -338,6 +432,11 @@ const commentsBelongToTicket = (rows, ticket) => {
 const commentAttachmentCount = (row) =>
   Array.isArray(row?.attachments) ? row.attachments.length : 0;
 
+const isSyntheticCommentId = (id) => {
+  const token = String(id || '').trim();
+  return !token || /^solution-\d+$/i.test(token) || token.startsWith('local-');
+};
+
 const mergeCommentRows = (...groups) => {
   const byId = new Map();
   const byText = new Map();
@@ -347,19 +446,20 @@ const mergeCommentRows = (...groups) => {
     if (idx >= 0) out[idx] = next;
     const id = String(next?.id || next?.recordId || '').trim();
     const text = String(next?.comment || next?.resolution || '').trim().toLowerCase();
-    if (id) byId.set(id, next);
+    if (id && !isSyntheticCommentId(id)) byId.set(id, next);
     if (text) byText.set(text, next);
   };
   groups.forEach((group) => {
     realCommentRows(group).forEach((row) => {
       const text = String(row?.comment || row?.resolution || '').trim().toLowerCase();
       const id = String(row?.id || row?.recordId || '').trim();
-      const prev = (id && byId.get(id)) || (text && byText.get(text)) || null;
+      const stableId = isSyntheticCommentId(id) ? '' : id;
+      const prev = (stableId && byId.get(stableId)) || (text && byText.get(text)) || null;
       if (prev) {
         if (commentAttachmentCount(row) > commentAttachmentCount(prev)) replace(prev, row);
         return;
       }
-      if (id) byId.set(id, row);
+      if (stableId) byId.set(stableId, row);
       if (text) byText.set(text, row);
       out.push(row);
     });
@@ -500,6 +600,7 @@ const TicketConversation = ({
   const [pendingFiles, setPendingFiles] = useState([]);
   const inputRef = React.useRef(null);
   const fileInputRef = React.useRef(null);
+  const fileInputId = `itsm-comment-attach-input-${ticket.id || ticket.localId || 'ticket'}`;
   const scrollerRef = React.useRef(null);
   const authRef = React.useRef(getAuthHeader);
   const hydrateRef = React.useRef(onHydrated);
@@ -516,7 +617,7 @@ const TicketConversation = ({
   const loadComments = React.useCallback(async (force = false) => {
     const live = ticketRef.current;
     if (!ticket?.id || !live?.id || live.id !== ticket.id || !entity || typeof authRef.current !== 'function') return;
-    const stored = commentsBelongToTicket(commentsFromStore(live.id), live);
+    const stored = commentsBelongToTicket(commentsFromStore(live.id, entity), live);
     const localEntries = revisionEntriesFromTicket(live, entity);
     const localHasFiles = [...stored, ...localEntries].some(
       (entry) => Array.isArray(entry?.attachments) && entry.attachments.length,
@@ -566,13 +667,16 @@ const TicketConversation = ({
 
   const send = async (text) => {
     const note = String(text ?? draft).trim();
-    const files = allowAttachments ? pendingFiles : [];
+    let files = allowAttachments ? pendingFiles : [];
     if (!note && !files.length) {
       setError(allowAttachments ? 'Please enter a comment or add an attachment.' : 'Please enter a comment.');
       return;
     }
     setError('');
     try {
+      if (files.length) {
+        files = await prepareCommentFiles(files);
+      }
       await onSend(note, files);
       setDraft('');
       setPendingFiles([]);
@@ -687,7 +791,7 @@ const TicketConversation = ({
                   </div>
                 ) : null}
                 <div className={`flex ${mine ? 'justify-end' : 'justify-start'} ${grouped ? 'mt-1.5' : 'mt-3'}`}>
-                  <div className={`flex max-w-[85%] items-end gap-2 sm:max-w-[72%] ${mine ? 'flex-row-reverse' : 'flex-row'}`}>
+                  <div className={`flex max-w-[85%] items-end gap-2 sm:max-w-[72%] max-xl:!max-w-full ${mine ? 'flex-row-reverse' : 'flex-row'}`}>
                     {grouped ? (
                       <span className="h-7 w-7 shrink-0" aria-hidden />
                     ) : (
@@ -695,7 +799,7 @@ const TicketConversation = ({
                         {initialsOf(name === 'You' ? viewerName || entry.userName : name)}
                       </span>
                     )}
-                    <div className="min-w-0">
+                    <div className="min-w-0 max-xl:min-w-[12rem] max-xl:flex-1">
                       {!grouped ? (
                         <p className={`mb-1 text-[11px] font-medium ${mine ? 'text-right text-teal-800' : 'text-left text-slate-500'}`}>
                           {name === 'You' ? 'You' : name}
@@ -714,7 +818,7 @@ const TicketConversation = ({
                         {entry.comment}
                         {Array.isArray(entry.attachments) && entry.attachments.length ? (
                           <span
-                            className={`${entry.comment ? 'mt-1.5' : ''} relative z-10 flex flex-wrap gap-1.5`}
+                            className={`${entry.comment ? 'mt-1.5' : ''} relative z-10 flex flex-wrap gap-1.5 max-xl:mt-2`}
                             onPointerDown={(event) => event.stopPropagation()}
                             onClick={(event) => event.stopPropagation()}
                           >
@@ -761,7 +865,7 @@ const TicketConversation = ({
               </button>
             ))}
           </div>
-          <div className="flex items-end gap-2">
+          <div className="flex items-end gap-2 max-xl:flex-wrap">
             <textarea
               ref={inputRef}
               value={draft}
@@ -778,41 +882,50 @@ const TicketConversation = ({
               rows={2}
               disabled={commenting}
               placeholder="Write a comment…"
-              className="min-h-[48px] max-h-28 flex-1 resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100"
+              className="min-h-[48px] max-h-28 flex-1 resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100 max-xl:min-w-full"
               data-testid={`itsm-comment-note-${ticket.id}`}
             />
             {allowAttachments ? (
               <>
                 <input
+                  id={fileInputId}
                   ref={fileInputRef}
                   type="file"
-                  className="hidden"
+                  className="sr-only"
                   multiple
                   accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf,.odt,.ods,.odp,.txt,.csv,.json,.xml,.html,.md,.zip,.7z,.rar,.tar,.gz,.mp4,.mov,.webm,.mp3,.wav,.m4a,.svg,.tif,.tiff,.heic,application/pdf,text/plain,application/zip"
                   onChange={(event) => {
                     const next = Array.from(event.target.files || []);
+                    const blocked = next.filter((file) => (
+                      file.size > COMMENT_FILE_MAX_BYTES
+                      && !(isMobileHelpDeskView() && looksLikeCommentImage(file))
+                    ));
+                    if (blocked.length) {
+                      setError(COMMENT_FILE_LIMIT_MESSAGE);
+                      event.target.value = '';
+                      return;
+                    }
+                    if (error) setError('');
                     setPendingFiles((prev) => [...prev, ...next]);
                     event.target.value = '';
                   }}
                 />
-                <button
-                  type="button"
+                <label
+                  htmlFor={fileInputId}
                   title="Add attachment"
                   aria-label="Add attachment"
-                  disabled={commenting}
-                  onClick={() => fileInputRef.current?.click()}
-                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-teal-600 hover:bg-teal-50 hover:text-teal-800 disabled:opacity-40"
+                  className={`inline-flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-teal-600 hover:bg-teal-50 hover:text-teal-800 max-xl:h-12 max-xl:w-12 ${commenting ? 'pointer-events-none opacity-40' : ''}`}
                   data-testid={`itsm-comment-attach-${ticket.id}`}
                 >
                   <Paperclip size={16} />
-                </button>
+                </label>
               </>
             ) : null}
             <button
               type="button"
               onClick={() => send()}
               disabled={commenting || (!draft.trim() && !(allowAttachments && pendingFiles.length))}
-              className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-40"
+              className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-40 max-xl:min-h-12 max-xl:flex-1"
               data-testid={`itsm-comment-send-${ticket.id}`}
               aria-label="Send comment"
             >
@@ -925,16 +1038,18 @@ try {
   // ignore
 }
 
-const commentsFromStore = (ticketId) => {
+const commentsFromStore = (ticketId, entity = '') => {
   if (!ticketId) return [];
-  return realCommentRows(commentsStore.get(ticketId) || []).filter(isEmployeeVisibleComment);
+  return realCommentRows(commentsStore.get(ticketId) || []).filter((entry) =>
+    isEmployeeVisibleComment(entry, entity)
+  );
 };
 
-const rememberComments = (ticketId, comments) => {
-  const rows = realCommentRows(comments).filter(isEmployeeVisibleComment);
+const rememberComments = (ticketId, comments, entity = '') => {
+  const rows = realCommentRows(comments).filter((entry) => isEmployeeVisibleComment(entry, entity));
   if (!ticketId) return [];
-  if (!rows.length) return commentsFromStore(ticketId);
-  const merged = mergeCommentRows(rows, commentsFromStore(ticketId));
+  if (!rows.length) return commentsFromStore(ticketId, entity);
+  const merged = mergeCommentRows(rows, commentsFromStore(ticketId, entity));
   commentsStore.set(ticketId, merged);
   persistCommentsStore();
   return merged;
@@ -975,9 +1090,9 @@ try {
         const ticketKey = row?.id || row?.localId;
         if (!ticketKey) return row;
         if (Array.isArray(row.agentSolutions) && row.agentSolutions.length) {
-          rememberComments(ticketKey, row.agentSolutions);
+          rememberComments(ticketKey, row.agentSolutions, row.entity);
         }
-        const stored = commentsFromStore(ticketKey);
+        const stored = commentsFromStore(ticketKey, row.entity);
         const withComments = stored.length
           ? { ...row, agentSolutions: mergeCommentRows(realCommentRows(row.agentSolutions), stored) }
           : row;
@@ -1042,14 +1157,14 @@ const ITSMDashboard = () => {
         if (row.id !== ticketId && row.localId !== ticketId) return row;
         const incoming = commentsBelongToTicket(comments, row);
         const existing = commentsBelongToTicket(
-          mergeCommentRows(realCommentRows(row.agentSolutions), commentsFromStore(row.id)),
+          mergeCommentRows(realCommentRows(row.agentSolutions), commentsFromStore(row.id, entity)),
           row,
         );
         // Empty Kissflow GET is not proof the thread is empty (nested table is often
         // missing on instance GET). Never replace a real thread with [].
         const nextComments = incoming.length
-          ? rememberComments(row.id, mergeCommentRows(incoming, existing))
-          : rememberComments(row.id, existing);
+          ? rememberComments(row.id, mergeCommentRows(incoming, existing), entity)
+          : rememberComments(row.id, existing, entity);
         return {
           ...row,
           agentSolutions: nextComments.length ? nextComments : existing,
@@ -1180,9 +1295,9 @@ const ITSMDashboard = () => {
         const ticketKey = row.id || row.localId;
         const nextComments = commentsBelongToTicket(realCommentRows(row.agentSolutions), row);
         const prevComments = commentsBelongToTicket(realCommentRows(prev?.agentSolutions), row);
-        const storedComments = commentsBelongToTicket(commentsFromStore(ticketKey), row);
+        const storedComments = commentsBelongToTicket(commentsFromStore(ticketKey, entity), row);
         const mergedComments = mergeCommentRows(nextComments, prevComments, storedComments);
-        if (mergedComments.length) rememberComments(ticketKey, mergedComments);
+        if (mergedComments.length) rememberComments(ticketKey, mergedComments, entity);
         const remembered = Boolean(ticketKey && rememberedReopenedIds.has(String(ticketKey)));
         return lockCommentsIfReopened({
           ...row,
@@ -1480,18 +1595,22 @@ const ITSMDashboard = () => {
     }
   };
 
-  const renderTicketTable = (rows) => (
+  const renderTicketTable = (rows) => {
+    const showSubjectColumn = !isRefexHelpdeskEntity(entity);
+    const conversationColSpan = showSubjectColumn ? 10 : 9;
+    return (
     <>
       {/* Desktop only — tablets use cards (md table was too cramped). */}
       <div className="hidden xl:block overflow-x-auto">
         <table
-          className="data-table itsm-mis-table min-w-[1220px]"
+          className={`data-table itsm-mis-table ${showSubjectColumn ? 'min-w-[1380px]' : 'min-w-[1220px]'}`}
           data-testid="itsm-ticket-table"
         >
           <thead>
             <tr>
               <th className="w-10 !px-2" aria-label="Expand" />
               <th className="w-[200px]">Request ID</th>
+              {showSubjectColumn ? <th className="w-[220px]">Subject</th> : null}
               <th className="w-[280px]">Description</th>
               <th className="w-[120px]">Created On</th>
               <th className="w-[150px]">Assigned To</th>
@@ -1511,6 +1630,7 @@ const ITSMDashboard = () => {
                 && !showsEmployeeRating(ticket)
                 && !isReopenRelatedTicket(ticket);
               const requestId = ticket.requestId || '—';
+              const subject = ticketSubject(ticket) || '—';
               const description = ticket.description || '—';
               return (
                 <React.Fragment key={rowId}>
@@ -1532,6 +1652,11 @@ const ITSMDashboard = () => {
                     <td className="font-medium text-slate-900 whitespace-nowrap" title={requestId}>
                       {requestId}
                     </td>
+                    {showSubjectColumn ? (
+                      <td className="text-slate-800" title={subject}>
+                        {subject}
+                      </td>
+                    ) : null}
                     <td className="text-slate-600" title={description}>
                       {description}
                     </td>
@@ -1582,7 +1707,7 @@ const ITSMDashboard = () => {
                   </tr>
                   {expanded && showCommentSection ? (
                     <tr className="bg-slate-50/80">
-                      <td colSpan={9} className="itsm-conversation-cell !p-3 sm:!p-4 border-t border-slate-100">
+                      <td colSpan={conversationColSpan} className="itsm-conversation-cell !p-3 sm:!p-4 border-t border-slate-100">
                         <TicketConversation
                           ticket={ticket}
                           entity={entity}
@@ -1622,6 +1747,12 @@ const ITSMDashboard = () => {
                 <p className="font-semibold text-slate-900 text-sm break-all">{ticket.requestId || '—'}</p>
                 <TicketStatusTags ticket={ticket} size="sm" />
               </div>
+              {!isRefexHelpdeskEntity(entity) ? (
+                <p className="text-sm font-medium text-slate-800 mb-1" data-testid={`itsm-subject-mobile-${rowId}`}>
+                  <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Subject</span>
+                  {ticketSubject(ticket) || '—'}
+                </p>
+              ) : null}
               <p className="text-sm text-slate-600 whitespace-pre-wrap mb-2">{ticket.description || '—'}</p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1 mb-3">
                 <p className="text-xs text-slate-500">Created On: {formatTicketDate(ticket.createdOn)}</p>
@@ -1697,7 +1828,8 @@ const ITSMDashboard = () => {
         })}
       </div>
     </>
-  );
+    );
+  };
 
   return (
     <div className="animate-fadeIn w-full pb-8" data-testid="itsm-dashboard-page">
