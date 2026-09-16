@@ -167,6 +167,7 @@ const CreateITRequest = () => {
   const [selectedSubType, setSelectedSubType] = useState('');
   const [selectedMatrix, setSelectedMatrix] = useState(null);
   const [description, setDescription] = useState('');
+  const [subject, setSubject] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [isSearchPending, setIsSearchPending] = useState(false);
 
@@ -306,6 +307,7 @@ const CreateITRequest = () => {
     !!selectedMatrix &&
     !!criticality &&
     description.trim().length > 0 &&
+    (isRefex || subject.trim().length > 0) &&
     profileComplete &&
     !submitting;
 
@@ -712,6 +714,7 @@ const CreateITRequest = () => {
     setSelectedSubType('');
     setSelectedMatrix(null);
     setDescription('');
+    setSubject('');
     setSubmitted(false);
     setSubmitStatus('created');
     setManualEdit(false);
@@ -728,6 +731,7 @@ const CreateITRequest = () => {
       );
     }
     if (!criticality) return toast.error('Criticality is required.');
+    if (!isRefex && !subject.trim()) return toast.error('Subject is required');
     if (!description.trim()) return toast.error('Description is required');
     if (!profileComplete) return toast.error('Please complete your personal details first.');
 
@@ -743,6 +747,7 @@ const CreateITRequest = () => {
           sub_type: recordServiceLabel(selectedMatrix) || selectedSubType || cascade.subType,
           criticality,
           description: description.trim(),
+          ...(isRefex ? {} : { subject: subject.trim() }),
         },
         getAuthHeader()
       );
@@ -944,6 +949,23 @@ const CreateITRequest = () => {
               </InlineField>
             </div>
           </section>
+
+          {!isRefex && (
+            <section className="form-section !mb-0 lg:col-span-12">
+              <h2 className="form-section-title">Subject <span className="text-red-500">*</span></h2>
+              <p className="text-xs text-slate-500 mb-2">Short title for this request. Required before you can submit.</p>
+              <input
+                type="text"
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+                placeholder="e.g. Laptop is not working"
+                className="input-brutalist w-full px-4 py-3"
+                data-testid="itsm-subject"
+                required
+                maxLength={200}
+              />
+            </section>
+          )}
 
           {!isRefex && (
             <section className="form-section !mb-0 lg:col-span-12">
@@ -1161,6 +1183,25 @@ const CreateITRequest = () => {
                   <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{selectedMatrix.detailsScope || '—'}</p>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+                  {!isRefex ? (
+                    <div className="sm:col-span-2">
+                      <label className="block">
+                        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5 block">
+                          Subject *
+                        </span>
+                        <input
+                          type="text"
+                          value={subject}
+                          onChange={(e) => setSubject(e.target.value)}
+                          placeholder="e.g. Laptop is not working"
+                          className="input-brutalist w-full px-3 py-2"
+                          data-testid="itsm-subject-details"
+                          required
+                          maxLength={200}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
                   <InfoBlock label="Ticket Type" value={selectedMatrix.ticketType} />
                   <InfoBlock label="Category" value={selectedMatrix.category} />
                   <InfoBlock label="Sub Category" value={selectedMatrix.subCategory} />

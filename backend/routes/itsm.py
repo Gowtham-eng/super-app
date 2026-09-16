@@ -15,9 +15,10 @@ import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, EmailStr, Field
 
 logger = logging.getLogger("itsm")
@@ -29,6 +30,8 @@ _ITSM_DB_CIRCUIT_SEC = float(os.environ.get("MONGO_CIRCUIT_BREAKER_SEC", "90") o
 _MATRIX_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _MATRIX_CACHE_TTL_SEC = float(os.environ.get("ITSM_MATRIX_CACHE_TTL_SEC", "120") or "120")
 _MATRIX_INFLIGHT: Dict[str, asyncio.Future] = {}
+_PREVIEW_URL_CACHE: Dict[str, Tuple[str, float]] = {}
+_PREVIEW_URL_TTL_SEC = 240.0
 
 
 def _itsm_db_usable(db) -> bool:
@@ -261,23 +264,47 @@ def _append_ledger_comment(environment: str, instance_id: str, entry: Dict[str, 
     _write_comment_ledger(data)
 
 
+def _comment_file_count(row: Dict[str, Any]) -> int:
+    files = row.get("attachments") if isinstance(row, dict) else None
+    return len(files) if isinstance(files, list) else 0
+
+
 def _merge_comment_lists(*groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    seen: Set[str] = set()
+    """Keep attachment-only rows and prefer the copy that actually has files."""
+    index_by_token: Dict[str, int] = {}
     out: List[Dict[str, Any]] = []
     for group in groups:
         for row in group or []:
             if not isinstance(row, dict):
                 continue
             text = str(row.get("comment") or row.get("resolution") or "").strip()
-            if not text or _looks_like_kissflow_id(text):
+            files = row.get("attachments") if isinstance(row.get("attachments"), list) else []
+            empty_text = not text or _looks_like_kissflow_id(text)
+            if empty_text and not files:
                 continue
             cid = str(row.get("id") or row.get("recordId") or "").strip()
-            token = cid or text.lower()
-            if token in seen or text.lower() in seen:
+            text_key = "" if empty_text else text.lower()
+            token = cid or text_key
+            if not token:
+                token = f"file-{len(out)}"
+            prev_idx = index_by_token.get(token)
+            if prev_idx is None and text_key:
+                prev_idx = index_by_token.get(text_key)
+            if prev_idx is not None:
+                prev = out[prev_idx]
+                if _comment_file_count(row) > _comment_file_count(prev):
+                    out[prev_idx] = row
+                    if cid:
+                        index_by_token[cid] = prev_idx
+                    if text_key:
+                        index_by_token[text_key] = prev_idx
                 continue
+            idx = len(out)
+            index_by_token[token] = idx
             if cid:
-                seen.add(cid)
-            seen.add(text.lower())
+                index_by_token[cid] = idx
+            if text_key:
+                index_by_token[text_key] = idx
             out.append(row)
     return out
 
@@ -303,6 +330,7 @@ class TicketSubmitRequest(BaseModel):
     sub_type: str = Field(..., min_length=1)
     criticality: str = Field(..., min_length=1)
     description: str = Field(..., min_length=1)
+    subject: str = ""
 
 
 class EntityConfigUpsert(BaseModel):
@@ -338,8 +366,19 @@ def _normalize_entity_key(value: str) -> str:
     return (value or "").strip().lower().replace("  ", " ")
 
 
-def _kissflow_headers(cfg: Dict[str, Any], *, for_write: bool = False) -> Dict[str, str]:
-    """Reports GET use access keys; comments/reopen/rating POST as the ITSM BOT user key."""
+def _kissflow_headers(
+    cfg: Dict[str, Any],
+    *,
+    for_write: bool = False,
+    json_body: bool = True,
+) -> Dict[str, str]:
+    """Kissflow REST: X-Access-Key-Id + X-Access-Key-Secret on every call.
+
+    Reports GET use access keys; comments/upload/preview mint use the ITSM BOT
+    user key when present (same identity that wrote the nested Attachments).
+    JSON Content-Type only when we actually POST/PUT a JSON body — GET /upload/2
+    must not send it or Kissflow skips the GCS 302.
+    """
     if for_write:
         key_id = (cfg.get("bot_access_key_id") or cfg.get("access_key_id") or "").strip()
         key_secret = (cfg.get("bot_access_key_secret") or cfg.get("access_key_secret") or "").strip()
@@ -353,12 +392,14 @@ def _kissflow_headers(cfg: Dict[str, Any], *, for_write: bool = False) -> Dict[s
             status_code=400,
             detail=missing,
         )
-    return {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
+    headers = {
+        "Accept": "application/json" if json_body else "*/*",
         "X-Access-Key-Id": key_id,
         "X-Access-Key-Secret": key_secret,
     }
+    if json_body:
+        headers["Content-Type"] = "application/json"
+    return headers
 
 
 def _as_string(value: Any) -> str:
@@ -539,6 +580,135 @@ def _uses_extrovis_flow(entity: Optional[str]) -> bool:
     if not key:
         return False
     return "refex" not in key
+
+
+def _ticket_webhook_body(
+    *,
+    process_id: str,
+    name: str,
+    email: str,
+    entity: str,
+    location: str,
+    sub_type: str,
+    criticality: str,
+    description: str,
+    subject: str = "",
+) -> Dict[str, Any]:
+    """Kissflow create webhook JSON. Non-Refex includes mandatory Subject after Location_user."""
+    if _uses_extrovis_flow(entity):
+        return {
+            "process_id": process_id,
+            "Source": SOURCE_VALUE,
+            "Name": name,
+            "Email": email,
+            "Entity": entity,
+            "Location_user": location,
+            "Subject": subject,
+            "Sub_Type": sub_type,
+            "Criticality": criticality,
+            "Description": description,
+        }
+    return {
+        "process_id": process_id,
+        "Source": SOURCE_VALUE,
+        "Name": name,
+        "Email": email,
+        "Entity": entity,
+        "Location_user": location,
+        "Sub_Type": sub_type,
+        "Criticality": criticality,
+        "Description": description,
+    }
+
+
+def _non_refex_force_development() -> bool:
+    """Local checking: Non-Refex Kissflow APIs use development host. Quick search stays Live."""
+    return os.environ.get("ITSM_NON_REFEX_FORCE_DEVELOPMENT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _attachment_key_is_image(key: str) -> bool:
+    """Only image keys have Kissflow photos/100x100.png thumbnails."""
+    last = (key or "").rsplit("/", 1)[-1].split("?")[0].strip()
+    if re.match(r"^(100x100|1200x800)\.png$", last, re.I):
+        return True
+    return bool(re.search(r"\.(png|jpe?g|gif|webp|bmp)$", last, re.I))
+
+
+def _build_kissflow_upload_object_path(account_id: str, key: str, thumbnail: bool = False) -> str:
+    parts = [part for part in (key or "").strip().lstrip("/").split("/") if part]
+    account = (account_id or "").strip()
+    if not account or not parts:
+        return ""
+    if thumbnail and not _attachment_key_is_image("/".join(parts)):
+        thumbnail = False
+    if thumbnail:
+        last = parts[-1]
+        prev = parts[-2] if len(parts) > 1 else ""
+        if not re.match(r"^100x100\.png$", last, re.I):
+            if prev == "photos":
+                parts[-1] = "100x100.png"
+            else:
+                parts.pop()
+                parts.extend(["photos", "100x100.png"])
+    encoded = "/".join(quote(part, safe="") for part in parts)
+    return f"/upload/2/{account}/{encoded}"
+
+
+def _is_gcs_signed_url(url: str) -> bool:
+    text = (url or "").strip()
+    return "storage.googleapis.com" in text and "X-Goog-Algorithm=" in text
+
+
+async def _mint_gcs_get_url(cfg: Dict[str, Any], key: str, thumbnail: bool = True) -> str:
+    account_id = (cfg.get("account_id") or "").strip()
+    if thumbnail and not _attachment_key_is_image(key):
+        thumbnail = False
+    path = _build_kissflow_upload_object_path(account_id, key, thumbnail)
+    if not path:
+        raise HTTPException(status_code=400, detail="Attachment key is required.")
+    cache_key = f"{account_id}|{path}"
+    hit = _PREVIEW_URL_CACHE.get(cache_key)
+    if hit and hit[1] > time.monotonic() and _is_gcs_signed_url(hit[0]):
+        return hit[0]
+    url = f"{cfg['kissflow_base_url']}{path}"
+    last_status = 0
+    # Same BOT/access-key headers as the upload POST. GET must not send JSON Content-Type.
+    for for_write in (True, False):
+        headers = _kissflow_headers(cfg, for_write=for_write, json_body=False)
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
+            response = await client.get(url, headers=headers)
+        last_status = response.status_code
+        location = (response.headers.get("Location") or response.headers.get("location") or "").strip()
+        if location and not location.startswith("http"):
+            location = f"{cfg['kissflow_base_url']}{location}"
+        if response.status_code in (301, 302, 303, 307, 308) and _is_gcs_signed_url(location):
+            _PREVIEW_URL_CACHE[cache_key] = (location, time.monotonic() + _PREVIEW_URL_TTL_SEC)
+            return location
+        if response.status_code == 200:
+            try:
+                body = response.json()
+            except Exception:
+                body = None
+            if isinstance(body, dict):
+                for field in ("Url", "url", "URL", "Location", "location"):
+                    candidate = _as_string(body.get(field)).strip()
+                    if _is_gcs_signed_url(candidate):
+                        _PREVIEW_URL_CACHE[cache_key] = (
+                            candidate,
+                            time.monotonic() + _PREVIEW_URL_TTL_SEC,
+                        )
+                        return candidate
+    logger.warning(
+        "Kissflow upload GET %s -> %s (no GCS Location). key_id=%s",
+        path,
+        last_status,
+        (cfg.get("bot_access_key_id") or cfg.get("access_key_id") or "")[:12],
+    )
+    raise HTTPException(status_code=502, detail="Could not resolve attachment preview.")
 
 
 def _webhook_path_for_entity(entity: Optional[str]) -> str:
@@ -953,6 +1123,165 @@ async def _kf_post_json(
             raw.get("Success") or raw.get("success") or raw.get("message") or raw.get("en_message")
         ).strip()
     return response.status_code, raw, success_text
+
+
+async def _kf_put_json(
+    cfg: Dict[str, Any],
+    path: str,
+    payload: Dict[str, Any],
+    params: Optional[Dict[str, Any]] = None,
+) -> tuple:
+    url = path if path.startswith("http") else f"{cfg['kissflow_base_url']}{path}"
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.put(
+            url,
+            headers=_kissflow_headers(cfg, for_write=True),
+            params=params or {},
+            json=payload,
+        )
+    raw: Any = None
+    try:
+        raw = response.json()
+    except Exception:
+        raw = response.text
+    success_text = ""
+    if isinstance(raw, dict):
+        success_text = _as_string(
+            raw.get("Success") or raw.get("success") or raw.get("message") or raw.get("en_message")
+        ).strip()
+    return response.status_code, raw, success_text
+
+
+async def _kf_put_bytes(url: str, content: bytes, content_type: str) -> None:
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.put(
+            url,
+            content=content,
+            headers={"Content-Type": content_type or "application/octet-stream"},
+        )
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail="Kissflow file upload failed.")
+
+
+def _safe_upload_file_name(name: str) -> str:
+    cleaned = re.sub(r"[\\/]", "_", (name or "file").strip())
+    return cleaned or "file"
+
+
+def _collect_multipart_files(form: Any) -> List[Any]:
+    """FastAPI/Pydantic rejects a single UploadFile when the field is List[UploadFile]."""
+    out: List[Any] = []
+    seen_ids: Set[int] = set()
+    for name in ("files", "file"):
+        items: List[Any] = []
+        getter = getattr(form, "getlist", None)
+        if callable(getter):
+            try:
+                items = list(getter(name) or [])
+            except Exception:
+                items = []
+        if not items:
+            single = form.get(name) if hasattr(form, "get") else None
+            if single is not None:
+                items = [single]
+        for item in items:
+            if item is None:
+                continue
+            marker = id(item)
+            if marker in seen_ids:
+                continue
+            filename = str(getattr(item, "filename", "") or "").strip()
+            if not filename:
+                continue
+            seen_ids.add(marker)
+            out.append(item)
+    return out
+
+
+def _is_image_upload(name: str, mime: str) -> bool:
+    token = (mime or "").lower()
+    if token.startswith("image/"):
+        return True
+    return bool(re.search(r"\.(png|jpe?g|gif|webp|bmp)$", name or "", re.I))
+
+
+async def _upload_comment_attachments(
+    cfg: Dict[str, Any],
+    *,
+    instance_id: str,
+    activity_id: str,
+    row_id: str,
+    files: List[UploadFile],
+) -> List[Dict[str, Any]]:
+    """Kissflow signed GCS upload for Non-Refex nested-row Attachments. Uses ITSM Setup keys."""
+    uploaded: List[Dict[str, Any]] = []
+    app_id = cfg.get("application_id") or REPORT_APPLICATION_ID
+    account_id = cfg.get("account_id") or ""
+    process_id = cfg.get("process_id") or ""
+    params = {"_application_id": app_id}
+    for file in files:
+        if file is None:
+            continue
+        file_name = _safe_upload_file_name(file.filename or "file")
+        mime_type = (file.content_type or "application/octet-stream").strip() or "application/octet-stream"
+        content = await file.read()
+        attach_id = f"Attach_{uuid.uuid4().hex[:10]}"
+        key = "/".join(
+            [
+                process_id,
+                instance_id,
+                activity_id,
+                "IT__Agent_Solution",
+                row_id,
+                attach_id,
+                file_name,
+            ]
+        )
+        status_code, raw, success_text = await _kf_post_json(
+            cfg,
+            f"/upload/2/{account_id}/",
+            {"name": file_name, "size": len(content), "key": key, "mimeType": mime_type},
+            params,
+        )
+        if status_code >= 400 or not isinstance(raw, dict):
+            detail = success_text or _kissflow_response_text(raw, "Kissflow did not return an upload URL")
+            raise HTTPException(status_code=502, detail=detail)
+        put_url = _as_string(raw.get("Url") or raw.get("url")).strip()
+        stored_key = _as_string(raw.get("Key") or raw.get("key")).strip() or key
+        if not put_url:
+            raise HTTPException(status_code=502, detail="Kissflow did not return an upload URL")
+        await _kf_put_bytes(put_url, content, mime_type)
+        photos: List[Any] = []
+        if _is_image_upload(file_name, mime_type):
+            try:
+                _, thumbs, _ = await _kf_put_json(
+                    cfg,
+                    f"/upload/2/{account_id}/image/thumbnail",
+                    {"key": stored_key, "sizes": [[1200, 800], [100, 100]], "isProfile": False},
+                    params,
+                )
+                if isinstance(thumbs, list):
+                    photos = thumbs
+            except Exception:
+                photos = []
+        now = datetime.now(timezone.utc).isoformat()
+        uploaded.append(
+            {
+                "uploaded": 100,
+                "name": file_name,
+                "id": attach_id,
+                "key": stored_key,
+                "size": len(content),
+                "fileExtension": _as_string(
+                    raw.get("FileExtension") or raw.get("fileExtension") or file_name.split(".")[-1]
+                ).lstrip("."),
+                "mimeType": mime_type or _as_string(raw.get("ContentType") or raw.get("contentType")),
+                "photos": photos,
+                "_modified_at": now,
+                "_created_at": now,
+            }
+        )
+    return uploaded
 
 
 def _comment_write_accepted(status_code: int, raw: Any, success_text: str) -> bool:
@@ -1491,6 +1820,8 @@ REPORT_FIELD_IDS = {
         "solution_table_resolution": ["Column_KzHlT9k9fc", "Resolution"],
         "solution_table_datetime": ["Column_R_u4Nyl5q_", "ITAgentDate_Time", "Date_Time"],
         "solution_table_stages": ["Column_EA6Nomn1w4", "Stages_1", "Stages"],
+        "solution_table_comments_type": ["Column_x6WUN8QD4O", "Comments_2"],
+        "subject": ["Column_HEiwMtIBBO", "Subject"],
     },
 }
 
@@ -1712,6 +2043,99 @@ def _comment_created_at_ok(date_time: Any, created_at: Any) -> bool:
     return stamped + timedelta(minutes=2) >= created
 
 
+def _normalize_comment_channel(value: Any) -> str:
+    token = re.sub(r"[\s_-]+", "", _as_string(value).strip().lower())
+    if not token:
+        return ""
+    if token in {"user", "usercomments", "employee"}:
+        return "User"
+    if token in {"external", "internal"}:
+        return "External"
+    return ""
+
+
+def _looks_like_attachment_file(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    attach_id = _as_string(item.get("id") or item.get("_id")).strip()
+    if attach_id.lower().startswith("attach_"):
+        return True
+    if _as_string(item.get("key") or item.get("Key")).strip():
+        return True
+    if item.get("photos") or item.get("fileExtension") or item.get("FileExtension"):
+        return True
+    mime = _as_string(item.get("mimeType") or item.get("type") or item.get("contentType")).lower()
+    return mime.startswith("image/") or mime.startswith("application/") or mime.startswith("text/") or mime.startswith("video/") or mime.startswith("audio/")
+
+
+def _as_attachment_list(raw: Any) -> List[Dict[str, Any]]:
+    if not raw:
+        return []
+    if isinstance(raw, dict):
+        nested = raw.get("Data") or raw.get("data") or raw.get("Items") or raw.get("items")
+        if isinstance(nested, list):
+            return [item for item in nested if _looks_like_attachment_file(item)]
+        return [raw] if _looks_like_attachment_file(raw) else []
+    if isinstance(raw, list):
+        return [item for item in raw if _looks_like_attachment_file(item)]
+    return []
+
+
+def _normalize_comment_attachment(item: Dict[str, Any]) -> Dict[str, Any]:
+    photos = item.get("photos") if isinstance(item.get("photos"), list) else []
+    photo_key = ""
+    for photo in photos:
+        if isinstance(photo, dict):
+            photo_key = _as_string(photo.get("key") or photo.get("Key")).strip()
+            if photo_key:
+                break
+    key = _as_string(item.get("key") or item.get("Key")).strip() or photo_key
+    name = _as_string(item.get("name") or item.get("Name")).strip()
+    attach_id = _as_string(item.get("id") or item.get("_id")).strip()
+    return {
+        "id": attach_id,
+        "name": name or "file",
+        "key": key,
+        "size": item.get("size") or 0,
+        "fileExtension": _as_string(item.get("fileExtension") or item.get("FileExtension")),
+        "mimeType": _as_string(item.get("mimeType") or item.get("type") or item.get("contentType")),
+        "photos": photos,
+        "Url": _as_string(item.get("Url") or item.get("url") or item.get("URL")),
+    }
+
+
+def _parse_comment_attachments(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Kissflow nested rows store files on Attachments or a Column_* id — scan both."""
+    if not isinstance(row, dict):
+        return []
+    found = _as_attachment_list(row.get("Attachments") or row.get("attachments"))
+    if not found:
+        for value in row.values():
+            found = _as_attachment_list(value)
+            if found:
+                break
+    return [_normalize_comment_attachment(item) for item in found]
+
+
+def _employee_visible_comments(
+    comments: Optional[List[Dict[str, Any]]],
+    entity: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Help Desk shows User comments only. Internal/External rows stay in Kissflow MIS."""
+    rows = [entry for entry in (comments or []) if isinstance(entry, dict)]
+    if not _uses_extrovis_flow(entity):
+        return rows
+    visible: List[Dict[str, Any]] = []
+    for entry in rows:
+        channel = _normalize_comment_channel(
+            entry.get("commentsType") or entry.get("Comments_2") or entry.get("commentChannel")
+        )
+        if channel != "User":
+            continue
+        visible.append(entry)
+    return visible
+
+
 def _parse_agent_solutions(
     data: Dict[str, Any],
     field_ids: Dict[str, List[str]],
@@ -1734,13 +2158,18 @@ def _parse_agent_solutions(
     res_cols = field_ids.get("solution_table_resolution") or ["Resolution"]
     dt_cols = field_ids.get("solution_table_datetime") or ["ITAgentDate_Time", "Date_Time"]
     stage_cols = field_ids.get("solution_table_stages") or ["Stages_1", "Stages"]
+    type_cols = field_ids.get("solution_table_comments_type") or ["Comments_2", "Column_x6WUN8QD4O"]
 
     out: List[Dict[str, Any]] = []
     seen_text: Set[str] = set()
     for row in rows:
         resolution = _field_text(_pick_row_field(row, *res_cols)).strip()
-        if not resolution or resolution == "—" or _looks_like_kissflow_id(resolution):
+        attachments = _parse_comment_attachments(row)
+        empty_text = not resolution or resolution == "—" or _looks_like_kissflow_id(resolution)
+        if empty_text and not attachments:
             continue
+        if empty_text:
+            resolution = ""
         raw_name = _as_string(_pick_row_field(row, *name_cols)).strip()
         name = _person_label(_pick_row_field(row, *name_cols)) or raw_name or "IT Support"
         if _looks_like_kissflow_id(name) or _looks_like_kissflow_id(raw_name):
@@ -1750,14 +2179,16 @@ def _parse_agent_solutions(
         if _looks_like_email(name) and requester_name:
             name = requester_name
         stages = _as_string(_pick_row_field(row, *stage_cols)).strip()
+        comments_type = _as_string(_pick_row_field(row, *type_cols)).strip()
         date_time = _pick_row_field(row, *dt_cols) or row.get("_created_at") or row.get("_modified_at")
         if not _comment_created_at_ok(date_time, created_at):
             continue
         record_id = _as_string(row.get("_id") or "").strip()
         role = _comment_author_role(raw_name or name, requester_email, requester_name)
-        if resolution.lower() in seen_text and not record_id:
+        if resolution and resolution.lower() in seen_text and not record_id:
             continue
-        seen_text.add(resolution.lower())
+        if resolution:
+            seen_text.add(resolution.lower())
         out.append({
             "id": record_id or f"solution-{len(out)}",
             "recordId": record_id or f"solution-{len(out)}",
@@ -1766,6 +2197,8 @@ def _parse_agent_solutions(
             "resolution": resolution,
             "dateTime": date_time,
             "stages": stages,
+            "commentsType": comments_type,
+            "attachments": attachments,
             "role": role,
         })
     return out
@@ -1872,11 +2305,12 @@ async def _load_instance_comment_thread(
                 list(payload.keys())[:30],
                 list(data.keys())[:40] if data else [],
             )
-        if len(thread.get("comments") or []) > len(best.get("comments") or []):
-            best = thread
-        elif not best.get("requestId") and thread.get("requestId"):
-            best = {**best, **{k: v for k, v in thread.items() if v not in (None, "", [])}}
-        if best.get("comments"):
+        merged_comments = _merge_comment_lists(best.get("comments") or [], thread.get("comments") or [])
+        extras = {k: v for k, v in thread.items() if v not in (None, "", []) and k != "comments"}
+        best = {**best, **extras, "comments": merged_comments}
+        # Keep scanning until a nested Attachments payload is found. An earlier
+        # activity GET often has comment text without files.
+        if merged_comments and any(_comment_file_count(row) for row in merged_comments):
             break
 
     if not best.get("comments"):
@@ -2905,13 +3339,16 @@ def _parse_report_ticket(
         _person_label(_raw_field(data, *field_ids.get("requester_name", []), "Requester_Name"))
         or _person_label(_raw_field(data, *field_ids.get("created_by", []), "_created_by"))
     )
-    agent_solutions = _parse_agent_solutions(
-        data,
-        field_ids,
-        solution,
-        requester_email,
-        requester_name,
-        created_at=created_on,
+    agent_solutions = _employee_visible_comments(
+        _parse_agent_solutions(
+            data,
+            field_ids,
+            solution,
+            requester_email,
+            requester_name,
+            created_at=created_on,
+        ),
+        entity,
     )
     return {
         "id": instance_id,
@@ -3170,7 +3607,7 @@ class TicketCommentRequest(BaseModel):
     entity: str = Field(..., min_length=1)
     instance_id: str = Field(..., min_length=1)
     activity_instance_id: Optional[str] = None
-    comment: str = Field(..., min_length=1)
+    comment: str = ""
     solution_row_id: Optional[str] = None
     commenter_name: Optional[str] = None
     environment: Optional[str] = None
@@ -3329,12 +3766,15 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         org_id: str,
         entity: Optional[str] = None,
         force_env: Optional[str] = None,
+        allow_live_lock: bool = False,
     ) -> Dict[str, Any]:
         """
         Resolve Kissflow connection.
         - Default: ITSM Setup active (development | live)
         - force_env='live'|'development': override for a specific call
           (approval-matrix always uses live; create/reports follow Setup)
+        - Local checking: ITSM_NON_REFEX_FORCE_DEVELOPMENT sends Non-Refex
+          APIs to development except approval-matrix (allow_live_lock=True).
         """
         envs = await _load_environments(org_id)
         setup_active = (
@@ -3353,6 +3793,11 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             )
             name = setup_active
             if force_dev and not await _load_environment_doc():
+                name = "development"
+        if _non_refex_force_development() and _uses_extrovis_flow(entity):
+            if allow_live_lock and force_env == "live":
+                name = "live"
+            else:
                 name = "development"
         builtin = _builtin_environments()
         same_builtin = builtin.get(name) if isinstance(builtin.get(name), dict) else {}
@@ -3824,9 +4269,9 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         entity: Optional[str] = Query(None),
         user: dict = Depends(get_current_user),
     ):
-        """Live Kissflow Non_Refex_Location_Dataform_A00 — uses existing ITSM Setup keys."""
+        """Non-Refex locations from Kissflow (development when local Non-Refex override is on)."""
         org_id = user.get("org_id") or ""
-        cfg = await _resolve_config(org_id, entity, force_env="live")
+        cfg = await _resolve_config(org_id, entity)
         rows = await _fetch_non_refex_locations(cfg)
         filtered = locations_for_entity(rows, entity or "")
         return {
@@ -3844,7 +4289,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         """Catalog always from Live Kissflow; create/submit still follow ITSM Setup active env."""
         org_id = user.get("org_id") or ""
         entities = await _entity_options(org_id)
-        cfg = await _resolve_config(org_id, entity, force_env="live")
+        cfg = await _resolve_config(org_id, entity, force_env="live", allow_live_lock=True)
         result = await _fetch_matrix(cfg)
         result["entityOptions"] = entities
         result["resolved_entity"] = entity
@@ -3886,17 +4331,20 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             )
         active_env = cfg.get("environment") or "development"
 
-        webhook_body = {
-            "process_id": cfg["process_id"],
-            "Source": SOURCE_VALUE,
-            "Name": name,
-            "Email": email,
-            "Entity": entity,
-            "Location_user": location,
-            "Sub_Type": sub_type,
-            "Criticality": criticality,
-            "Description": description,
-        }
+        subject = (body.subject or "").strip()
+        if _uses_extrovis_flow(entity) and not subject:
+            raise HTTPException(status_code=400, detail="Subject is required.")
+        webhook_body = _ticket_webhook_body(
+            process_id=cfg["process_id"],
+            name=name,
+            email=email,
+            entity=entity,
+            location=location,
+            sub_type=sub_type,
+            criticality=criticality,
+            description=description,
+            subject=subject,
+        )
 
         now = datetime.now(timezone.utc).isoformat()
         ticket_id = str(uuid.uuid4())
@@ -3910,6 +4358,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             "location": location,
             "sub_type": sub_type,
             "criticality": criticality,
+            "subject": subject,
             "description": description,
             "local_status": "pending",
             "kissflow_env": active_env,
@@ -4774,9 +5223,33 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         )
         env_name = cfg.get("environment") or "development"
         merged = _merge_comment_lists(thread.get("comments") or [], _ledger_comments(env_name, instance_id))
-        thread["comments"] = merged
-        thread["messageCount"] = len(merged)
+        visible = _employee_visible_comments(merged, entity)
+        thread["comments"] = visible
+        thread["messageCount"] = len(visible)
         return {"success": True, **thread}
+
+    @api_router.get("/itsm/reports/attachment-preview")
+    async def get_attachment_preview(
+        entity: str = Query(...),
+        key: str = Query(...),
+        thumbnail: bool = Query(True),
+        environment: Optional[str] = Query(None),
+        user: dict = Depends(get_current_user),
+    ):
+        """Mint the GET-signed GCS URL for a Non-Refex comment attachment."""
+        if not _uses_extrovis_flow(entity):
+            raise HTTPException(status_code=400, detail="Attachment preview is only for Non-Refex tickets.")
+        file_key = (key or "").strip()
+        if not file_key:
+            raise HTTPException(status_code=400, detail="Attachment key is required.")
+        cfg = await _resolve_config(
+            user.get("org_id") or "",
+            entity,
+            force_env=_client_env_name(environment),
+        )
+        want_thumb = bool(thumbnail) and _attachment_key_is_image(file_key)
+        url = await _mint_gcs_get_url(cfg, file_key, want_thumb)
+        return {"url": url, "key": file_key, "thumbnail": want_thumb}
 
     @api_router.post("/itsm/reports/comment")
     async def submit_ticket_comment(
@@ -4788,11 +5261,6 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         Appends a row to `Table::IT__Agent_Solution` on the current InProgress work step
         (save only — never /submit, and never the scalar `It_Agent_Solution` field).
         """
-        cfg = await _resolve_config(
-            user.get("org_id") or "",
-            body.entity,
-            force_env=_client_env_name(body.environment),
-        )
         instance_id = (body.instance_id or "").strip()
         comment = (body.comment or "").strip()
         if not instance_id:
@@ -4800,15 +5268,50 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         if not comment:
             raise HTTPException(status_code=400, detail="Please enter a comment.")
 
-        requester_name = _commenter_display_name(user, body.commenter_name)
+        return await _save_employee_comment(
+            user=user,
+            entity=body.entity,
+            instance_id=instance_id,
+            activity_instance_id_hint=(body.activity_instance_id or "").strip(),
+            environment=body.environment,
+            comment=comment,
+            commenter_name=body.commenter_name,
+            solution_row_id=(body.solution_row_id or "").strip(),
+            files=[],
+        )
 
-        process_id = cfg.get("process_id") or _report_profile(body.entity)["process_id"]
+    async def _save_employee_comment(
+        *,
+        user: dict,
+        entity: str,
+        instance_id: str,
+        activity_instance_id_hint: str,
+        environment: Optional[str],
+        comment: str,
+        commenter_name: Optional[str],
+        solution_row_id: str = "",
+        files: Optional[List[UploadFile]] = None,
+    ) -> Dict[str, Any]:
+        uploads = [item for item in (files or []) if item is not None]
+        comment_text = (comment or "").strip()
+        if not comment_text and not uploads:
+            raise HTTPException(status_code=400, detail="Please enter a comment or add an attachment.")
+        if uploads and not _uses_extrovis_flow(entity):
+            raise HTTPException(status_code=400, detail="Attachments are only supported for Non-Refex tickets.")
+
+        cfg = await _resolve_config(
+            user.get("org_id") or "",
+            entity,
+            force_env=_client_env_name(environment),
+        )
+        requester_name = _commenter_display_name(user, commenter_name)
+        process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
         cfg = {**cfg, "process_id": process_id}
         activity_candidates = await _list_open_work_activity_ids(
             cfg,
             instance_id,
-            (body.activity_instance_id or "").strip(),
-            entity=body.entity,
+            activity_instance_id_hint,
+            entity=entity,
         )
         activity_instance_id = activity_candidates[0] if activity_candidates else ""
         if not activity_instance_id:
@@ -4820,7 +5323,6 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 ),
             )
 
-        # Enforce step gate on the activity we are about to POST to.
         progress = await _kf_get_json(
             cfg,
             f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}/progress",
@@ -4841,12 +5343,12 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                     live_step = _as_string(step.get("Name") or step.get("ActivityName")).strip()
                     live_assignee = _step_assignee_detail(step) or _step_assignee_name(step)
         if (
-            not _can_comment_on_step(live_step, body.entity)
+            not _can_comment_on_step(live_step, entity)
             or _is_reopen_hold_step(live_step)
             or _progress_has_completed_reopen(progress)
         ):
             blocked_reopen = _is_reopen_hold_step(live_step) or _progress_has_completed_reopen(progress)
-            want = _comment_step_for_entity(body.entity)
+            want = _comment_step_for_entity(entity)
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -4859,20 +5361,29 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 ),
             )
 
-        row_id = (body.solution_row_id or "").strip() or f"IT__Agent_Solution_{uuid.uuid4().hex[:10]}"
-        # Extrovis nested table includes Stages_1; Refex does not — sending it returns
-        # "The field {field_name} does not exist in the flow {model_name}."
+        row_id = solution_row_id or f"IT__Agent_Solution_{uuid.uuid4().hex[:10]}"
+        attachments: List[Dict[str, Any]] = []
+        if uploads:
+            attachments = await _upload_comment_attachments(
+                cfg,
+                instance_id=instance_id,
+                activity_id=activity_instance_id,
+                row_id=row_id,
+                files=uploads,
+            )
         row: Dict[str, Any] = {
             "_id": row_id,
             "Name_1": requester_name,
-            "Resolution": comment,
+            "Resolution": comment_text,
         }
-        if _report_entity_key(body.entity) != "refex":
+        comments_type = ""
+        if _report_entity_key(entity) != "refex":
             row["Stages_1"] = "InProgress"
+            comments_type = "User"
+            row["Comments_2"] = comments_type
+        if attachments:
+            row["Attachments"] = attachments
 
-        # aasik_ITSM saveAgentSolutionComment:
-        # POST /{instanceId}/{step._id} with {_id, Table::IT__Agent_Solution:[{_id, Name_1, Resolution, Stages_1?}]}
-        # never /submit, never instance-only.
         save_ids = list(activity_candidates)
         params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
         payload = {
@@ -4888,13 +5399,20 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "id": row_id,
                 "recordId": row_id,
                 "userName": requester_name,
-                "comment": comment,
-                "resolution": comment,
+                "comment": comment_text,
+                "resolution": comment_text,
                 "dateTime": datetime.now(timezone.utc).isoformat(),
                 "stages": "InProgress",
+                "commentsType": comments_type,
+                "attachments": attachments,
                 "role": "employee",
             }
             _append_ledger_comment(env_name, instance_id, local_entry)
+            merged = _merge_comment_lists(
+                [local_entry],
+                _ledger_comments(env_name, instance_id),
+            )
+            visible = _employee_visible_comments(merged, entity)
             return {
                 "success": True,
                 "message": message,
@@ -4904,10 +5422,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "kissflowSynced": True,
                 "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
                 "activeEnvironment": env_name,
-                "comments": _merge_comment_lists(
-                    [local_entry],
-                    _ledger_comments(env_name, instance_id),
-                ),
+                "comments": visible,
             }
 
         for save_activity in save_ids:
@@ -4956,6 +5471,33 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         raise HTTPException(
             status_code=409 if _is_kissflow_queue_error(last_detail, last_status) else 502,
             detail=last_detail or "Unable to save comment.",
+        )
+
+    @api_router.post("/itsm/reports/comment-with-files")
+    async def submit_ticket_comment_with_files(
+        request: Request,
+        user: dict = Depends(get_current_user),
+    ):
+        """Non-Refex Help Desk comment + attachments. Uses ITSM Setup Kissflow key id/secret."""
+        form = await request.form()
+        entity = str(form.get("entity") or "")
+        if not _uses_extrovis_flow(entity):
+            raise HTTPException(status_code=400, detail="Attachments are only supported for Non-Refex tickets.")
+        ticket_id = str(form.get("instance_id") or "").strip()
+        if not ticket_id:
+            raise HTTPException(status_code=400, detail="Ticket id is required")
+        uploads = _collect_multipart_files(form)
+        commenter = form.get("commenter_name")
+        environment = form.get("environment")
+        return await _save_employee_comment(
+            user=user,
+            entity=entity,
+            instance_id=ticket_id,
+            activity_instance_id_hint=str(form.get("activity_instance_id") or "").strip(),
+            environment=str(environment) if environment not in (None, "") else None,
+            comment=str(form.get("comment") or ""),
+            commenter_name=str(commenter) if commenter not in (None, "") else None,
+            files=uploads,
         )
 
     from routes.refexions import register_refexions_routes

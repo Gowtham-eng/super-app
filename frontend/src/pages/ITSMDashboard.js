@@ -1,11 +1,12 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { ITSM_API } from '../config/api';
 import { toast } from 'sonner';
 import { getApiErrorMessage } from '../utils/apiError';
-import { mergeItsmProfile } from '../utils/itsmEntity';
+import { mergeItsmProfile, isRefexEntity } from '../utils/itsmEntity';
+import CommentAttachmentPreview, { attachmentKind } from '../components/CommentAttachmentPreview';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import {
   ArrowLeft,
@@ -17,6 +18,7 @@ import {
   Headphones,
   Loader2,
   MessageSquare,
+  Paperclip,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -208,8 +210,7 @@ const TicketStatusTags = ({ ticket, size = 'md' }) => {
   );
 };
 
-const isRefexHelpdeskEntity = (entity) =>
-  String(entity || '').trim().toLowerCase() === 'refex';
+const isRefexHelpdeskEntity = (entity) => isRefexEntity(entity);
 
 /** Comments UI is Extrovis-family only — Refex Help Desk never shows a thread.
  *  Reopen tickets can view history but never Reply / compose. */
@@ -308,10 +309,21 @@ const realCommentRows = (rows) =>
   (Array.isArray(rows) ? rows : []).filter((entry) => {
     const text = String(entry?.comment || entry?.resolution || '').trim();
     const name = String(entry?.userName || entry?.agentName || '').trim();
-    if (!text || looksLikeKissflowId(text)) return false;
-    if (looksLikeKissflowId(name) && looksLikeKissflowId(text)) return false;
+    const files = Array.isArray(entry?.attachments) ? entry.attachments : [];
+    if ((!text || looksLikeKissflowId(text)) && !files.length) return false;
+    if (looksLikeKissflowId(name) && looksLikeKissflowId(text) && !files.length) return false;
     return true;
   });
+
+const isEmployeeVisibleComment = (entry, entity = '') => {
+  const token = String(entry?.commentsType || entry?.Comments_2 || entry?.commentChannel || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '');
+  const entityName = typeof entity === 'string' ? entity : '';
+  if (isRefexHelpdeskEntity(entityName)) return true;
+  return token === 'user';
+};
 
 const commentsBelongToTicket = (rows, ticket) => {
   const createdMs = ticket?.createdOn ? new Date(ticket.createdOn).getTime() : 0;
@@ -323,17 +335,32 @@ const commentsBelongToTicket = (rows, ticket) => {
   });
 };
 
+const commentAttachmentCount = (row) =>
+  Array.isArray(row?.attachments) ? row.attachments.length : 0;
+
 const mergeCommentRows = (...groups) => {
-  const seen = new Set();
+  const byId = new Map();
+  const byText = new Map();
   const out = [];
+  const replace = (prev, next) => {
+    const idx = out.indexOf(prev);
+    if (idx >= 0) out[idx] = next;
+    const id = String(next?.id || next?.recordId || '').trim();
+    const text = String(next?.comment || next?.resolution || '').trim().toLowerCase();
+    if (id) byId.set(id, next);
+    if (text) byText.set(text, next);
+  };
   groups.forEach((group) => {
     realCommentRows(group).forEach((row) => {
       const text = String(row?.comment || row?.resolution || '').trim().toLowerCase();
       const id = String(row?.id || row?.recordId || '').trim();
-      const token = id || text;
-      if (!token || seen.has(token) || seen.has(text)) return;
-      if (id) seen.add(id);
-      seen.add(text);
+      const prev = (id && byId.get(id)) || (text && byText.get(text)) || null;
+      if (prev) {
+        if (commentAttachmentCount(row) > commentAttachmentCount(prev)) replace(prev, row);
+        return;
+      }
+      if (id) byId.set(id, row);
+      if (text) byText.set(text, row);
       out.push(row);
     });
   });
@@ -388,16 +415,20 @@ const dayLabel = (value) => {
   return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 };
 
-const revisionEntriesFromTicket = (ticket) => {
-  const rows = realCommentRows(ticket?.agentSolutions);
+const revisionEntriesFromTicket = (ticket, entity = '') => {
+  const rows = realCommentRows(ticket?.agentSolutions).filter((entry) =>
+    isEmployeeVisibleComment(entry, entity || ticket?.entity)
+  );
   return rows
     .map((entry, index) => {
       const comment = String(entry?.comment || entry?.resolution || '').trim();
-      if (!comment || looksLikeKissflowId(comment)) return null;
+      const attachments = Array.isArray(entry?.attachments) ? entry.attachments : [];
+      if ((!comment || looksLikeKissflowId(comment)) && !attachments.length) return null;
       return {
         recordId: entry.recordId || entry.id || `rev-${index}`,
         userName: String(entry.userName || entry.agentName || '').trim(),
         comment,
+        attachments,
         dateTime: entry.dateTime || null,
         role: entry?.role === 'reopen' ? 'reopen' : entry?.role || '',
         timestamp: entry.dateTime ? new Date(entry.dateTime).getTime() || index : index,
@@ -405,6 +436,47 @@ const revisionEntriesFromTicket = (ticket) => {
     })
     .filter(Boolean)
     .sort((a, b) => a.timestamp - b.timestamp);
+};
+
+const KIND_CHIP = {
+  image: 'IMG',
+  pdf: 'PDF',
+  text: 'TXT',
+  word: 'DOCX',
+  excel: 'XLSX',
+  zip: 'ZIP',
+  file: 'FILE',
+};
+
+const PendingAttachChip = ({ file, onRemove }) => {
+  const [src, setSrc] = useState('');
+  const kind = attachmentKind(file);
+  useEffect(() => {
+    if (!file?.type || !String(file.type).startsWith('image/')) return undefined;
+    const url = URL.createObjectURL(file);
+    setSrc(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 pr-1 text-[11px] text-slate-700">
+      {src ? (
+        <img src={src} alt={file.name} className="h-10 w-10 rounded-l-md object-cover" />
+      ) : (
+        <span className="ml-1 rounded bg-white px-1 py-0.5 text-[9px] font-bold tracking-wide text-slate-600">
+          {KIND_CHIP[kind] || 'FILE'}
+        </span>
+      )}
+      <span className="max-w-[8rem] truncate px-1">{file.name}</span>
+      <button
+        type="button"
+        aria-label={`Remove ${file.name}`}
+        onClick={onRemove}
+        className="rounded p-0.5 text-slate-400 hover:bg-white hover:text-slate-700"
+      >
+        ×
+      </button>
+    </span>
+  );
 };
 
 const TicketConversation = ({
@@ -417,6 +489,7 @@ const TicketConversation = ({
   canComment = false,
   commenting = false,
   autoFocus = false,
+  allowAttachments = false,
   onSend,
   onHydrated,
 }) => {
@@ -424,7 +497,9 @@ const TicketConversation = ({
   const [error, setError] = useState('');
   const [hydrating, setHydrating] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [pendingFiles, setPendingFiles] = useState([]);
   const inputRef = React.useRef(null);
+  const fileInputRef = React.useRef(null);
   const scrollerRef = React.useRef(null);
   const authRef = React.useRef(getAuthHeader);
   const hydrateRef = React.useRef(onHydrated);
@@ -432,7 +507,7 @@ const TicketConversation = ({
   authRef.current = getAuthHeader;
   hydrateRef.current = onHydrated;
   ticketRef.current = ticket;
-  const entries = revisionEntriesFromTicket(ticket);
+  const entries = revisionEntriesFromTicket(ticket, entity);
   const allowCompose =
     Boolean(canComment)
     && !showsEmployeeRating(ticket)
@@ -442,11 +517,14 @@ const TicketConversation = ({
     const live = ticketRef.current;
     if (!ticket?.id || !live?.id || live.id !== ticket.id || !entity || typeof authRef.current !== 'function') return;
     const stored = commentsBelongToTicket(commentsFromStore(live.id), live);
-    if (!force && stored.length && typeof hydrateRef.current === 'function') {
+    const localEntries = revisionEntriesFromTicket(live, entity);
+    const localHasFiles = [...stored, ...localEntries].some(
+      (entry) => Array.isArray(entry?.attachments) && entry.attachments.length,
+    );
+    if (!force && stored.length && localHasFiles && typeof hydrateRef.current === 'function') {
       hydrateRef.current(live.id, { comments: stored });
     }
-    const hasLocal = stored.length > 0 || revisionEntriesFromTicket(live).length > 0;
-    if (force || !hasLocal) setHydrating(true);
+    if (force || !localHasFiles) setHydrating(true);
     setLoadError('');
     try {
       const res = await axios.get(`${ITSM_API}/itsm/reports/comments`, {
@@ -455,7 +533,7 @@ const TicketConversation = ({
           instance_id: live.id,
           activity_instance_id: live.activityInstanceId || '',
           environment: environment || undefined,
-          ...(force ? { _t: Date.now() } : {}),
+          _t: Date.now(),
         },
         ...authRef.current(),
       });
@@ -487,15 +565,17 @@ const TicketConversation = ({
   }, [entries.length, commenting]);
 
   const send = async (text) => {
-    const note = String(text || draft).trim();
-    if (!note) {
-      setError('Please enter a comment.');
+    const note = String(text ?? draft).trim();
+    const files = allowAttachments ? pendingFiles : [];
+    if (!note && !files.length) {
+      setError(allowAttachments ? 'Please enter a comment or add an attachment.' : 'Please enter a comment.');
       return;
     }
     setError('');
     try {
-      await onSend(note);
+      await onSend(note, files);
       setDraft('');
+      setPendingFiles([]);
       loadComments();
     } catch (err) {
       setError(err?.message || 'Unable to save comment.');
@@ -632,6 +712,24 @@ const TicketConversation = ({
                         }`}
                       >
                         {entry.comment}
+                        {Array.isArray(entry.attachments) && entry.attachments.length ? (
+                          <span
+                            className={`${entry.comment ? 'mt-1.5' : ''} relative z-10 flex flex-wrap gap-1.5`}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            {entry.attachments.map((file, fileIdx) => (
+                              <CommentAttachmentPreview
+                                key={`${file.id || file.key || file.name || fileIdx}`}
+                                file={file}
+                                entity={entity}
+                                environment={environment}
+                                getAuthHeader={getAuthHeader}
+                                mine={mine}
+                              />
+                            ))}
+                          </span>
+                        ) : null}
                       </div>
                       {entry.dateTime ? (
                         <p className={`mt-1 text-[10px] text-slate-400 ${mine ? 'text-right' : 'text-left'}`}>
@@ -683,10 +781,37 @@ const TicketConversation = ({
               className="min-h-[48px] max-h-28 flex-1 resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100"
               data-testid={`itsm-comment-note-${ticket.id}`}
             />
+            {allowAttachments ? (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  multiple
+                  accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf,.odt,.ods,.odp,.txt,.csv,.json,.xml,.html,.md,.zip,.7z,.rar,.tar,.gz,.mp4,.mov,.webm,.mp3,.wav,.m4a,.svg,.tif,.tiff,.heic,application/pdf,text/plain,application/zip"
+                  onChange={(event) => {
+                    const next = Array.from(event.target.files || []);
+                    setPendingFiles((prev) => [...prev, ...next]);
+                    event.target.value = '';
+                  }}
+                />
+                <button
+                  type="button"
+                  title="Add attachment"
+                  aria-label="Add attachment"
+                  disabled={commenting}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-teal-600 hover:bg-teal-50 hover:text-teal-800 disabled:opacity-40"
+                  data-testid={`itsm-comment-attach-${ticket.id}`}
+                >
+                  <Paperclip size={16} />
+                </button>
+              </>
+            ) : null}
             <button
               type="button"
               onClick={() => send()}
-              disabled={commenting || !draft.trim()}
+              disabled={commenting || (!draft.trim() && !(allowAttachments && pendingFiles.length))}
               className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-40"
               data-testid={`itsm-comment-send-${ticket.id}`}
               aria-label="Send comment"
@@ -695,6 +820,17 @@ const TicketConversation = ({
               Send
             </button>
           </div>
+          {pendingFiles.length ? (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {pendingFiles.map((file, index) => (
+                <PendingAttachChip
+                  key={`${file.name}-${file.size}-${index}`}
+                  file={file}
+                  onRemove={() => setPendingFiles((prev) => prev.filter((_, item) => item !== index))}
+                />
+              ))}
+            </div>
+          ) : null}
           {error ? <p className="mt-1.5 text-xs text-red-600">{error}</p> : null}
           <p className="mt-1.5 text-[10px] text-slate-400">Enter to send · Shift+Enter for a new line</p>
         </div>
@@ -791,11 +927,11 @@ try {
 
 const commentsFromStore = (ticketId) => {
   if (!ticketId) return [];
-  return realCommentRows(commentsStore.get(ticketId) || []);
+  return realCommentRows(commentsStore.get(ticketId) || []).filter(isEmployeeVisibleComment);
 };
 
 const rememberComments = (ticketId, comments) => {
-  const rows = realCommentRows(comments);
+  const rows = realCommentRows(comments).filter(isEmployeeVisibleComment);
   if (!ticketId) return [];
   if (!rows.length) return commentsFromStore(ticketId);
   const merged = mergeCommentRows(rows, commentsFromStore(ticketId));
@@ -898,7 +1034,9 @@ const ITSMDashboard = () => {
   const applyCommentThread = (ticketId, payload) => {
     if (!ticketId || !payload) return;
     const authoritative = Array.isArray(payload.comments);
-    const comments = authoritative ? realCommentRows(payload.comments) : [];
+    const comments = authoritative
+      ? realCommentRows(payload.comments).filter((entry) => isEmployeeVisibleComment(entry, entity))
+      : [];
     setTickets((prev) => {
       const next = prev.map((row) => {
         if (row.id !== ticketId && row.localId !== ticketId) return row;
@@ -1102,10 +1240,21 @@ const ITSMDashboard = () => {
       navigate(location.pathname, { replace: true, state: {} });
     }
     const hasCache = ticketsCache.entityKey === entityKey && ticketsCache.tickets.length > 0;
+    let navReload = false;
+    try {
+      const nav = typeof performance !== 'undefined' && performance.getEntriesByType
+        ? performance.getEntriesByType('navigation')[0]
+        : null;
+      if (nav && nav.type === 'reload') navReload = true;
+      else if (typeof performance !== 'undefined' && performance.navigation && performance.navigation.type === 1) {
+        navReload = true;
+      }
+    } catch {
+      navReload = false;
+    }
     fetchTickets({
-      // First visit / after create: full load. Returning with cache: count-first.
-      force: shouldRefresh || !hasCache,
-      silent: hasCache && !shouldRefresh,
+      force: shouldRefresh || !hasCache || navReload,
+      silent: hasCache && !shouldRefresh && !navReload,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityKey]);
@@ -1212,12 +1361,13 @@ const ITSMDashboard = () => {
     if (canCommentTicket(ticket, entity)) setComposerTicketId(rowId);
   };
 
-  const submitCommentForTicket = async (ticket, rawNote) => {
+  const submitCommentForTicket = async (ticket, rawNote, files = []) => {
     const note = String(rawNote || '').trim();
+    const fileList = Array.isArray(files) ? files.filter(Boolean) : [];
     if (!ticket?.id || !canCommentTicket(ticket, entity)) {
       throw new Error('Comments are not available on this step.');
     }
-    if (!note) throw new Error('Please enter a comment.');
+    if (!note && !fileList.length) throw new Error('Please enter a comment or add an attachment.');
     setCommentingId(ticket.id);
     const optimisticId = `local-${Date.now()}`;
     const optimistic = {
@@ -1228,6 +1378,8 @@ const ITSMDashboard = () => {
       resolution: note,
       dateTime: new Date().toISOString(),
       stages: 'InProgress',
+      commentsType: 'User',
+      attachments: fileList.map((file) => ({ name: file.name, size: file.size })),
       role: 'employee',
     };
     setTickets((prev) => {
@@ -1242,18 +1394,36 @@ const ITSMDashboard = () => {
     });
     setExpandedIds((prev) => new Set(prev).add(ticket.id));
     try {
-      const res = await axios.post(
-        `${ITSM_API}/itsm/reports/comment`,
-        {
-          entity,
-          instance_id: ticket.id,
-          activity_instance_id: ticket.activityInstanceId || '',
-          comment: note,
-          commenter_name: viewerName || undefined,
-          environment: activeEnvironment || undefined,
-        },
-        getAuthHeader()
-      );
+      const auth = getAuthHeader();
+      let res;
+      if (fileList.length) {
+        const form = new FormData();
+        form.append('entity', entity);
+        form.append('instance_id', ticket.id);
+        form.append('activity_instance_id', ticket.activityInstanceId || '');
+        form.append('comment', note);
+        if (viewerName) form.append('commenter_name', viewerName);
+        if (activeEnvironment) form.append('environment', activeEnvironment);
+        fileList.forEach((file) => form.append('files', file));
+        res = await axios.post(`${ITSM_API}/itsm/reports/comment-with-files`, form, {
+          headers: { Authorization: auth.headers?.Authorization },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+        });
+      } else {
+        res = await axios.post(
+          `${ITSM_API}/itsm/reports/comment`,
+          {
+            entity,
+            instance_id: ticket.id,
+            activity_instance_id: ticket.activityInstanceId || '',
+            comment: note,
+            commenter_name: viewerName || undefined,
+            environment: activeEnvironment || undefined,
+          },
+          auth
+        );
+      }
       toast.success(res.data.message || 'Comment sent');
       if (Array.isArray(res.data.comments) && res.data.comments.length) {
         applyCommentThread(ticket.id, res.data);
@@ -1387,7 +1557,7 @@ const ITSMDashboard = () => {
                             data-testid={`itsm-comment-${ticket.id}`}
                           >
                             {commentingId === ticket.id ? <Loader2 size={14} className="animate-spin" /> : <MessageSquare size={14} />}
-                            Reply
+                            {isRefexHelpdeskEntity(entity) ? 'Reply' : 'Reply / Attach'}
                           </button>
                         ) : null}
                         {ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1 ? (
@@ -1423,8 +1593,9 @@ const ITSMDashboard = () => {
                           canComment={showComment}
                           commenting={commentingId === ticket.id}
                           autoFocus={composerTicketId === rowId}
-                          onSend={(note) => submitCommentForTicket(ticket, note)}
+                          onSend={(note, files) => submitCommentForTicket(ticket, note, files)}
                           onHydrated={applyCommentThread}
+                          allowAttachments={!isRefexHelpdeskEntity(entity)}
                         />
                       </td>
                     </tr>
@@ -1482,7 +1653,7 @@ const ITSMDashboard = () => {
                     data-testid={`itsm-comment-mobile-${ticket.id}`}
                   >
                     {commentingId === ticket.id ? <Loader2 size={14} className="animate-spin" /> : <MessageSquare size={14} />}
-                    Reply
+                    {isRefexHelpdeskEntity(entity) ? 'Reply' : 'Reply / Attach'}
                   </button>
                 ) : null}
                 {ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1 ? (
@@ -1515,8 +1686,9 @@ const ITSMDashboard = () => {
                     canComment={showComment}
                     commenting={commentingId === ticket.id}
                     autoFocus={composerTicketId === rowId}
-                    onSend={(note) => submitCommentForTicket(ticket, note)}
+                    onSend={(note, files) => submitCommentForTicket(ticket, note, files)}
                     onHydrated={applyCommentThread}
+                    allowAttachments={!isRefexHelpdeskEntity(entity)}
                   />
                 </div>
               ) : null}
