@@ -614,7 +614,7 @@ const SCIMSetup = () => {
             <ol className="text-sm text-teal-700 space-y-2 list-decimal list-inside">
               <li>Generate a token below (or set <code className="bg-white px-1 rounded">USER_MASTER_API_KEY</code> on the server)</li>
               <li>Call <code className="bg-white px-1 rounded">GET /api/v1/user-master</code> with <code className="bg-white px-1 rounded">Authorization: Bearer &lt;token&gt;</code></li>
-              <li>Optional filters: <code className="bg-white px-1 rounded">email</code>, <code className="bg-white px-1 rounded">employee_id</code>, <code className="bg-white px-1 rounded">status</code>, <code className="bg-white px-1 rounded">q</code>, <code className="bg-white px-1 rounded">page</code></li>
+              <li>Optional filters: <code className="bg-white px-1 rounded">email</code>, <code className="bg-white px-1 rounded">employee_id</code>, <code className="bg-white px-1 rounded">status</code> (active or all), <code className="bg-white px-1 rounded">q</code></li>
               <li>Single user: <code className="bg-white px-1 rounded">GET /api/v1/user-master/&#123;id-or-email&#125;</code></li>
             </ol>
           </div>

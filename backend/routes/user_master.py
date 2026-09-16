@@ -206,8 +206,6 @@ def register_user_master_routes(
 
     @public.get("/user-master")
     async def list_user_master(
-        page: int = Query(1, ge=1),
-        page_size: int = Query(100, ge=1, le=500),
         status: str = Query("active"),
         email: Optional[str] = Query(None),
         employee_id: Optional[str] = Query(None),
@@ -225,16 +223,12 @@ def register_user_master_routes(
             q=q,
             updated_since=updated_since,
         )
-        total = await db.users.count_documents(query)
-        skip = (page - 1) * page_size
         rows = await db.users.find(query, {"_id": 0, "password": 0, "admin_known_password": 0}).sort(
             [("name", 1), ("email", 1)]
-        ).skip(skip).limit(page_size).to_list(page_size)
+        ).to_list(None)
         return {
             "ok": True,
-            "page": page,
-            "page_size": page_size,
-            "total": total,
+            "total": len(rows),
             "users": [serialize_user_master(row) for row in rows],
         }
 

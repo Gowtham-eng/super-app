@@ -1322,7 +1322,7 @@ const UsersPage = () => {
                   Also set status to Active so they can log in now
                   {resetUser?.adrenalin_employee_id ? (
                     <span className="block text-xs text-slate-400 mt-0.5">
-                      HR sync may disable them again if they are exited in Adrenalin.
+                      HR sync may disable them again if EMPLOYMENT_STATUS is not Active in Adrenalin.
                     </span>
                   ) : null}
                 </span>

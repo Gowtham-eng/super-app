@@ -262,8 +262,18 @@ def _extract_all_hr_fields(emp: dict, lookup: dict) -> dict:
     }
 
 
+ADRENALIN_INACTIVE_REASON = "Inactive employment status (Adrenalin sync)"
+ADRENALIN_DISABLE_REASONS = {
+    ADRENALIN_INACTIVE_REASON,
+    "Employee exited (Adrenalin sync)",  # legacy reason; re-enable if status is Active again
+}
+
+
 def _is_employment_active(hr: dict) -> bool:
-    """Active when Adrenalin EMPLOYMENT_STATUS=1 and EMPLOYMENT_STATUS_DESCRIPTION=Active."""
+    """Active only when EMPLOYMENT_STATUS=1 and EMPLOYMENT_STATUS_DESCRIPTION=Active.
+
+    DATE_OF_EXIT and EMPLOYEE_STATUS are stored but never used to disable or enable.
+    """
     status_code = str(hr.get("employment_status") or "").strip()
     status_desc = (hr.get("employment_status_description") or "").strip().lower()
     return status_code == "1" and status_desc == "active"
@@ -273,7 +283,9 @@ async def sync_employees(db, org_id: str, *, skip_kissflow: bool = False) -> dic
     """
     Sync ALL employee fields from Adrenalin HR to IAM system.
     - New employees -> create user with default password
-    - Exited employees -> disable user (EMPLOYMENT_STATUS != 1 or description != Active)
+    - Disable only when EMPLOYMENT_STATUS is not 1 or description is not Active
+      (DATE_OF_EXIT / employee exit is ignored for login status)
+    - Re-enable Adrenalin-disabled users when those two fields are Active again
     - Existing employees -> update ALL HR fields
     - Resolves L1 Manager (supervisor) and L2 Manager (supervisor's supervisor) emails
     """
@@ -358,10 +370,25 @@ async def sync_employees(db, org_id: str, *, skip_kissflow: bool = False) -> dic
                 if not is_active and existing_user.get("status") != "disabled":
                     hr_update["status"] = "disabled"
                     hr_update["disabled_at"] = datetime.now(timezone.utc).isoformat()
-                    hr_update["disabled_reason"] = "Employee exited (Adrenalin sync)"
+                    hr_update["disabled_reason"] = ADRENALIN_INACTIVE_REASON
                     await db.users.update_one({"id": existing_user["id"]}, {"$set": hr_update})
                     result["disabled"] += 1
-                    logger.info(f"Disabled user: {email} (exited)")
+                    logger.info(
+                        f"Disabled user: {email} "
+                        f"(EMPLOYMENT_STATUS={hr['employment_status']!r}, "
+                        f"EMPLOYMENT_STATUS_DESCRIPTION={hr['employment_status_description']!r})"
+                    )
+                elif (
+                    is_active
+                    and existing_user.get("status") == "disabled"
+                    and existing_user.get("disabled_reason") in ADRENALIN_DISABLE_REASONS
+                ):
+                    hr_update["status"] = "active"
+                    hr_update["disabled_reason"] = None
+                    hr_update["disabled_at"] = None
+                    await db.users.update_one({"id": existing_user["id"]}, {"$set": hr_update})
+                    result["updated"] += 1
+                    logger.info(f"Re-enabled user: {email} (EMPLOYMENT_STATUS=1, Active)")
                 else:
                     await db.users.update_one({"id": existing_user["id"]}, {"$set": hr_update})
                     result["updated"] += 1

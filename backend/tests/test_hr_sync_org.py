@@ -7,7 +7,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from services.adrenalin_sync import hr_test_org_ids, primary_hr_org_id, resolve_hr_sync_org_id
+from services.adrenalin_sync import (
+    _is_employment_active,
+    hr_test_org_ids,
+    primary_hr_org_id,
+    resolve_hr_sync_org_id,
+)
 
 
 def test_resolve_prefers_primary_over_requested(monkeypatch):
@@ -27,3 +32,27 @@ def test_resolve_skips_test_org_when_no_primary(monkeypatch):
 def test_primary_hr_org_id_from_env(monkeypatch):
     monkeypatch.setenv("PRIMARY_HR_ORG_ID", "15f688ad-ae0a-4947-b329-7a231859f226")
     assert primary_hr_org_id() == "15f688ad-ae0a-4947-b329-7a231859f226"
+
+
+def test_employment_active_only_uses_employment_status_fields():
+    assert _is_employment_active({
+        "employment_status": "1",
+        "employment_status_description": "Active",
+        "date_of_exit": "2026-01-01",
+        "employee_status": "0",
+        "employee_status_description": "Exited",
+    })
+    assert not _is_employment_active({
+        "employment_status": "0",
+        "employment_status_description": "Active",
+        "date_of_exit": "",
+    })
+    assert not _is_employment_active({
+        "employment_status": "1",
+        "employment_status_description": "Relieved",
+        "date_of_exit": "",
+    })
+    assert not _is_employment_active({
+        "employment_status": "",
+        "employment_status_description": "Active",
+    })
