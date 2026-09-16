@@ -67,7 +67,7 @@ const CAROUSEL_SLIDES = [
   },
 ];
 
-const Login = () => {
+const Login = ({ allowPasswordLogin = false }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -369,7 +369,7 @@ const Login = () => {
   }
 
   return (
-    <div className="min-h-screen min-h-[100dvh] flex w-full max-w-[100vw] overflow-x-hidden" data-testid="login-page">
+    <div className="min-h-screen min-h-[100dvh] flex w-full max-w-[100vw] overflow-x-hidden" data-testid={allowPasswordLogin ? 'developer-login-page' : 'login-page'}>
       {/* Left: Carousel */}
       <div className="hidden lg:flex lg:w-[55%] relative overflow-hidden bg-zinc-900">
         {/* Background Images */}
@@ -443,7 +443,8 @@ const Login = () => {
             </div>
           )}
 
-          <form onSubmit={handleLogin} className="space-y-5">
+          {allowPasswordLogin && (
+          <form onSubmit={handleLogin} className="space-y-5" data-testid="password-login-form">
             <div>
               <label className="block text-sm font-semibold text-zinc-700 mb-2">
                 Email Address
@@ -500,9 +501,11 @@ const Login = () => {
               )}
             </button>
           </form>
+          )}
 
           {(azureProviders.length > 0 || googleProviders.length > 0) && (
-            <div className="mt-6">
+            <div className={allowPasswordLogin ? 'mt-6' : ''}>
+              {allowPasswordLogin && (
               <div className="relative flex items-center justify-center mb-4">
                 <div className="absolute inset-0 flex items-center">
                   <div className="w-full border-t border-zinc-200" />
@@ -511,6 +514,7 @@ const Login = () => {
                   or
                 </span>
               </div>
+              )}
 
               {googleProviders.length > 0 && (
                 <button

@@ -115,6 +115,7 @@ function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/developerlogin" element={<Login allowPasswordLogin />} />
           <Route path="/download" element={<AppDownload />} />
           <Route path="/" element={<DefaultRedirect />} />
           {/* User-accessible routes */}
