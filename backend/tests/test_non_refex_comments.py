@@ -4,6 +4,7 @@ from routes.itsm import (
     _build_kissflow_upload_object_path,
     _collect_multipart_files,
     _employee_visible_comments,
+    _is_comment_nested_table_step,
     _is_gcs_signed_url,
     _kissflow_headers,
     _merge_comment_lists,
@@ -338,3 +339,10 @@ def test_extrovis_report_ticket_includes_subject():
         "Refex",
     )
     assert refex.get("subject", "") == ""
+
+
+def test_comment_nested_table_prefers_solution_not_pickup():
+    assert _is_comment_nested_table_step("IT Agent Solution") is True
+    assert _is_comment_nested_table_step("IT Tech Support") is True
+    assert _is_comment_nested_table_step("IT Agent PickUp") is False
+    assert _is_comment_nested_table_step("PickUp") is False

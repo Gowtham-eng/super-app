@@ -1033,6 +1033,19 @@ def _step_activity_ids(step: Dict[str, Any], instance_id: str = "") -> List[str]
     return ordered
 
 
+def _is_comment_nested_table_step(name: str) -> bool:
+    """IT__Agent_Solution lives on Solution / Tech Support, not completed PickUp."""
+    token = re.sub(r"[\s_-]+", "", (name or "").lower())
+    if not token:
+        return False
+    if "pickup" in token or token in {"pick", "itagentpickup"}:
+        return False
+    return any(
+        part in token
+        for part in ("solution", "techsupport", "itagent", "ittech")
+    )
+
+
 def _activity_instance_from_item(item: Dict[str, Any], instance_id: str = "") -> str:
     return _usable_activity_id(
         item.get("_activity_instance_id")
@@ -2369,14 +2382,13 @@ async def _load_instance_comment_thread(
     hinted_activity: str = "",
     viewer_email: str = "",
 ) -> Dict[str, Any]:
-    """Load Table::IT__Agent_Solution. Live activity GET often 400s for the integration key."""
+    """Same sequence as aasik IT Head Comments: progress → GET instance/activity (never bare instance)."""
     process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
     field_ids = REPORT_FIELD_IDS.get(_report_entity_key(entity), REPORT_FIELD_IDS["refex"])
     params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
     activity_id = await _resolve_open_work_activity_id(cfg, instance_id, hinted_activity, entity=entity)
     base = f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}"
 
-    # Live activity first — instance GET is step-scoped and usually has no nested table.
     paths: List[str] = []
     for aid in (activity_id, hinted_activity):
         usable = _usable_activity_id(aid, instance_id)
@@ -2386,20 +2398,24 @@ async def _load_instance_comment_thread(
                 paths.append(path)
 
     progress = await _kf_get_json(cfg, f"{base}/progress", params)
-    for node in _walk_progress_nodes(progress):
-        if not isinstance(node, dict):
+    preferred: List[str] = []
+    others: List[str] = []
+    for step in _iter_progress_steps(progress):
+        if not isinstance(step, dict):
             continue
-        aid = _usable_activity_id(
-            node.get("_activity_instance_id") or node.get("_id") or node.get("Id"),
-            instance_id,
-        )
-        if not aid:
-            continue
-        path = f"{base}/{aid}"
+        name = _as_string(step.get("Name") or step.get("name") or step.get("StepName") or "")
+        for aid in _step_activity_ids(step, instance_id):
+            path = f"{base}/{aid}"
+            if path in paths:
+                continue
+            if _is_comment_nested_table_step(name):
+                preferred.append(path)
+            else:
+                others.append(path)
+    for path in preferred + others[:4]:
         if path not in paths:
             paths.append(path)
-    if base not in paths:
-        paths.append(base)
+    # aasik: bare GET /{instanceId} is 404 and has no nested table — do not call it.
 
     best: Dict[str, Any] = {"comments": [], "activityInstanceId": activity_id or hinted_activity or ""}
     for path in paths:
@@ -2426,6 +2442,8 @@ async def _load_instance_comment_thread(
         merged_comments = _merge_comment_lists(best.get("comments") or [], thread.get("comments") or [])
         extras = {k: v for k, v in thread.items() if v not in (None, "", []) and k != "comments"}
         best = {**best, **extras, "comments": merged_comments}
+        if sum(1 for row in merged_comments if _comment_file_count(row)):
+            break
 
     email = (best.get("requesterEmail") or viewer_email or "").strip()
     if email:
@@ -5380,6 +5398,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         visible = _employee_visible_comments(merged, entity)
         thread["comments"] = visible
         thread["messageCount"] = len(visible)
+        thread["commentParser"] = "nested-merge-v2"
         return {"success": True, **thread}
 
     @api_router.get("/itsm/reports/attachment-preview")
