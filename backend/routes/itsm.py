@@ -1113,10 +1113,16 @@ async def _kf_get_json(
     cfg: Dict[str, Any],
     path: str,
     params: Optional[Dict[str, Any]] = None,
+    *,
+    for_write: bool = False,
 ) -> Any:
     url = path if path.startswith("http") else f"{cfg['kissflow_base_url']}{path}"
     async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.get(url, headers=_kissflow_headers(cfg), params=params or {})
+        response = await client.get(
+            url,
+            headers=_kissflow_headers(cfg, for_write=for_write),
+            params=params or {},
+        )
     if response.status_code >= 400:
         logger.warning("Kissflow GET %s -> %s %s", path, response.status_code, (response.text or "")[:200])
         return None
@@ -1946,6 +1952,31 @@ def _is_step_field_row(row: Dict[str, Any]) -> bool:
     return bool(keys & {"slabreached", "actedby", "actedat", "expectedat", "stepname"})
 
 
+def _looks_like_solution_row(row: Dict[str, Any]) -> bool:
+    """True for an IT__Agent_Solution nested row, not the parent process instance."""
+    if not isinstance(row, dict) or _is_step_field_row(row):
+        return False
+    rid = _as_string(row.get("_id") or row.get("Id") or row.get("id"))
+    if rid.startswith("IT__Agent_Solution"):
+        return True
+    markers = (
+        "Resolution",
+        "Name_1",
+        "Comments_2",
+        "Stages_1",
+        "ITAgentDate_Time",
+        "Attachments",
+        "attachments",
+    )
+    if not any(key in row for key in markers):
+        return False
+    if "_current_step" in row and (
+        "Requester_Email" in row or "Request_ID" in row or "Statu_1" in row
+    ):
+        return False
+    return True
+
+
 def _unwrap_table_rows(value: Any) -> List[Dict[str, Any]]:
     if value is None or value == "" or value == "—" or isinstance(value, str):
         return []
@@ -1970,6 +2001,14 @@ def _unwrap_table_rows(value: Any) -> List[Dict[str, Any]]:
             )
             if numeric:
                 rows = [value[key] for key in numeric if isinstance(value.get(key), dict)]
+        if not rows:
+            keyed = [
+                child
+                for child in value.values()
+                if isinstance(child, dict) and _looks_like_solution_row(child)
+            ]
+            if keyed and not _looks_like_solution_row(value):
+                rows = keyed
         if not rows and any(
             key in value for key in ("Resolution", "Name_1", "Name", "_id", "Attachments", "attachments")
         ):
@@ -1979,19 +2018,34 @@ def _unwrap_table_rows(value: Any) -> List[Dict[str, Any]]:
 
 def _agent_solution_table_candidates(data: Dict[str, Any], field_ids: Dict[str, List[str]]) -> List[Any]:
     found: List[Any] = []
-    raw = _raw_field(data, *field_ids.get("solution_table", []))
-    if raw not in (None, "", [], {}):
+    seen: Set[int] = set()
+
+    def add(raw: Any) -> None:
+        if raw in (None, "", [], {}):
+            return
+        marker = id(raw)
+        if marker in seen:
+            return
+        seen.add(marker)
         found.append(raw)
-    for key in ("Table::IT__Agent_Solution", "IT__Agent_Solution", "table::IT__Agent_Solution"):
-        value = data.get(key)
-        if value not in (None, "", [], {}):
-            found.append(value)
-    inner = data.get("Data") if isinstance(data.get("Data"), dict) else None
-    if inner:
-        for key in ("Table::IT__Agent_Solution", "IT__Agent_Solution"):
-            value = inner.get(key)
-            if value not in (None, "", [], {}):
-                found.append(value)
+
+    raw = _raw_field(data, *field_ids.get("solution_table", []))
+    add(raw)
+    stack: List[Tuple[Any, int]] = [(data, 0)]
+    while stack:
+        obj, depth = stack.pop()
+        if depth > 6 or not isinstance(obj, dict):
+            continue
+        for key, value in obj.items():
+            token = re.sub(r"[\s_:-]+", "", str(key).lower())
+            if "itagentsolution" in token or token in {"columnqr9gpve5", "columnkaubosozaz"}:
+                add(value)
+            if isinstance(value, dict) and depth < 6:
+                stack.append((value, depth + 1))
+            elif isinstance(value, list) and depth < 3:
+                for item in value[:80]:
+                    if isinstance(item, dict):
+                        stack.append((item, depth + 1))
     return found
 
 
@@ -2155,15 +2209,18 @@ def _normalize_comment_channel(value: Any) -> str:
 def _looks_like_attachment_file(item: Any) -> bool:
     if not isinstance(item, dict):
         return False
-    attach_id = _as_string(item.get("id") or item.get("_id")).strip()
+    attach_id = _as_string(item.get("id") or item.get("_id") or item.get("Id")).strip()
     if attach_id.lower().startswith("attach_"):
         return True
     if _as_string(item.get("key") or item.get("Key")).strip():
         return True
     if item.get("photos") or item.get("fileExtension") or item.get("FileExtension"):
         return True
-    mime = _as_string(item.get("mimeType") or item.get("type") or item.get("contentType")).lower()
-    return mime.startswith("image/") or mime.startswith("application/") or mime.startswith("text/") or mime.startswith("video/") or mime.startswith("audio/")
+    mime = _as_string(item.get("mimeType") or item.get("type") or item.get("contentType") or item.get("ContentType")).lower()
+    if mime.startswith("image/") or mime.startswith("application/") or mime.startswith("text/") or mime.startswith("video/") or mime.startswith("audio/"):
+        return True
+    name = _as_string(item.get("name") or item.get("Name"))
+    return bool(name and "." in name.rsplit("/", 1)[-1] and (item.get("size") or item.get("Size") or item.get("uploaded")))
 
 
 def _as_attachment_list(raw: Any) -> List[Dict[str, Any]]:
@@ -2183,6 +2240,9 @@ def _as_attachment_list(raw: Any) -> List[Dict[str, Any]]:
         )
         if numeric:
             return [raw[key] for key in numeric if _looks_like_attachment_file(raw.get(key))]
+        keyed = [value for value in raw.values() if _looks_like_attachment_file(value)]
+        if keyed:
+            return keyed
         return [raw] if _looks_like_attachment_file(raw) else []
     if isinstance(raw, list):
         return [item for item in raw if _looks_like_attachment_file(item)]
@@ -2353,6 +2413,18 @@ def _thread_from_instance_payload(
         requester_name,
         created_at=item.get("_created_at") or item.get("_submitted_at"),
     )
+    if isinstance(payload, dict) and payload is not item:
+        comments = _merge_comment_lists(
+            comments,
+            _parse_agent_solutions(
+                payload,
+                field_ids,
+                "",
+                requester_email,
+                requester_name,
+                created_at=item.get("_created_at") or item.get("_submitted_at"),
+            ),
+        )
     assigned = _format_person(item.get("_current_assigned_to"))
     return {
         "comments": comments,
@@ -2373,6 +2445,109 @@ def _thread_from_instance_payload(
         "messageCount": len(comments),
         "_last_completed_step": _as_string(item.get("_last_completed_step")),
     }
+
+
+def _payload_attachment_hints(payload: Any) -> List[str]:
+    hints: List[str] = []
+    if not isinstance(payload, dict):
+        return hints
+
+    def walk(obj: Any, prefix: str, depth: int) -> None:
+        if depth > 4 or not isinstance(obj, dict) or len(hints) >= 24:
+            return
+        for key, value in obj.items():
+            token = str(key)
+            low = token.lower()
+            if "agent_solution" in low or "attach" in low or token.startswith("Table::"):
+                kind = type(value).__name__
+                extra = ""
+                if isinstance(value, dict):
+                    extra = f" keys={list(value.keys())[:8]}"
+                elif isinstance(value, list):
+                    extra = f" len={len(value)}"
+                hints.append(f"{prefix}{token}:{kind}{extra}")
+            if isinstance(value, dict):
+                walk(value, f"{prefix}{token}.", depth + 1)
+
+    walk(payload, "", 0)
+    data = payload.get("Data") if isinstance(payload.get("Data"), dict) else None
+    if data:
+        walk(data, "Data.", 0)
+    return hints
+
+
+async def _thread_from_comment_path(
+    cfg: Dict[str, Any],
+    path: str,
+    params: Dict[str, Any],
+    field_ids: Dict[str, List[str]],
+    activity_id: str,
+) -> Dict[str, Any]:
+    """BOT key first (files), then report key (text), then nested-table GET."""
+    best: Dict[str, Any] = {"comments": [], "activityInstanceId": activity_id}
+    bot_payload = await _kf_get_json(cfg, path, params, for_write=True)
+    if bot_payload is not None:
+        thread = _thread_from_instance_payload(bot_payload, field_ids, activity_id)
+        extras = {k: v for k, v in thread.items() if v not in (None, "", []) and k != "comments"}
+        best = {**best, **extras, "comments": thread.get("comments") or []}
+        if sum(1 for row in best["comments"] if _comment_file_count(row)):
+            return best
+    report_payload = await _kf_get_json(cfg, path, params)
+    if report_payload is not None and report_payload is not bot_payload:
+        thread = _thread_from_instance_payload(report_payload, field_ids, activity_id)
+        merged = _merge_comment_lists(best.get("comments") or [], thread.get("comments") or [])
+        extras = {k: v for k, v in thread.items() if v not in (None, "", []) and k != "comments"}
+        best = {**best, **extras, "comments": merged}
+        if sum(1 for row in merged if _comment_file_count(row)):
+            return best
+    sample = bot_payload if isinstance(bot_payload, dict) else report_payload
+    if sample is None:
+        logger.info("ITSM comments miss path=%s both keys empty", path)
+        return best
+
+    for nested_path in (f"{path}/IT__Agent_Solution", f"{path}/Table::IT__Agent_Solution"):
+        nested = await _kf_get_json(cfg, nested_path, params, for_write=True)
+        if nested is None:
+            continue
+        wrapped: Any = nested
+        if not (isinstance(nested, dict) and (
+            "Table::IT__Agent_Solution" in nested
+            or "Data" in nested
+            or "Resolution" in nested
+            or "Name_1" in nested
+        )):
+            wrapped = {"Table::IT__Agent_Solution": nested}
+        thread = _thread_from_instance_payload(wrapped, field_ids, activity_id)
+        if not thread.get("comments"):
+            thread = _thread_from_instance_payload(
+                {"Table::IT__Agent_Solution": nested},
+                field_ids,
+                activity_id,
+            )
+        merged = _merge_comment_lists(best.get("comments") or [], thread.get("comments") or [])
+        extras = {k: v for k, v in thread.items() if v not in (None, "", []) and k != "comments"}
+        best = {**best, **extras, "comments": merged}
+        if sum(1 for row in merged if _comment_file_count(row)):
+            return best
+
+    if isinstance(sample, dict) and best.get("comments"):
+        data = sample.get("Data") if isinstance(sample.get("Data"), dict) else {}
+        logger.info(
+            "ITSM comments no-files path=%s keys=%s data_keys=%s hints=%s",
+            path,
+            list(sample.keys())[:30],
+            list(data.keys())[:40] if data else [],
+            _payload_attachment_hints(sample)[:20],
+        )
+    elif isinstance(sample, dict) and not best.get("comments"):
+        data = sample.get("Data") if isinstance(sample.get("Data"), dict) else {}
+        logger.info(
+            "ITSM comments miss path=%s keys=%s data_keys=%s",
+            path,
+            list(sample.keys())[:30],
+            list(data.keys())[:40] if data else [],
+        )
+    return best
 
 
 async def _load_instance_comment_thread(
@@ -2419,26 +2594,13 @@ async def _load_instance_comment_thread(
 
     best: Dict[str, Any] = {"comments": [], "activityInstanceId": activity_id or hinted_activity or ""}
     for path in paths:
-        payload = await _kf_get_json(cfg, path, params)
-        thread = _thread_from_instance_payload(
-            payload,
-            field_ids,
-            activity_id or hinted_activity or "",
-        )
+        thread = await _thread_from_comment_path(cfg, path, params, field_ids, activity_id or hinted_activity or "")
         extra = _usable_activity_id(thread.get("_last_completed_step"), instance_id)
         if extra:
             extra_path = f"{base}/{extra}"
             if extra_path not in paths:
                 paths.append(extra_path)
         thread.pop("_last_completed_step", None)
-        if isinstance(payload, dict) and not thread.get("comments"):
-            data = payload.get("Data") if isinstance(payload.get("Data"), dict) else {}
-            logger.info(
-                "ITSM comments miss path=%s keys=%s data_keys=%s",
-                path,
-                list(payload.keys())[:30],
-                list(data.keys())[:40] if data else [],
-            )
         merged_comments = _merge_comment_lists(best.get("comments") or [], thread.get("comments") or [])
         extras = {k: v for k, v in thread.items() if v not in (None, "", []) and k != "comments"}
         best = {**best, **extras, "comments": merged_comments}
@@ -5398,7 +5560,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         visible = _employee_visible_comments(merged, entity)
         thread["comments"] = visible
         thread["messageCount"] = len(visible)
-        thread["commentParser"] = "nested-merge-v2"
+        thread["commentParser"] = "nested-merge-v3"
         return {"success": True, **thread}
 
     @api_router.get("/itsm/reports/attachment-preview")

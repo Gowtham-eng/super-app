@@ -12,6 +12,7 @@ from routes.itsm import (
     _parse_agent_solutions,
     _parse_comment_attachments,
     _parse_report_ticket,
+    _thread_from_instance_payload,
     _ticket_webhook_body,
     _uses_extrovis_flow,
     REPORT_FIELD_IDS,
@@ -106,6 +107,63 @@ def test_numeric_nested_table_keeps_attachments():
     assert len(parsed) == 1
     assert parsed[0]["id"] == "IT__Agent_Solution_aaaaaaaaaa"
     assert parsed[0]["attachments"][0]["name"] == "shot.png"
+
+
+def test_id_keyed_nested_table_keeps_attachments():
+    field_ids = REPORT_FIELD_IDS["extrovis"]
+    data = {
+        "Column_qr_9gP_vE5": [
+            {
+                "Name_1": "Aasik",
+                "Resolution": "i have attached the screesnhot for your reference",
+                "Comments_2": "User",
+            },
+        ],
+        "Table::IT__Agent_Solution": {
+            "IT__Agent_Solution_aaaaaaaaaa": {
+                "_id": "IT__Agent_Solution_aaaaaaaaaa",
+                "Name_1": "Aasik",
+                "Resolution": "i have attached the screesnhot for your reference",
+                "Comments_2": "User",
+                "Attachments": {
+                    "Attach_1": {"id": "Attach_1", "name": "shot.png", "key": "k1"},
+                },
+            }
+        },
+    }
+    parsed = _parse_agent_solutions(data, field_ids, requester_name="Aasik")
+    assert parsed[0]["id"] == "IT__Agent_Solution_aaaaaaaaaa"
+    assert parsed[0]["attachments"][0]["name"] == "shot.png"
+
+
+def test_table_on_payload_wrapper_not_only_data():
+    field_ids = REPORT_FIELD_IDS["extrovis"]
+    payload = {
+        "Status": True,
+        "Id": "PkEALEO1NyXy",
+        "Data": {
+            "Requester_Name": "Aasik",
+            "Column_qr_9gP_vE5": [
+                {
+                    "Name_1": "Aasik",
+                    "Resolution": "i have attached the screenshot",
+                    "Comments_2": "User",
+                },
+            ],
+        },
+        "Table::IT__Agent_Solution": {
+            "0": {
+                "_id": "IT__Agent_Solution_aaaaaaaaaa",
+                "Name_1": "Aasik",
+                "Resolution": "i have attached the screenshot",
+                "Comments_2": "User",
+                "Attachments": [{"id": "Attach_1", "name": "shot.png", "key": "k1"}],
+            }
+        },
+    }
+    thread = _thread_from_instance_payload(payload, field_ids)
+    assert thread["comments"][0]["id"] == "IT__Agent_Solution_aaaaaaaaaa"
+    assert thread["comments"][0]["attachments"][0]["name"] == "shot.png"
 
 
 def test_merge_keeps_files_when_refresh_returns_text_only():
