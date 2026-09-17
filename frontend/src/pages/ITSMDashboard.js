@@ -712,8 +712,14 @@ const TicketConversation = ({
                 <span className="truncate text-[11px] text-slate-500">{stepLabel}</span>
               ) : null}
             </div>
+            {ticketSubject(ticket) && !isRefexHelpdeskEntity(entity) ? (
+              <p className="mt-1 text-sm font-medium text-slate-800">{ticketSubject(ticket)}</p>
+            ) : null}
             {ticket.description ? (
-              <p className="mt-1 truncate text-sm text-slate-600">{ticket.description}</p>
+              <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Description</p>
+                <p className="mt-0.5 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{ticket.description}</p>
+              </div>
             ) : null}
             <p className="mt-1 truncate text-[11px] text-slate-400">
               {[ticket.requesterName, entityLabel, createdLabel].filter(Boolean).join(' · ')}
@@ -1597,21 +1603,20 @@ const ITSMDashboard = () => {
 
   const renderTicketTable = (rows) => {
     const showSubjectColumn = !isRefexHelpdeskEntity(entity);
-    const conversationColSpan = showSubjectColumn ? 10 : 9;
+    const conversationColSpan = showSubjectColumn ? 9 : 8;
     return (
     <>
       {/* Desktop only — tablets use cards (md table was too cramped). */}
       <div className="hidden xl:block overflow-x-auto">
         <table
-          className={`data-table itsm-mis-table ${showSubjectColumn ? 'min-w-[1380px]' : 'min-w-[1220px]'}`}
+          className={`data-table itsm-mis-table ${showSubjectColumn ? 'min-w-[1100px]' : 'min-w-[980px]'}`}
           data-testid="itsm-ticket-table"
         >
           <thead>
             <tr>
               <th className="w-10 !px-2" aria-label="Expand" />
-              <th className="w-[200px]">Request ID</th>
-              {showSubjectColumn ? <th className="w-[220px]">Subject</th> : null}
-              <th className="w-[280px]">Description</th>
+              <th className="w-[220px]">Request ID</th>
+              {showSubjectColumn ? <th className="w-[280px]">Subject</th> : null}
               <th className="w-[120px]">Created On</th>
               <th className="w-[150px]">Assigned To</th>
               <th className="w-[160px]">Status</th>
@@ -1631,12 +1636,13 @@ const ITSMDashboard = () => {
                 && !isReopenRelatedTicket(ticket);
               const requestId = ticket.requestId || '—';
               const subject = ticketSubject(ticket) || '—';
-              const description = ticket.description || '—';
+              const hasDescription = Boolean(String(ticket.description || '').trim());
+              const showExpand = showCommentSection || hasDescription;
               return (
                 <React.Fragment key={rowId}>
                   <tr>
                     <td className="!px-2">
-                      {showCommentSection ? (
+                      {showExpand ? (
                         <button
                           type="button"
                           onClick={() => toggleExpanded(rowId)}
@@ -1657,9 +1663,6 @@ const ITSMDashboard = () => {
                         {subject}
                       </td>
                     ) : null}
-                    <td className="text-slate-600" title={description}>
-                      {description}
-                    </td>
                     <td className="text-slate-600 whitespace-nowrap">{formatTicketDate(ticket.createdOn)}</td>
                     <td className="text-slate-700" title={formatAssignedToDisplay(ticket.assignedTo)}>
                       {formatAssignedToDisplay(ticket.assignedTo)}
@@ -1705,9 +1708,10 @@ const ITSMDashboard = () => {
                       </div>
                     </td>
                   </tr>
-                  {expanded && showCommentSection ? (
+                  {expanded && showExpand ? (
                     <tr className="bg-slate-50/80">
                       <td colSpan={conversationColSpan} className="itsm-conversation-cell !p-3 sm:!p-4 border-t border-slate-100">
+                        {showCommentSection ? (
                         <TicketConversation
                           ticket={ticket}
                           entity={entity}
@@ -1722,6 +1726,12 @@ const ITSMDashboard = () => {
                           onHydrated={applyCommentThread}
                           allowAttachments={!isRefexHelpdeskEntity(entity)}
                         />
+                        ) : (
+                          <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Description</p>
+                            <p className="mt-1 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{ticket.description}</p>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ) : null}
@@ -1741,6 +1751,8 @@ const ITSMDashboard = () => {
             canCommentTicket(ticket, entity)
             && !showsEmployeeRating(ticket)
             && !isReopenRelatedTicket(ticket);
+          const hasDescription = Boolean(String(ticket.description || '').trim());
+          const showExpand = showCommentSection || hasDescription;
           return (
             <div key={rowId} className="rounded-xl border border-slate-200 bg-white p-4">
               <div className="flex items-start justify-between gap-3 mb-2">
@@ -1753,7 +1765,6 @@ const ITSMDashboard = () => {
                   {ticketSubject(ticket) || '—'}
                 </p>
               ) : null}
-              <p className="text-sm text-slate-600 whitespace-pre-wrap mb-2">{ticket.description || '—'}</p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1 mb-3">
                 <p className="text-xs text-slate-500">Created On: {formatTicketDate(ticket.createdOn)}</p>
                 <p className="text-xs text-slate-500">Assigned To: {formatAssignedToDisplay(ticket.assignedTo)}</p>
@@ -1764,7 +1775,7 @@ const ITSMDashboard = () => {
                 ) : null}
               </div>
               <div className="flex flex-col sm:flex-row gap-2">
-                {showCommentSection ? (
+                {showExpand ? (
                   <button
                     type="button"
                     onClick={() => toggleExpanded(rowId)}
@@ -1805,8 +1816,9 @@ const ITSMDashboard = () => {
                   </div>
                 ) : null}
               </div>
-              {expanded && showCommentSection ? (
+              {expanded && showExpand ? (
                 <div className="mt-3 border-t border-slate-100 pt-3">
+                  {showCommentSection ? (
                   <TicketConversation
                     ticket={ticket}
                     entity={entity}
@@ -1821,6 +1833,12 @@ const ITSMDashboard = () => {
                     onHydrated={applyCommentThread}
                     allowAttachments={!isRefexHelpdeskEntity(entity)}
                   />
+                  ) : (
+                    <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Description</p>
+                      <p className="mt-1 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{ticket.description}</p>
+                    </div>
+                  )}
                 </div>
               ) : null}
             </div>

@@ -42,15 +42,60 @@ def _policy_send_url() -> str:
 def _policy_api_key(cfg: Optional[Dict[str, Any]] = None) -> str:
     from routes.itsm import resolve_refexions_policy_api_key
 
+    candidates: List[str] = []
     if isinstance(cfg, dict):
-        saved = str(cfg.get("refexions_policy_api_key") or "").strip()
-        if saved:
-            return saved
-    return resolve_refexions_policy_api_key()
+        candidates.append(str(cfg.get("refexions_policy_api_key") or "").strip())
+        shared = cfg.get("shared")
+        if isinstance(shared, dict):
+            candidates.append(str(shared.get("refexions_policy_api_key") or "").strip())
+    candidates.append(resolve_refexions_policy_api_key())
+    return next((key for key in candidates if key), "")
 
 
 def _policy_template_id() -> str:
     return os.environ.get("REFEXIONS_POLICY_TEMPLATE_ID", "policy_share_v1") or "policy_share_v1"
+
+
+def _policy_recipient_email(*values: Any) -> str:
+    from routes.itsm import _normalize_email
+
+    for value in values:
+        email = _normalize_email(value)
+        if email and "@" in email:
+            return email
+        text = str(value or "").strip()
+        match = re.search(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", text, re.I)
+        if match:
+            return match.group(0).lower()
+    return ""
+
+
+def _policy_send_payload(document_id: str, email: str) -> Dict[str, str]:
+    return {
+        "template_id": _policy_template_id(),
+        "document_id": (document_id or "").strip(),
+        "user_email": email,
+    }
+
+
+def _policy_send_ok(status_code: int, raw: Any) -> bool:
+    if not (200 <= int(status_code) < 300):
+        return False
+    if not isinstance(raw, dict):
+        return True
+    if raw.get("detail") or raw.get("error"):
+        return False
+    token = str(raw.get("status") or "").strip().lower()
+    return token not in {"error", "failed", "fail", "rejected"}
+
+
+def _ticket_subject(description: str, sub_type: str, subject: str = "") -> str:
+    explicit = (subject or "").strip()
+    if explicit:
+        return explicit[:80]
+    line = (description or "").strip().splitlines()[0].strip() if description else ""
+    text = line or (sub_type or "").strip() or "IT HelpDesk request"
+    return text[:80]
 
 FALLBACK_MAIN = ["Expense", "Travel", "IT HelpDesk", "Policies"]
 FALLBACK_EXPENSE_SUB = ["Food", "Accommodation", "Local Conveyance", "Travel Ticket"]
@@ -112,6 +157,7 @@ class ItMatchRequest(BaseModel):
 class ItCreateRequest(BaseModel):
     description: str = Field(..., min_length=1)
     sub_type: str = Field(..., min_length=1)
+    subject: str = ""
     name: Optional[str] = None
     email: Optional[str] = None
     entity: Optional[str] = None
@@ -179,7 +225,7 @@ def _policy_by_id(document_id: str) -> Optional[Dict[str, str]]:
 
 
 def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_config: Callable):
-    from routes.itsm import CRITICALITY_OPTIONS, SOURCE_VALUE, _kissflow_headers
+    from routes.itsm import CRITICALITY_OPTIONS, _kissflow_headers, _ticket_webhook_body, _uses_extrovis_flow
 
     async def _live_cfg(user: dict) -> Dict[str, Any]:
         org_id = user.get("org_id") or ""
@@ -325,7 +371,7 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
         user: dict = Depends(get_current_user),
     ):
         name = (body.name or user.get("name") or "").strip()
-        email = (body.email or user.get("email") or "").strip()
+        email = _policy_recipient_email(body.email, user.get("email"))
         entity = _map_entity(
             body.entity
             or user.get("company")
@@ -357,6 +403,9 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
             raise HTTPException(status_code=400, detail="Issue type is required.")
         if not description:
             raise HTTPException(status_code=400, detail="Please describe the issue.")
+        asked_subject = (body.subject or "").strip()
+        if _uses_extrovis_flow(entity) and not asked_subject:
+            raise HTTPException(status_code=400, detail="Subject is required.")
 
         cfg = await resolve_config(user.get("org_id") or "", entity)
         if not cfg.get("webhook_path") or not cfg.get("access_key_secret"):
@@ -364,17 +413,17 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
                 status_code=400,
                 detail=f"ITSM webhook is not configured for entity '{entity}'.",
             )
-        webhook_body = {
-            "process_id": cfg["process_id"],
-            "Source": SOURCE_VALUE,
-            "Name": name,
-            "Email": email,
-            "Entity": entity,
-            "Location_user": location,
-            "Sub_Type": sub_type,
-            "Criticality": criticality,
-            "Description": description,
-        }
+        webhook_body = _ticket_webhook_body(
+            process_id=cfg["process_id"],
+            name=name,
+            email=email,
+            entity=entity,
+            location=location,
+            sub_type=sub_type,
+            criticality=criticality,
+            description=description,
+            subject=_ticket_subject(description, sub_type, asked_subject),
+        )
         url = f"{cfg['kissflow_base_url']}{cfg['webhook_path']}"
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
@@ -411,8 +460,8 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
     ):
         policy = _policy_by_id(body.document_id)
         title = (body.title or (policy or {}).get("title") or "Policy").strip()
-        email = (body.user_email or user.get("email") or "").strip()
-        if not email or "@" not in email:
+        email = _policy_recipient_email(body.user_email, user.get("email"))
+        if not email:
             raise HTTPException(status_code=400, detail="Your login email is required to send a policy.")
         service_url = _policy_service_url()
         cfg = {}
@@ -437,12 +486,7 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
                 ),
             }
         url = _policy_send_url()
-        payload = {
-            "template_id": _policy_template_id(),
-            "document_id": body.document_id,
-            "user_email": email,
-            "to": email,
-        }
+        payload = _policy_send_payload(body.document_id, email)
         try:
             async with httpx.AsyncClient(timeout=45.0) as client:
                 response = await client.post(
@@ -469,8 +513,14 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
         except Exception:
             raw = {}
         delivered_to = str((raw or {}).get("to") or email).strip() or email
-        remote_status = str((raw or {}).get("status") or "").strip().lower()
-        ok = 200 <= response.status_code < 300 and remote_status in ("", "sent", "success", "ok")
+        ok = _policy_send_ok(response.status_code, raw)
+        logger.info(
+            "Refexions policy send document=%s to=%s status=%s ok=%s",
+            body.document_id,
+            email,
+            response.status_code,
+            ok,
+        )
         if ok:
             return {
                 "success": True,

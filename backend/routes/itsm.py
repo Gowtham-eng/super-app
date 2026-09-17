@@ -220,6 +220,15 @@ def resolve_refexions_policy_api_key(shared: Optional[Dict[str, Any]] = None) ->
     return str(shared_doc.get("refexions_policy_api_key") or "").strip()
 
 
+def hydrate_shared_policy_api_key(shared: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Copy env / runtime policy key onto Setup shared so live send does not depend on process .env alone."""
+    out = dict(shared or {})
+    key = resolve_refexions_policy_api_key(out)
+    if key:
+        out["refexions_policy_api_key"] = key
+    return out
+
+
 def _write_env_runtime_file(doc: Dict[str, Any]) -> None:
     try:
         with open(_ENV_RUNTIME_FILE, "w", encoding="utf-8") as handle:
@@ -3831,8 +3840,37 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             logger.warning("ITSM environments Mongo save failed; using memory: %s", exc)
             return "memory"
 
+    async def _ensure_policy_key_persisted(
+        shared: Dict[str, Any],
+        persisted_shared: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        hydrated = hydrate_shared_policy_api_key(shared)
+        key = str(hydrated.get("refexions_policy_api_key") or "").strip()
+        already = str((persisted_shared or {}).get("refexions_policy_api_key") or "").strip()
+        if not key or key == already:
+            return hydrated
+        try:
+            runtime = dict(_ENV_RUNTIME or _read_env_runtime_file() or {})
+            if runtime:
+                runtime_shared = dict(runtime.get("shared") or {})
+                runtime_shared["refexions_policy_api_key"] = key
+                runtime["shared"] = runtime_shared
+                _cache_environment_doc(runtime)
+            if _itsm_db_usable(db) and db is not None:
+                await db[ENV_COLLECTION].update_one(
+                    {"scope": "global"},
+                    {"$set": {"shared.refexions_policy_api_key": key}},
+                    upsert=True,
+                )
+            elif not runtime:
+                _cache_environment_doc({"shared": {"refexions_policy_api_key": key}})
+        except Exception as exc:
+            logger.warning("ITSM policy key persist skipped: %s", exc)
+        return hydrated
+
     async def _load_environments(org_id: str) -> Dict[str, Any]:
         builtin = _builtin_environments()
+        builtin["shared"] = hydrate_shared_policy_api_key(builtin.get("shared") or {})
         try:
             doc = await _load_environment_doc()
             if not doc:
@@ -3851,13 +3889,18 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                     except Exception as exc:
                         _trip_itsm_db_circuit(exc)
                         logger.warning("ITSM env seed skipped (DB unavailable): %s", exc)
+                await _ensure_policy_key_persisted(builtin.get("shared") or {}, {})
                 return builtin
             shared_src = doc.get("shared") if isinstance(doc.get("shared"), dict) else {}
             if not shared_src:
                 shared_src = _shared_from_legacy_block(doc.get("development") or {})
+            shared = await _ensure_policy_key_persisted(
+                _merge_shared(builtin["shared"], shared_src),
+                shared_src,
+            )
             return {
                 "active": (doc.get("active") or "development").strip().lower(),
-                "shared": _merge_shared(builtin["shared"], shared_src),
+                "shared": shared,
                 "development": _merge_connection(builtin["development"], doc.get("development") or {}),
                 "live": _merge_connection(builtin["live"], doc.get("live") or {}),
             }
@@ -3991,10 +4034,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             "access_key_secret": access_key_secret,
             "bot_access_key_id": bot_access_key_id,
             "bot_access_key_secret": bot_access_key_secret,
-            "refexions_policy_api_key": (
-                (shared.get("refexions_policy_api_key") or "").strip()
-                or os.environ.get("REFEXIONS_POLICY_API_KEY", "").strip()
-            ),
+            "refexions_policy_api_key": resolve_refexions_policy_api_key(shared),
             "source": "environment",
         }
         if entity and _itsm_db_usable(db):

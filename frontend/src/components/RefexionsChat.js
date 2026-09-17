@@ -70,7 +70,13 @@ const RefexionsChat = () => {
   const [busy, setBusy] = useState(false);
   const [mainMessage, setMainMessage] = useState('Please choose from the following');
   const [mainOptions, setMainOptions] = useState(FALLBACK_MAIN);
-  const [itDraft, setItDraft] = useState({ description: '', subType: '', entity: '', location: '' });
+  const [itDraft, setItDraft] = useState({
+    description: '',
+    subject: '',
+    subType: '',
+    entity: '',
+    location: '',
+  });
   const [nonRefexLocations, setNonRefexLocations] = useState([]);
   const [policyDraft, setPolicyDraft] = useState(null);
   const scrollerRef = useRef(null);
@@ -83,7 +89,13 @@ const RefexionsChat = () => {
 
   const resetToMain = (opts = mainOptions, greeting = mainMessage) => {
     setStep('main');
-    setItDraft({ description: '', subType: '', entity: profile.entity || '', location: profile.location || '' });
+    setItDraft({
+      description: '',
+      subject: '',
+      subType: '',
+      entity: profile.entity || '',
+      location: profile.location || '',
+    });
     setPolicyDraft(null);
     const extras = ['My tickets'];
     setChips([BACK, ...opts, ...extras].filter((chip, idx, all) => chip && all.indexOf(chip) === idx));
@@ -156,13 +168,23 @@ const RefexionsChat = () => {
     return rows;
   };
 
+  const askItDetails = (entity, location) => {
+    setItDraft((prev) => ({ ...prev, entity, location }));
+    if (!isRefexEntity(entity)) {
+      setStep('it_subject');
+      setChips([BACK]);
+      push(botMsg('Enter a short subject for this ticket.'));
+      return;
+    }
+    setStep('it_reason');
+    setChips([BACK]);
+    push(botMsg('Describe the issue in one or two sentences.'));
+  };
+
   const askItLocationOrReason = (entity, rows, preferred) => {
     const resolved = resolveItLocation(entity, preferred, rows);
     if (resolved) {
-      setItDraft((prev) => ({ ...prev, entity, location: resolved }));
-      setStep('it_reason');
-      setChips([BACK]);
-      push(botMsg('Describe the issue in one or two sentences.'));
+      askItDetails(entity, resolved);
       return;
     }
     const chipsForEntity = locationChipsFor(entity, rows);
@@ -175,7 +197,7 @@ const RefexionsChat = () => {
   const startItHelpdesk = async () => {
     const entity = profile.entity || '';
     const location = profile.location || '';
-    setItDraft({ description: '', subType: '', entity, location });
+    setItDraft({ description: '', subject: '', subType: '', entity, location });
     if (!entity) {
       setStep('it_entity');
       const entityChips = ['Refex', 'Extrovis', 'ModePro', 'Kavis', 'Pharma Pack'];
@@ -194,20 +216,22 @@ const RefexionsChat = () => {
     }
   };
 
-  const runItMatch = async (description, entity, location) => {
+  const runItMatch = async (description, entity, location, subject = '') => {
     setBusy(true);
     try {
+      const mailBody = [subject, description].filter(Boolean).join('\n');
       const res = await axios.post(
         `${API}/refexions/it/match`,
-        { mail_body: description },
+        { mail_body: mailBody },
         getAuthHeader(),
       );
       const subType = res.data?.sub_type || 'Other';
-      setItDraft({ description, subType, entity, location });
+      setItDraft((prev) => ({ ...prev, description, subject, subType, entity, location }));
       setStep('it_confirm');
       setChips([BACK, 'Confirm', 'Edit']);
+      const subjectLine = subject ? `\nSubject: ${subject}` : '';
       push(botMsg(
-        `Detected: ${subType}${res.data?.matched_keyword ? ` (${res.data.matched_keyword})` : ''}.\n\nCreate this ticket as ${entity} / ${location}?`,
+        `Detected: ${subType}${res.data?.matched_keyword ? ` (${res.data.matched_keyword})` : ''}.${subjectLine}\n\nCreate this ticket as ${entity} / ${location}?`,
         ['Confirm', 'Edit'],
       ));
     } catch (err) {
@@ -225,6 +249,7 @@ const RefexionsChat = () => {
         `${API}/refexions/it/create`,
         {
           description: itDraft.description,
+          subject: itDraft.subject || '',
           sub_type: itDraft.subType,
           name: profile.name || user?.name || '',
           email: profile.email || user?.email || '',
@@ -370,6 +395,18 @@ const RefexionsChat = () => {
       push(userMsg(location));
       const next = { ...itDraft, location };
       setItDraft(next);
+      askItDetails(itDraft.entity, location);
+      return;
+    }
+
+    if (step === 'it_subject') {
+      const subject = value.trim();
+      if (!subject) {
+        push(userMsg(value), botMsg('Please enter a subject.'));
+        return;
+      }
+      push(userMsg(subject));
+      setItDraft((prev) => ({ ...prev, subject }));
       setStep('it_reason');
       setChips([BACK]);
       push(botMsg('Describe the issue in one or two sentences.'));
@@ -378,7 +415,7 @@ const RefexionsChat = () => {
 
     if (step === 'it_reason') {
       push(userMsg(value));
-      return runItMatch(value, itDraft.entity, itDraft.location);
+      return runItMatch(value, itDraft.entity, itDraft.location, itDraft.subject || '');
     }
 
     if (step === 'it_confirm') {
@@ -561,7 +598,13 @@ const RefexionsChat = () => {
           type="text"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder={step === 'it_reason' ? 'Describe the issue…' : 'Type or pick an option…'}
+          placeholder={
+            step === 'it_subject'
+              ? 'Enter the subject…'
+              : step === 'it_reason'
+                ? 'Describe the issue…'
+                : 'Type or pick an option…'
+          }
           className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
           data-testid="chat-input"
           disabled={busy}
