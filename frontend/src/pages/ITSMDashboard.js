@@ -214,6 +214,32 @@ const isRefexHelpdeskEntity = (entity) => isRefexEntity(entity);
 
 const ticketSubject = (ticket) => String(ticket?.subject || ticket?.Subject || '').trim();
 
+const ticketAgentSolution = (ticket) =>
+  String(ticket?.itAgentSolution || ticket?.solution || '').trim();
+
+const isClosedTicket = (ticket) => matchesKpiFilter(ticket, 'Closed');
+
+const AgentSolutionBlock = ({ ticket, loading = false }) => {
+  const text = ticketAgentSolution(ticket);
+  const rowId = ticket?.id || ticket?.localId || 'ticket';
+  return (
+    <div
+      className="rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-3"
+      data-testid={`itsm-agent-solution-${rowId}`}
+    >
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">IT Agent Solution</p>
+      {loading && !text ? (
+        <p className="mt-1 flex items-center gap-2 text-sm text-slate-500">
+          <Loader2 size={14} className="animate-spin" />
+          Loading solution…
+        </p>
+      ) : (
+        <p className="mt-1 text-sm leading-relaxed text-slate-800 whitespace-pre-wrap">{text || '—'}</p>
+      )}
+    </div>
+  );
+};
+
 const isMobileHelpDeskView = () => {
   if (typeof window === 'undefined') return false;
   return (
@@ -1149,6 +1175,8 @@ const ITSMDashboard = () => {
   const [commentingId, setCommentingId] = useState('');
   const [expandedIds, setExpandedIds] = useState(() => new Set());
   const [composerTicketId, setComposerTicketId] = useState('');
+  const [solutionHydratingIds, setSolutionHydratingIds] = useState(() => new Set());
+  const solutionHydrateRef = React.useRef(new Set());
   const viewerName = useMemo(() => (mergeItsmProfile(user).name || '').trim(), [user]);
   const viewerEmail = useMemo(() => (mergeItsmProfile(user).email || '').trim(), [user]);
 
@@ -1171,6 +1199,7 @@ const ITSMDashboard = () => {
         const nextComments = incoming.length
           ? rememberComments(row.id, mergeCommentRows(incoming, existing), entity)
           : rememberComments(row.id, existing, entity);
+        const nextSolution = String(payload.itAgentSolution || payload.solution || '').trim();
         return {
           ...row,
           agentSolutions: nextComments.length ? nextComments : existing,
@@ -1181,6 +1210,8 @@ const ITSMDashboard = () => {
           entity: payload.entity || row.entity,
           source: payload.source || row.source,
           location: payload.location || row.location,
+          solution: nextSolution || row.solution || '',
+          itAgentSolution: nextSolution || row.itAgentSolution || row.solution || '',
         };
       });
       ticketsCache.tickets = next;
@@ -1188,6 +1219,8 @@ const ITSMDashboard = () => {
       return next;
     });
   };
+  const applyCommentThreadRef = React.useRef(applyCommentThread);
+  applyCommentThreadRef.current = applyCommentThread;
 
   const toggleExpanded = (ticketId) => {
     if (!ticketId) return;
@@ -1198,6 +1231,44 @@ const ITSMDashboard = () => {
       return next;
     });
   };
+
+  useEffect(() => {
+    if (!entity || !expandedIds.size) return;
+    expandedIds.forEach((rowId) => {
+      const ticket = tickets.find((row) => (row.id || row.localId) === rowId);
+      if (!ticket?.id) return;
+      if (ticketAgentSolution(ticket)) return;
+      if (!isClosedTicket(ticket) && !ticketAllowsReopen(ticket)) return;
+      if (canShowTicketComments(entity, ticket)) return;
+      if (solutionHydrateRef.current.has(ticket.id)) return;
+      solutionHydrateRef.current.add(ticket.id);
+      setSolutionHydratingIds((prev) => {
+        const next = new Set(prev);
+        next.add(ticket.id);
+        return next;
+      });
+      axios
+        .get(`${ITSM_API}/itsm/reports/comments`, {
+          params: {
+            entity,
+            instance_id: ticket.id,
+            activity_instance_id: ticket.activityInstanceId || '',
+            environment: activeEnvironment || undefined,
+            _t: Date.now(),
+          },
+          ...getAuthHeader(),
+        })
+        .then((res) => applyCommentThreadRef.current(ticket.id, res.data || {}))
+        .catch(() => {})
+        .finally(() => {
+          setSolutionHydratingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(ticket.id);
+            return next;
+          });
+        });
+    });
+  }, [expandedIds, tickets, entity, activeEnvironment, getAuthHeader]);
   const fetchTickets = async ({ silent = false, force = false } = {}) => {
     if (!entity) {
       setLoading(false);
@@ -1637,7 +1708,9 @@ const ITSMDashboard = () => {
               const requestId = ticket.requestId || '—';
               const subject = ticketSubject(ticket) || '—';
               const hasDescription = Boolean(String(ticket.description || '').trim());
-              const showExpand = showCommentSection || hasDescription;
+              const hasSolution = Boolean(ticketAgentSolution(ticket));
+              const showSolution = isClosedTicket(ticket) || ticketAllowsReopen(ticket) || hasSolution;
+              const showExpand = showCommentSection || hasDescription || showSolution;
               return (
                 <React.Fragment key={rowId}>
                   <tr>
@@ -1711,7 +1784,14 @@ const ITSMDashboard = () => {
                   {expanded && showExpand ? (
                     <tr className="bg-slate-50/80">
                       <td colSpan={conversationColSpan} className="itsm-conversation-cell !p-3 sm:!p-4 border-t border-slate-100">
-                        {showCommentSection ? (
+                        <div className="space-y-3">
+                          {showSolution ? (
+                            <AgentSolutionBlock
+                              ticket={ticket}
+                              loading={solutionHydratingIds.has(ticket.id)}
+                            />
+                          ) : null}
+                          {showCommentSection ? (
                         <TicketConversation
                           ticket={ticket}
                           entity={entity}
@@ -1726,12 +1806,13 @@ const ITSMDashboard = () => {
                           onHydrated={applyCommentThread}
                           allowAttachments={!isRefexHelpdeskEntity(entity)}
                         />
-                        ) : (
+                          ) : hasDescription ? (
                           <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
                             <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Description</p>
                             <p className="mt-1 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{ticket.description}</p>
                           </div>
-                        )}
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   ) : null}
@@ -1752,7 +1833,9 @@ const ITSMDashboard = () => {
             && !showsEmployeeRating(ticket)
             && !isReopenRelatedTicket(ticket);
           const hasDescription = Boolean(String(ticket.description || '').trim());
-          const showExpand = showCommentSection || hasDescription;
+          const hasSolution = Boolean(ticketAgentSolution(ticket));
+          const showSolution = isClosedTicket(ticket) || ticketAllowsReopen(ticket) || hasSolution;
+          const showExpand = showCommentSection || hasDescription || showSolution;
           return (
             <div key={rowId} className="rounded-xl border border-slate-200 bg-white p-4">
               <div className="flex items-start justify-between gap-3 mb-2">
@@ -1817,7 +1900,13 @@ const ITSMDashboard = () => {
                 ) : null}
               </div>
               {expanded && showExpand ? (
-                <div className="mt-3 border-t border-slate-100 pt-3">
+                <div className="mt-3 border-t border-slate-100 pt-3 space-y-3">
+                  {showSolution ? (
+                    <AgentSolutionBlock
+                      ticket={ticket}
+                      loading={solutionHydratingIds.has(ticket.id)}
+                    />
+                  ) : null}
                   {showCommentSection ? (
                   <TicketConversation
                     ticket={ticket}
@@ -1833,12 +1922,12 @@ const ITSMDashboard = () => {
                     onHydrated={applyCommentThread}
                     allowAttachments={!isRefexHelpdeskEntity(entity)}
                   />
-                  ) : (
+                  ) : hasDescription ? (
                     <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
                       <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Description</p>
                       <p className="mt-1 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{ticket.description}</p>
                     </div>
-                  )}
+                  ) : null}
                 </div>
               ) : null}
             </div>

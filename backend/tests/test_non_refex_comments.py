@@ -6,6 +6,7 @@ from routes.itsm import (
     _employee_visible_comments,
     _is_comment_nested_table_step,
     _is_gcs_signed_url,
+    _it_agent_solution_text,
     _kissflow_headers,
     _merge_comment_lists,
     _normalize_comment_channel,
@@ -404,3 +405,62 @@ def test_comment_nested_table_prefers_solution_not_pickup():
     assert _is_comment_nested_table_step("IT Tech Support") is True
     assert _is_comment_nested_table_step("IT Agent PickUp") is False
     assert _is_comment_nested_table_step("PickUp") is False
+
+
+def test_refex_and_extrovis_it_agent_solution_from_column_and_native():
+    refex = _parse_report_ticket(
+        {
+            "_id": "PkRefexSol",
+            "Column_ysyWJXmwHY": "Restarted the printer spooler",
+            "It_Agent_Solution": "Restarted the printer spooler",
+            "Column_0jda6rzCc3": "REQ-R1",
+            "_status": "Completed",
+            "Statu_1": "Closed",
+        },
+        [{"Id": "Column_ysyWJXmwHY", "Name": "It_Agent_Solution"}],
+        0,
+        "Refex",
+    )
+    assert refex["solution"] == "Restarted the printer spooler"
+    assert refex["itAgentSolution"] == "Restarted the printer spooler"
+
+    extrovis = _parse_report_ticket(
+        {
+            "_id": "PkExtSol",
+            "Column_oCwk2a69nP": "Reimaged the laptop",
+            "It_Agent_Solution": "Reimaged the laptop",
+            "Column_y4srngcUo1": "REQ-E1",
+            "_status": "Completed",
+            "Statu_1": "Closed",
+        },
+        [{"Id": "Column_oCwk2a69nP", "Name": "It_Agent_Solution"}],
+        0,
+        "Extrovis",
+    )
+    assert extrovis["solution"] == "Reimaged the laptop"
+    assert extrovis["itAgentSolution"] == "Reimaged the laptop"
+
+
+def test_it_agent_solution_ignores_nested_table_and_reads_instance_payload():
+    assert _it_agent_solution_text(
+        {"Table::IT__Agent_Solution": [{"Resolution": "chat row"}]},
+        REPORT_FIELD_IDS["extrovis"],
+    ) == ""
+    thread = _thread_from_instance_payload(
+        {
+            "_id": "PkClosed",
+            "Request_ID": "REQ-9",
+            "It_Agent_Solution": "DNS cache flushed",
+            "Table::IT__Agent_Solution": [
+                {"_id": "IT__Agent_Solution_aaaaaaaaaa", "Name_1": "Aasik", "Resolution": "user comment", "Comments_2": "User"},
+            ],
+        },
+        REPORT_FIELD_IDS["extrovis"],
+    )
+    assert thread["solution"] == "DNS cache flushed"
+    assert thread["itAgentSolution"] == "DNS cache flushed"
+    nested_only = _thread_from_instance_payload(
+        {"Data": {"It_Agent_Solution": "VPN profile rebuilt", "_current_step": "IT Tech Reopen"}},
+        REPORT_FIELD_IDS["refex"],
+    )
+    assert nested_only["solution"] == "VPN profile rebuilt"

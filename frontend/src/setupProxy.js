@@ -26,6 +26,19 @@ module.exports = function proxy(app) {
     res.end(JSON.stringify({ detail }));
   };
 
+  // Launcher ITSM Kissflow probe must use live RefexOne — local helper Mongo
+  // is often down and would mark Kissflow users (e.g. Gowtham) as in-app only.
+  app.use(
+    '/api/itsm/kissflow-status',
+    createProxyMiddleware({
+      target: liveTarget,
+      changeOrigin: true,
+      timeout: 120000,
+      proxyTimeout: 120000,
+      onError: onProxyError(liveTarget, 'live'),
+    }),
+  );
+
   // Local backend (new ITSM + Refexions) + live RefexOne for login/launcher.
   // /api/itsm must be registered before the catch-all /api → refexone.com.
   [

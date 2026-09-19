@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { ITSM_API } from '../config/api';
@@ -63,7 +64,6 @@ const emptyConnection = () => ({
 const emptyShared = () => ({
   application_id: SHARED_DEFAULTS.application_id,
   approval_matrix_id: SHARED_DEFAULTS.approval_matrix_id,
-  refexions_policy_api_key: '',
   refex: { ...SHARED_DEFAULTS.refex },
   extrovis: { ...SHARED_DEFAULTS.extrovis },
 });
@@ -80,8 +80,6 @@ const hydrateConnection = (raw = {}) => ({
 const hydrateShared = (raw = {}) => ({
   application_id: String(raw.application_id || SHARED_DEFAULTS.application_id),
   approval_matrix_id: String(raw.approval_matrix_id || SHARED_DEFAULTS.approval_matrix_id),
-  refexions_policy_api_key: String(raw.refexions_policy_api_key || ''),
-  has_refexions_policy_api_key: Boolean(raw.has_refexions_policy_api_key || raw.refexions_policy_api_key),
   refex: {
     ...SHARED_DEFAULTS.refex,
     ...(raw.refex || {}),
@@ -112,7 +110,6 @@ const sharedPayload = (raw = {}) => {
   return {
     application_id: shared.application_id.trim(),
     approval_matrix_id: shared.approval_matrix_id.trim(),
-    refexions_policy_api_key: String(shared.refexions_policy_api_key || '').trim(),
     refex: {
       process_id: String(shared.refex.process_id || '').trim(),
       report_id: String(shared.refex.report_id || '').trim(),
@@ -608,21 +605,18 @@ const ITSMSetup = () => {
             />
           </Field>
         </div>
-        <div className="rounded-md border border-amber-100 bg-amber-50/70 p-3 space-y-3">
-          <p className="text-xs font-semibold text-amber-900">Refexions policy email</p>
-          <p className="text-[11px] text-amber-800">
-            Production has no local .env. Save the policy-sender API key here so live Refexions
-            can email policies. Leave blank when editing to keep the saved key.
+        <div className="rounded-md border border-slate-100 bg-slate-50/80 p-3">
+          <p className="text-xs font-semibold text-slate-800">Refexions API keys and FAQ</p>
+          <p className="text-[11px] text-slate-500 mt-1">
+            Policy key, keyword-match URL, and the FAQ dataset moved to a dedicated page so they
+            stay out of Kissflow and off this ITSM entity setup.
           </p>
-          <Field label="Policy API key" hint="REFEXIONS_POLICY_API_KEY">
-            <input
-              className={monoClass}
-              value={shared.refexions_policy_api_key || ''}
-              onChange={(e) => setSharedField('refexions_policy_api_key', e.target.value)}
-              autoComplete="off"
-              placeholder={shared.has_refexions_policy_api_key ? '•••• saved — paste to replace' : ''}
-            />
-          </Field>
+          <Link
+            to="/refexions-setup"
+            className="inline-flex mt-2 text-xs font-semibold text-blue-700 hover:underline"
+          >
+            Open Refexions Setup
+          </Link>
         </div>
         {['refex', 'extrovis'].map((slice) => (
           <div key={slice} className="rounded-lg border border-slate-100 bg-slate-50/70 p-4 space-y-3">
@@ -685,8 +679,10 @@ const ITSMSetup = () => {
             ITSM Entity Setup
           </h1>
           <p className="text-sm text-slate-500 max-w-2xl">
-            Kissflow host and access keys for Help Desk. Set Development and Live below, then activate one.
-            Ticket create, comments, reopen, and rating all use the <strong className="font-medium text-slate-700">active</strong> environment keys — not a hidden server-only secret.
+            Kissflow host and access keys. Activate Development or Live for Help Desk. Refexions
+            tickets always use <strong className="font-medium text-slate-700">Live</strong> keys and
+            webhooks saved here — production does not need a local .env. Keyword-match is already
+            the production Cloud Run URL.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -719,8 +715,8 @@ const ITSMSetup = () => {
           <div>
             <h2 className="font-heading font-semibold text-slate-900">Kissflow environments</h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Development vs Live differ by URL, account ID, and access keys. Activate Live or Dev —
-              Help Desk (create, comments, reopen, rating) and Refexions ticket create then call that Kissflow.
+              Help Desk (create, comments, reopen, rating) follows the active environment. Refexions
+              ticket create always uses Live keys and the Refex/Extrovis submit webhooks below.
             </p>
           </div>
           <div className="flex items-center gap-2">

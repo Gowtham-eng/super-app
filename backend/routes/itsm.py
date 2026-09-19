@@ -205,27 +205,107 @@ def _read_env_runtime_file() -> Optional[Dict[str, Any]]:
     return None
 
 
-def resolve_refexions_policy_api_key(shared: Optional[Dict[str, Any]] = None) -> str:
-    """Env first (local helper), then ITSM Setup shared key (production Mongo / runtime file)."""
-    env_key = (os.environ.get("REFEXIONS_POLICY_API_KEY") or "").strip()
-    if env_key:
-        return env_key
+def _refexions_shared_value(field: str, shared: Optional[Dict[str, Any]] = None) -> str:
+    """ITSM Setup / runtime first so production does not need a local .env copy."""
     if isinstance(shared, dict):
-        saved = str(shared.get("refexions_policy_api_key") or "").strip()
+        saved = str(shared.get(field) or "").strip()
         if saved:
             return saved
+        nested = shared.get("shared")
+        if isinstance(nested, dict):
+            saved = str(nested.get(field) or "").strip()
+            if saved:
+                return saved
     runtime = _ENV_RUNTIME if isinstance(_ENV_RUNTIME, dict) else None
     stored = runtime or _read_env_runtime_file() or {}
     shared_doc = stored.get("shared") if isinstance(stored.get("shared"), dict) else {}
-    return str(shared_doc.get("refexions_policy_api_key") or "").strip()
+    return str(shared_doc.get(field) or "").strip()
+
+
+DEFAULT_REFEXIONS_ML_URL = (
+    "https://keyword-matching-api-645830234926.asia-south1.run.app/api/v1/keyword-match"
+)
+DEFAULT_REFEXIONS_POLICY_SERVICE_URL = (
+    "https://policy-sender-645830234926.asia-south1.run.app"
+)
+
+
+def resolve_refexions_policy_api_key(shared: Optional[Dict[str, Any]] = None) -> str:
+    """Explicit shared, then Refexions Setup, leftover ITSM shared, then .env."""
+    from services.refexions_store import cached_setting
+
+    if isinstance(shared, dict):
+        for key in ("policy_api_key", "refexions_policy_api_key"):
+            saved = str(shared.get(key) or "").strip()
+            if saved:
+                return saved
+        nested = shared.get("shared")
+        if isinstance(nested, dict):
+            saved = str(nested.get("refexions_policy_api_key") or nested.get("policy_api_key") or "").strip()
+            if saved:
+                return saved
+    saved = cached_setting("policy_api_key")
+    if saved:
+        return saved
+    saved = _refexions_shared_value("refexions_policy_api_key", None)
+    if saved:
+        return saved
+    return (os.environ.get("REFEXIONS_POLICY_API_KEY") or "").strip()
+
+
+def resolve_refexions_ml_url(shared: Optional[Dict[str, Any]] = None) -> str:
+    """Keyword-match Cloud Run URL. Refexions Setup / ITSM leftover / env / default."""
+    from services.refexions_store import cached_setting
+
+    if isinstance(shared, dict):
+        saved = str(shared.get("ml_url") or shared.get("refexions_ml_url") or "").strip()
+        if saved:
+            return saved
+        nested = shared.get("shared")
+        if isinstance(nested, dict):
+            saved = str(nested.get("refexions_ml_url") or nested.get("ml_url") or "").strip()
+            if saved:
+                return saved
+    saved = cached_setting("ml_url")
+    if saved:
+        return saved
+    saved = _refexions_shared_value("refexions_ml_url", None)
+    if saved:
+        return saved
+    env_url = (os.environ.get("REFEXIONS_ML_URL") or "").strip()
+    return env_url or DEFAULT_REFEXIONS_ML_URL
+
+
+def resolve_refexions_policy_service_url(shared: Optional[Dict[str, Any]] = None) -> str:
+    from services.refexions_store import cached_setting
+
+    if isinstance(shared, dict):
+        saved = str(shared.get("policy_service_url") or shared.get("refexions_policy_service_url") or "").strip()
+        if saved:
+            return saved.rstrip("/")
+        nested = shared.get("shared")
+        if isinstance(nested, dict):
+            saved = str(nested.get("refexions_policy_service_url") or nested.get("policy_service_url") or "").strip()
+            if saved:
+                return saved.rstrip("/")
+    saved = cached_setting("policy_service_url")
+    if saved:
+        return saved.rstrip("/")
+    saved = _refexions_shared_value("refexions_policy_service_url", None)
+    if saved:
+        return saved.rstrip("/")
+    env_url = (os.environ.get("REFEXIONS_POLICY_SERVICE_URL") or "").strip()
+    return (env_url or DEFAULT_REFEXIONS_POLICY_SERVICE_URL).rstrip("/")
 
 
 def hydrate_shared_policy_api_key(shared: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Copy env / runtime policy key onto Setup shared so live send does not depend on process .env alone."""
+    """Copy Setup / env Refexions fields onto shared so live does not depend on process .env."""
     out = dict(shared or {})
     key = resolve_refexions_policy_api_key(out)
     if key:
         out["refexions_policy_api_key"] = key
+    out["refexions_ml_url"] = resolve_refexions_ml_url(out)
+    out["refexions_policy_service_url"] = resolve_refexions_policy_service_url(out)
     return out
 
 
@@ -767,6 +847,10 @@ def _builtin_environments() -> Dict[str, Any]:
             "application_id": KISSFLOW_APPLICATION_ID,
             "approval_matrix_id": KISSFLOW_APPROVAL_MATRIX_ID,
             "refexions_policy_api_key": os.environ.get("REFEXIONS_POLICY_API_KEY", ""),
+            "refexions_ml_url": os.environ.get("REFEXIONS_ML_URL", "") or DEFAULT_REFEXIONS_ML_URL,
+            "refexions_policy_service_url": (
+                os.environ.get("REFEXIONS_POLICY_SERVICE_URL", "") or DEFAULT_REFEXIONS_POLICY_SERVICE_URL
+            ),
             "refex": {
                 "process_id": KISSFLOW_PROCESS_ID,
                 "report_id": "Service_Items_Refex_A00",
@@ -810,6 +894,10 @@ def _shared_from_legacy_block(block: Dict[str, Any]) -> Dict[str, Any]:
         out["approval_matrix_id"] = block["approval_matrix_id"]
     if block.get("refexions_policy_api_key"):
         out["refexions_policy_api_key"] = str(block.get("refexions_policy_api_key") or "").strip()
+    if block.get("refexions_ml_url"):
+        out["refexions_ml_url"] = str(block.get("refexions_ml_url") or "").strip()
+    if block.get("refexions_policy_service_url"):
+        out["refexions_policy_service_url"] = str(block.get("refexions_policy_service_url") or "").strip()
     for slice_key in ("refex", "extrovis"):
         cur = dict(out.get(slice_key) or {})
         nxt = block.get(slice_key) if isinstance(block.get(slice_key), dict) else {}
@@ -867,6 +955,10 @@ def _public_shared(shared: Dict[str, Any]) -> Dict[str, Any]:
         "approval_matrix_id": merged.get("approval_matrix_id") or "",
         "refexions_policy_api_key": policy_key,
         "has_refexions_policy_api_key": bool(policy_key),
+        "refexions_ml_url": (merged.get("refexions_ml_url") or DEFAULT_REFEXIONS_ML_URL),
+        "refexions_policy_service_url": (
+            merged.get("refexions_policy_service_url") or DEFAULT_REFEXIONS_POLICY_SERVICE_URL
+        ),
         "refex": {
             "process_id": refex.get("process_id") or "",
             "report_id": refex.get("report_id") or "",
@@ -915,6 +1007,12 @@ def _merge_shared(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, A
     policy_key = str(incoming.get("refexions_policy_api_key") or "").strip()
     if policy_key:
         out["refexions_policy_api_key"] = policy_key
+    ml_url = str(incoming.get("refexions_ml_url") or "").strip()
+    if ml_url:
+        out["refexions_ml_url"] = ml_url
+    policy_url = str(incoming.get("refexions_policy_service_url") or "").strip()
+    if policy_url:
+        out["refexions_policy_service_url"] = policy_url
     for slice_key in ("refex", "extrovis"):
         cur = dict(out.get(slice_key) or {})
         nxt = incoming.get(slice_key) if isinstance(incoming.get(slice_key), dict) else {}
@@ -2152,6 +2250,7 @@ def _unwrap_process_item(payload: Any) -> Optional[Dict[str, Any]]:
                 "Description",
                 "Table::IT__Agent_Solution",
                 "IT__Agent_Solution",
+                "It_Agent_Solution",
             }
             or any(key.startswith("Table::") for key in keys)
             or "table::it__agent_solution" in lowered
@@ -2426,11 +2525,16 @@ def _thread_from_instance_payload(
             ),
         )
     assigned = _format_person(item.get("_current_assigned_to"))
+    solution = _it_agent_solution_text(item, field_ids)
+    if isinstance(payload, dict) and payload is not item:
+        solution = solution or _it_agent_solution_text(payload, field_ids)
     return {
         "comments": comments,
         "activityInstanceId": activity_id or _as_string(item.get("_activity_instance_id")),
         "requestId": _as_string(item.get("Request_ID")),
         "description": _as_string(item.get("Description")),
+        "solution": solution,
+        "itAgentSolution": solution,
         "entity": _as_string(item.get("Entity")),
         "status": _as_string(item.get("Statu_1") or item.get("_status") or item.get("Stages")),
         "currentStep": _as_string(item.get("_current_step")),
@@ -2752,6 +2856,73 @@ def _raw_field(data: Dict[str, Any], *candidates: str) -> Any:
         if key in lowered and lowered[key] not in (None, ""):
             return lowered[key]
     return None
+
+
+def _item_field_layers(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    layers: List[Dict[str, Any]] = []
+    if isinstance(data, dict):
+        layers.append(data)
+        for key in ("Data", "data"):
+            nested = data.get(key)
+            if isinstance(nested, dict) and nested not in layers:
+                layers.append(nested)
+    return layers
+
+
+def _looks_like_nested_table_value(value: Any) -> bool:
+    if isinstance(value, list):
+        return True
+    if not isinstance(value, dict):
+        return False
+    if any(key in value for key in ("Values", "values", "Rows", "rows")):
+        return True
+    nested = value.get("Data") if value.get("Data") is not None else value.get("data")
+    if isinstance(nested, (list, dict)):
+        return True
+    keys = [str(key) for key in value.keys()]
+    return bool(keys) and all(key.startswith("IT__Agent_Solution") or key.isdigit() for key in keys)
+
+
+def _scalar_it_agent_solution_text(value: Any) -> str:
+    """Textarea It_Agent_Solution only — never nested IT__Agent_Solution table rows."""
+    if value is None or _looks_like_nested_table_value(value):
+        return ""
+    if isinstance(value, dict):
+        keys = {str(key).lower() for key in value.keys()}
+        if keys & {"slabreached", "actedby", "actedat", "expectedat", "stepname"}:
+            return ""
+        for key in ("Description", "description", "Text", "text", "Value", "value", "Content", "content"):
+            text = _field_text(value.get(key)).strip()
+            if text and text != "—" and not _looks_like_kissflow_id(text):
+                return text
+        return ""
+    text = _field_text(value).strip()
+    if not text or text == "—" or _looks_like_kissflow_id(text):
+        return ""
+    if text.lower() in {"it agent solution", "it_agent_solution", "solution"}:
+        return ""
+    return text
+
+
+def _it_agent_solution_text(
+    data: Dict[str, Any],
+    field_ids: Optional[Dict[str, List[str]]] = None,
+) -> str:
+    """Same sources as aasik_ITSM: report column + native It_Agent_Solution (Refex + Non-Refex)."""
+    names: List[str] = []
+    for name in (field_ids or {}).get("solution") or []:
+        if name and name not in names:
+            names.append(name)
+    for name in ("It_Agent_Solution", "IT_Agent_Solution", "itAgentSolution"):
+        if name not in names:
+            names.append(name)
+    best = ""
+    for layer in _item_field_layers(data or {}):
+        raw = _raw_field(layer, *names)
+        text = _scalar_it_agent_solution_text(raw)
+        if len(text) > len(best):
+            best = text
+    return best
 
 
 def _is_closed_status(status: str) -> bool:
@@ -3535,14 +3706,7 @@ def _parse_report_ticket(
         "Ticket_Status",
         "Ticket Status",
     )
-    solution = _field_text(
-        _raw_field(
-            data,
-            *field_ids.get("solution", []),
-            "It_Agent_Solution",
-            "IT_Agent_Solution",
-        )
-    )
+    solution = _it_agent_solution_text(data, field_ids)
     employee_rating = _parse_rating(
         _raw_field(data, *field_ids.get("employee_rating", []), "Ratings_emp")
     )
@@ -3658,6 +3822,7 @@ def _parse_report_ticket(
         "description": description,
         "status": status,
         "solution": solution,
+        "itAgentSolution": solution,
         "agentSolutions": agent_solutions,
         "assignedTo": assigned_to or "—",
         "closedBy": closed_by or "—",
@@ -3749,6 +3914,7 @@ def _public_local_ticket(doc: Dict[str, Any]) -> Dict[str, Any]:
         "status": status,
         "localStatus": local_status,
         "solution": doc.get("solution") or "",
+        "itAgentSolution": doc.get("solution") or "",
         "assignedTo": doc.get("assigned_to") or "—",
         "closedBy": doc.get("closed_by") or "—",
         "createdOn": doc.get("created_on") or doc.get("created_at"),
@@ -3935,6 +4101,8 @@ class KissflowSharedApis(BaseModel):
     application_id: str = ""
     approval_matrix_id: str = ""
     refexions_policy_api_key: Optional[str] = None
+    refexions_ml_url: Optional[str] = None
+    refexions_policy_service_url: Optional[str] = None
     refex: KissflowEntityApis = Field(default_factory=KissflowEntityApis)
     extrovis: KissflowEntityApis = Field(default_factory=KissflowEntityApis)
 
@@ -4187,6 +4355,32 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             bot_access_key_id = access_key_id
         if not bot_access_key_secret:
             bot_access_key_secret = access_key_secret
+        if name == "live":
+            live_base = (
+                os.environ.get("ITSM_LIVE_BASE_URL", "https://refexgroup.kissflow.com")
+                .strip()
+                .rstrip("/")
+            )
+            live_account = os.environ.get("ITSM_LIVE_ACCOUNT_ID", "AcCMptlq60zH").strip()
+            live_id = os.environ.get("ITSM_LIVE_ACCESS_KEY_ID", "").strip()
+            live_secret = os.environ.get("ITSM_LIVE_ACCESS_KEY_SECRET", "").strip()
+            live_bot_id = os.environ.get("ITSM_LIVE_BOT_ACCESS_KEY_ID", "").strip() or live_id
+            live_bot_secret = os.environ.get("ITSM_LIVE_BOT_ACCESS_KEY_SECRET", "").strip() or live_secret
+            if "development-refexgroup" in (base_url or "").lower():
+                logger.warning("ITSM live resolve used development host; forcing live base URL")
+                base_url = live_base
+            if account_id and account_id == (KISSFLOW_ACCOUNT_ID or "").strip() and live_account and account_id != live_account:
+                logger.warning("ITSM live resolve used development account; forcing live account")
+                account_id = live_account
+            if live_id and access_key_id == (KISSFLOW_ACCESS_KEY_ID or "").strip() and access_key_id != live_id:
+                logger.warning("ITSM live resolve used development access key; forcing live keys")
+                access_key_id = live_id
+                if live_secret:
+                    access_key_secret = live_secret
+            if live_bot_id and bot_access_key_id == (os.environ.get("ITSM_BOT_ACCESS_KEY_ID") or KISSFLOW_ACCESS_KEY_ID or "").strip() and bot_access_key_id != live_bot_id:
+                bot_access_key_id = live_bot_id
+                if live_bot_secret:
+                    bot_access_key_secret = live_bot_secret
         if not base_url or not account_id or not access_key_id or not access_key_secret:
             label = "Live" if name == "live" else "Development"
             raise HTTPException(
@@ -4215,6 +4409,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             "bot_access_key_id": bot_access_key_id,
             "bot_access_key_secret": bot_access_key_secret,
             "refexions_policy_api_key": resolve_refexions_policy_api_key(shared),
+            "refexions_ml_url": resolve_refexions_ml_url(shared),
+            "refexions_policy_service_url": resolve_refexions_policy_service_url(shared),
             "source": "environment",
         }
         if entity and _itsm_db_usable(db):
@@ -4601,11 +4797,16 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
     @api_router.get("/itsm/non-refex-locations")
     async def get_non_refex_locations(
         entity: Optional[str] = Query(None),
+        environment: Optional[str] = Query(None),
         user: dict = Depends(get_current_user),
     ):
         """Non-Refex locations from Kissflow (development when local Non-Refex override is on)."""
         org_id = user.get("org_id") or ""
-        cfg = await _resolve_config(org_id, entity)
+        cfg = await _resolve_config(
+            org_id,
+            entity,
+            force_env=_client_env_name(environment),
+        )
         rows = await _fetch_non_refex_locations(cfg)
         filtered = locations_for_entity(rows, entity or "")
         return {
@@ -5836,4 +6037,4 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         )
 
     from routes.refexions import register_refexions_routes
-    register_refexions_routes(api_router, get_current_user, _resolve_config)
+    register_refexions_routes(api_router, get_current_user, _resolve_config, db)

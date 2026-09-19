@@ -886,7 +886,7 @@ const AppLauncher = () => {
         </div>
       )}
 
-      <div className="fixed right-6 z-50 safe-fixed-bottom bottom-6" data-testid="refexions-chatbot">
+      <div className="fixed right-4 z-50 safe-fixed-bottom bottom-4 sm:right-6 sm:bottom-6" data-testid="refexions-chatbot">
         <RefexionsChat />
       </div>
     </div>

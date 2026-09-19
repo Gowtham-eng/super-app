@@ -1,14 +1,16 @@
 """
 Refexions web chat — Kissflow WhatsApp BOT Config menus, IT ticket create, policy send.
 
-Secrets stay on the server. Bot-config GETs use Live Kissflow (dataset lives on
-AcCMptlq60zH). Ticket create follows the active ITSM Setup environment.
+FAQ answers and Refexions API keys live in Refexions Setup (Mongo), not Kissflow.
+Ticket create still uses ITSM Setup Live Kissflow keys. Production does not need
+a copy of local .env. Set REFEXIONS_TICKET_ENV=development only for local webhook checks.
 """
 from __future__ import annotations
 
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
@@ -18,22 +20,16 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger("refexions")
 
 BOT_DATASET = "Whatsapp_BOT_Config"
-ML_KEYWORD_URL = os.environ.get(
-    "REFEXIONS_ML_URL",
-    "https://keyword-matching-api-645830234926.asia-south1.run.app/api/v1/keyword-match",
-)
 
 
-DEFAULT_POLICY_SERVICE_URL = "https://policy-sender-645830234926.asia-south1.run.app"
+def _policy_service_url(cfg: Optional[Dict[str, Any]] = None) -> str:
+    from routes.itsm import resolve_refexions_policy_service_url
+
+    return resolve_refexions_policy_service_url(cfg)
 
 
-def _policy_service_url() -> str:
-    raw = (os.environ.get("REFEXIONS_POLICY_SERVICE_URL") or DEFAULT_POLICY_SERVICE_URL).strip()
-    return raw.rstrip("/")
-
-
-def _policy_send_url() -> str:
-    base = _policy_service_url()
+def _policy_send_url(cfg: Optional[Dict[str, Any]] = None) -> str:
+    base = _policy_service_url(cfg)
     if base.endswith("/v1/documents/send"):
         return base
     return f"{base}/v1/documents/send"
@@ -48,12 +44,17 @@ def _policy_api_key(cfg: Optional[Dict[str, Any]] = None) -> str:
         shared = cfg.get("shared")
         if isinstance(shared, dict):
             candidates.append(str(shared.get("refexions_policy_api_key") or "").strip())
-    candidates.append(resolve_refexions_policy_api_key())
+    candidates.append(resolve_refexions_policy_api_key(cfg))
     return next((key for key in candidates if key), "")
 
 
 def _policy_template_id() -> str:
-    return os.environ.get("REFEXIONS_POLICY_TEMPLATE_ID", "policy_share_v1") or "policy_share_v1"
+    from services.refexions_store import DEFAULT_POLICY_TEMPLATE_ID, cached_setting
+
+    saved = cached_setting("policy_template_id")
+    if saved:
+        return saved
+    return os.environ.get("REFEXIONS_POLICY_TEMPLATE_ID", DEFAULT_POLICY_TEMPLATE_ID) or DEFAULT_POLICY_TEMPLATE_ID
 
 
 def _policy_recipient_email(*values: Any) -> str:
@@ -87,6 +88,20 @@ def _policy_send_ok(status_code: int, raw: Any) -> bool:
         return False
     token = str(raw.get("status") or "").strip().lower()
     return token not in {"error", "failed", "fail", "rejected"}
+
+
+def _ticket_kissflow_env() -> str:
+    """Which Kissflow account Refexions ticket create uses.
+
+    Live is the default so production never inherits local development .env
+    host/keys. Set REFEXIONS_TICKET_ENV=development only for localhost checks.
+    """
+    raw = (os.environ.get("REFEXIONS_TICKET_ENV") or "").strip().lower()
+    if raw in ("dev", "development"):
+        return "development"
+    if raw in ("live", "prod", "production"):
+        return "live"
+    return "live"
 
 
 def _ticket_subject(description: str, sub_type: str, subject: str = "") -> str:
@@ -171,6 +186,20 @@ class PolicySendRequest(BaseModel):
     user_email: Optional[str] = None
 
 
+class FaqMatchRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+
+
+class RefexionsSetupSave(BaseModel):
+    policy_api_key: Optional[str] = None
+    ml_url: Optional[str] = None
+    policy_service_url: Optional[str] = None
+    policy_template_id: Optional[str] = None
+    faqs: Optional[List[Dict[str, Any]]] = None
+    policies: Optional[List[Dict[str, Any]]] = None
+    menus: Optional[Dict[str, Any]] = None
+
+
 def _split_menu(value: Any) -> List[str]:
     text = str(value or "").replace("|", ",")
     return [part.strip() for part in text.split(",") if part.strip()]
@@ -224,8 +253,42 @@ def _policy_by_id(document_id: str) -> Optional[Dict[str, str]]:
     return None
 
 
-def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_config: Callable):
+def register_refexions_routes(
+    api_router: APIRouter,
+    get_current_user,
+    resolve_config: Callable,
+    db=None,
+):
     from routes.itsm import CRITICALITY_OPTIONS, _kissflow_headers, _ticket_webhook_body, _uses_extrovis_flow
+    from services.refexions_store import (
+        chat_main_menu,
+        chat_policies,
+        chat_sub_menu,
+        enabled_faqs,
+        load_setup,
+        match_faq,
+        policy_by_id,
+        public_doc,
+        save_setup,
+    )
+
+    def _require_admin(user: dict):
+        if user.get("role") not in ("org_admin", "admin", "super_admin", "owner"):
+            raise HTTPException(status_code=403, detail="Admin only")
+
+    def _legacy_settings() -> Dict[str, str]:
+        from routes.itsm import (
+            resolve_refexions_ml_url,
+            resolve_refexions_policy_api_key,
+            resolve_refexions_policy_service_url,
+        )
+
+        return {
+            "policy_api_key": resolve_refexions_policy_api_key(),
+            "ml_url": resolve_refexions_ml_url(),
+            "policy_service_url": resolve_refexions_policy_service_url(),
+            "policy_template_id": _policy_template_id(),
+        }
 
     async def _live_cfg(user: dict) -> Dict[str, Any]:
         org_id = user.get("org_id") or ""
@@ -245,7 +308,7 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
             {"Name": name},
             {"$filter": f"Name eq '{name}'"},
         ]
-        async with httpx.AsyncClient(timeout=45.0) as client:
+        async with httpx.AsyncClient(timeout=8.0) as client:
             for params in params_list:
                 try:
                     response = await client.get(url, headers=headers, params=params)
@@ -266,81 +329,179 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
 
     @api_router.get("/refexions/main-menu")
     async def main_menu(user: dict = Depends(get_current_user)):
-        cfg = await _live_cfg(user)
-        rows = await _fetch_bot_rows(cfg, "01-MainMenu")
-        row = _pick_named_row(rows, "01-MainMenu") or {}
-        options = _split_menu(row.get("Main_Menu")) or list(FALLBACK_MAIN)
-        return {
-            "success": True,
-            "source": "kissflow" if row else "fallback",
-            "message": str(row.get("Message") or "Please choose from the following").strip(),
-            "options": options,
-            "environment": cfg.get("environment") or "live",
-        }
+        void = user
+        del void
+        doc = await load_setup(db, _legacy_settings())
+        return chat_main_menu(doc)
 
     @api_router.get("/refexions/sub-menu")
     async def sub_menu(
         main: str = Query(..., min_length=1),
         user: dict = Depends(get_current_user),
     ):
-        selected = (main or "").strip()
-        key = selected.lower().replace(" ", "")
-        name = SUBMENU_NAMES.get("expense" if "expense" in key else "travel" if "travel" in key else "")
-        cfg = await _live_cfg(user)
-        row: Dict[str, Any] = {}
-        if name:
-            rows = await _fetch_bot_rows(cfg, name)
-            for candidate in rows:
-                menu = str(candidate.get("Main_Menu") or "").strip()
-                if not menu or menu.lower() == selected.lower() or selected.lower() in menu.lower():
-                    row = candidate
-                    break
-            if not row and rows:
-                row = rows[0]
-        options = _split_menu(row.get("Sub_Menu"))
-        if not options:
-            if "expense" in key:
-                options = list(FALLBACK_EXPENSE_SUB)
-            elif "travel" in key:
-                options = list(FALLBACK_TRAVEL_SUB)
-        coming_soon = "expense" in key or "travel" in key
-        return {
-            "success": True,
-            "source": "kissflow" if row else "fallback",
-            "main": selected,
-            "message": str(row.get("Message") or "Please select the application").strip(),
-            "options": options,
-            "intent": str(row.get("Intent") or "Create").strip(),
-            "comingSoon": coming_soon,
-            "comingSoonMessage": (
-                "Receipt upload and OCR for Expense / Travel will land in the next release. "
-                "Use the Expense or Travel app for now."
-            ),
-        }
+        void = user
+        del void
+        doc = await load_setup(db, _legacy_settings())
+        return chat_sub_menu(doc, main)
 
     @api_router.get("/refexions/policies")
     async def list_policies(user: dict = Depends(get_current_user)):
         void = user  # auth required
         del void
+        doc = await load_setup(db, _legacy_settings())
+        return chat_policies(doc)
+
+    @api_router.get("/refexions/faq")
+    async def list_faq(user: dict = Depends(get_current_user)):
+        void = user
+        del void
+        doc = await load_setup(db, _legacy_settings())
+        rows = enabled_faqs(doc)
         return {
             "success": True,
-            "message": "Select a policy to email it to yourself.",
-            "policies": POLICIES,
+            "faqs": [
+                {
+                    "id": row.get("id"),
+                    "question": row.get("question"),
+                    "answer": row.get("answer"),
+                    "link": row.get("link") or "",
+                }
+                for row in rows
+            ],
         }
+
+    @api_router.post("/refexions/faq/match")
+    async def match_faq_route(
+        body: FaqMatchRequest,
+        user: dict = Depends(get_current_user),
+    ):
+        void = user
+        del void
+        text = (body.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Please type a question.")
+        doc = await load_setup(db, _legacy_settings())
+        hit = match_faq(text, enabled_faqs(doc))
+        if not hit:
+            return {
+                "success": True,
+                "matched": False,
+                "message": "I do not have an FAQ for that. Pick one of the options below.",
+            }
+        return {
+            "success": True,
+            "matched": True,
+            "id": hit.get("id"),
+            "question": hit.get("question"),
+            "answer": hit.get("answer"),
+            "link": hit.get("link") or "",
+            "message": hit.get("answer"),
+        }
+
+    @api_router.get("/refexions/admin/setup")
+    async def get_refexions_setup(user: dict = Depends(get_current_user)):
+        _require_admin(user)
+        doc = await load_setup(db, _legacy_settings())
+        payload = public_doc(doc)
+        payload["success"] = True
+        payload["persisted"] = doc.get("persisted") or "memory"
+        return payload
+
+    @api_router.put("/refexions/admin/setup")
+    async def put_refexions_setup(
+        body: RefexionsSetupSave,
+        user: dict = Depends(get_current_user),
+    ):
+        _require_admin(user)
+        saved = await save_setup(db, body.model_dump(exclude_unset=True), keep_blank_key=True)
+        payload = public_doc(saved)
+        payload["success"] = True
+        payload["persisted"] = saved.get("persisted") or "memory"
+        return payload
+
+    @api_router.post("/refexions/admin/setup/refresh-menus")
+    async def refresh_refexions_menus(user: dict = Depends(get_current_user)):
+        _require_admin(user)
+        from services.refexions_store import DEFAULT_COMING_SOON, default_menus
+
+        current = await load_setup(db, _legacy_settings())
+        menus = dict(current.get("menus") or default_menus())
+        cfg = await _live_cfg(user)
+        now = datetime.now(timezone.utc).isoformat()
+        pulled: List[str] = []
+
+        main_rows = await _fetch_bot_rows(cfg, "01-MainMenu")
+        main_row = _pick_named_row(main_rows, "01-MainMenu") or {}
+        if main_row:
+            prev_main = menus.get("main") if isinstance(menus.get("main"), dict) else {}
+            menus["main"] = {
+                "message": str(
+                    main_row.get("Message")
+                    or prev_main.get("message")
+                    or "Please choose from the following"
+                ).strip(),
+                "options": _split_menu(main_row.get("Main_Menu")) or list(FALLBACK_MAIN),
+                "source": "kissflow",
+                "refreshed_at": now,
+            }
+            pulled.append("main")
+
+        for kind, dataset, fallback in (
+            ("expense", SUBMENU_NAMES["expense"], FALLBACK_EXPENSE_SUB),
+            ("travel", SUBMENU_NAMES["travel"], FALLBACK_TRAVEL_SUB),
+        ):
+            rows = await _fetch_bot_rows(cfg, dataset)
+            row: Dict[str, Any] = {}
+            for candidate in rows:
+                menu = str(candidate.get("Main_Menu") or "").strip()
+                if not menu or kind in menu.lower() or menu.lower() == kind:
+                    row = candidate
+                    break
+            if not row and rows:
+                row = rows[0]
+            if not row:
+                continue
+            prev = menus.get(kind) if isinstance(menus.get(kind), dict) else {}
+            menus[kind] = {
+                "message": str(
+                    row.get("Message") or prev.get("message") or "Please select the application"
+                ).strip(),
+                "options": _split_menu(row.get("Sub_Menu")) or list(fallback),
+                "source": "kissflow",
+                "refreshed_at": now,
+                "comingSoon": True,
+                "comingSoonMessage": prev.get("comingSoonMessage") or DEFAULT_COMING_SOON,
+            }
+            pulled.append(kind)
+
+        saved = await save_setup(db, {"menus": menus}, keep_blank_key=True)
+        payload = public_doc(saved)
+        payload["success"] = True
+        payload["persisted"] = saved.get("persisted") or "memory"
+        payload["refreshed"] = pulled
+        if not pulled:
+            payload["warning"] = "Kissflow did not return menu rows. Kept the stored copy."
+        return payload
 
     @api_router.post("/refexions/it/match")
     async def match_it_subtype(
         body: ItMatchRequest,
         user: dict = Depends(get_current_user),
     ):
-        void = user
-        del void
         text = (body.mail_body or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="Please describe the issue.")
         try:
+            from routes.itsm import resolve_refexions_ml_url
+
+            shared = None
+            try:
+                shared = await _live_cfg(user)
+            except Exception:
+                shared = None
+            ml_url = resolve_refexions_ml_url(shared)
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(ML_KEYWORD_URL, json={"mail_body": text})
+                response = await client.post(ml_url, json={"mail_body": text})
             raw = {}
             try:
                 raw = response.json()
@@ -407,7 +568,12 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
         if _uses_extrovis_flow(entity) and not asked_subject:
             raise HTTPException(status_code=400, detail="Subject is required.")
 
-        cfg = await resolve_config(user.get("org_id") or "", entity)
+        ticket_env = _ticket_kissflow_env()
+        cfg = await resolve_config(
+            user.get("org_id") or "",
+            entity,
+            force_env=ticket_env,
+        )
         if not cfg.get("webhook_path") or not cfg.get("access_key_secret"):
             raise HTTPException(
                 status_code=400,
@@ -425,6 +591,13 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
             subject=_ticket_subject(description, sub_type, asked_subject),
         )
         url = f"{cfg['kissflow_base_url']}{cfg['webhook_path']}"
+        host = (cfg.get("kissflow_base_url") or "").replace("https://", "").replace("http://", "").split("/")[0]
+        logger.info(
+            "Refexions ticket create env=%s host=%s entity=%s",
+            cfg.get("environment"),
+            host,
+            entity,
+        )
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
                 response = await client.post(url, headers=_kissflow_headers(cfg), json=webhook_body)
@@ -442,15 +615,20 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
         request_id = None
         if isinstance(raw, dict):
             request_id = raw.get("Request_ID") or raw.get("requestId") or raw.get("_id")
+        env_name = cfg.get("environment") or ticket_env
         success = "Ticket created successfully. You may get a notification by email."
         if request_id:
             success = f"{success}\n\nRequest ID: {request_id}"
+        if host:
+            success = f"{success}\n\nKissflow: {env_name} ({host})"
         return {
             "success": True,
             "message": success,
             "entity": entity,
             "sub_type": sub_type,
             "requestId": request_id,
+            "environment": env_name,
+            "kissflowHost": host,
         }
 
     @api_router.post("/refexions/policies/send")
@@ -458,22 +636,23 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
         body: PolicySendRequest,
         user: dict = Depends(get_current_user),
     ):
-        policy = _policy_by_id(body.document_id)
+        setup_doc = await load_setup(db, _legacy_settings())
+        policy = policy_by_id(body.document_id, setup_doc) or _policy_by_id(body.document_id)
         title = (body.title or (policy or {}).get("title") or "Policy").strip()
         email = _policy_recipient_email(body.user_email, user.get("email"))
         if not email:
             raise HTTPException(status_code=400, detail="Your login email is required to send a policy.")
-        service_url = _policy_service_url()
         cfg = {}
         try:
             cfg = await _live_cfg(user)
         except Exception as exc:
             logger.warning("Refexions policy send: Kissflow cfg unavailable: %s", exc)
+        service_url = _policy_service_url(cfg)
         api_key = _policy_api_key(cfg)
         if not service_url or not api_key:
             logger.error(
-                "Refexions policy send skipped: REFEXIONS_POLICY_API_KEY is not set "
-                "(local .env or ITSM Setup → Shared APIs)"
+                "Refexions policy send skipped: policy API key is not set "
+                "(Refexions Setup → Policy API key)"
             )
             return {
                 "success": False,
@@ -485,7 +664,7 @@ def register_refexions_routes(api_router: APIRouter, get_current_user, resolve_c
                     "Please try again in a few minutes. If it keeps failing, contact Admin."
                 ),
             }
-        url = _policy_send_url()
+        url = _policy_send_url(cfg)
         payload = _policy_send_payload(body.document_id, email)
         try:
             async with httpx.AsyncClient(timeout=45.0) as client:
