@@ -10,6 +10,10 @@ import {
   filterLauncherAppsForUser,
   isChiefPosition,
   shouldShowOnAllTab,
+  isRmcP2pApp,
+  isProcure2PayApp,
+  userCanSeeRmcP2p,
+  userCanSeeProcure2Pay,
 } from './launcherApps';
 
 const EMS = {
@@ -112,5 +116,30 @@ describe('Reports and Kissflow visibility', () => {
     expect(dinesh).toEqual(['saml-ems', 'saml-itsm', 'oidc-itsm', 'itsm-inapp', 'r1']);
     const other = filterLauncherAppsForUser(rows, { email: 'anyone@refex.co.in', designation: 'Analyst' }).map((a) => a.id);
     expect(other).toEqual(['saml-ems', 'saml-itsm', 'itsm-inapp']);
+  });
+});
+
+describe('RMC P2P vs Procure2Pay visibility', () => {
+  const rmc = { id: 'rmc-p2p', name: 'RMC P2P', type: 'saml', has_access: true };
+  const p2p = { id: 'procure2pay', name: 'Procure2Pay', type: 'saml', has_access: true };
+  const deepa = { email: 'deepa.murthy@refex.co.in' };
+  const other = { email: 'anyone@refex.co.in' };
+
+  it('detects RMC P2P and Procure2Pay by name', () => {
+    expect(isRmcP2pApp(rmc)).toBe(true);
+    expect(isRmcP2pApp(p2p)).toBe(false);
+    expect(isProcure2PayApp(p2p)).toBe(true);
+    expect(isProcure2PayApp(rmc)).toBe(false);
+  });
+
+  it('shows RMC P2P only to the allowlisted users and hides Procure2Pay from them', () => {
+    expect(userCanSeeRmcP2p(deepa)).toBe(true);
+    expect(userCanSeeRmcP2p(other)).toBe(false);
+    expect(userCanSeeProcure2Pay(deepa)).toBe(false);
+    expect(userCanSeeProcure2Pay(other)).toBe(true);
+    const deepaIds = filterLauncherAppsForUser([EMS, rmc, p2p], deepa).map((a) => a.id);
+    const otherIds = filterLauncherAppsForUser([EMS, rmc, p2p], other).map((a) => a.id);
+    expect(deepaIds).toEqual(['saml-ems', 'rmc-p2p']);
+    expect(otherIds).toEqual(['saml-ems', 'procure2pay']);
   });
 });

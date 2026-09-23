@@ -6,8 +6,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.launcher_access import (
     is_chief_position,
+    is_procure2pay_app,
     is_reports_app,
+    is_rmc_p2p_app,
+    user_can_see_launcher_app,
+    user_can_see_procure2pay,
     user_can_see_reports,
+    user_can_see_rmc_p2p,
 )
 
 
@@ -47,3 +52,32 @@ def test_reports_email_allowlist_override(monkeypatch):
     monkeypatch.setenv("REPORTS_ALLOWED_EMAILS", "dinesh@refex.co.in")
     assert user_can_see_reports({"email": "dinesh@refex.co.in", "designation": "Analyst"}) is True
     assert user_can_see_reports({"email": "other@refex.co.in", "designation": "Analyst"}) is False
+
+
+RMC = {"id": "rmc", "name": "RMC P2P"}
+P2P = {"id": "p2p", "name": "Procure2Pay"}
+DEEPA = {"email": "deepa.murthy@refex.co.in"}
+OTHER = {"email": "anyone@refex.co.in"}
+
+
+def test_rmc_p2p_vs_procure2pay_names():
+    assert is_rmc_p2p_app(RMC) is True
+    assert is_rmc_p2p_app(P2P) is False
+    assert is_procure2pay_app(P2P) is True
+    assert is_procure2pay_app(RMC) is False
+    assert is_procure2pay_app({"name": "Procurement to Pay", "category": "Reports"}) is False
+
+
+def test_rmc_p2p_allowlist_and_procure2pay_denylist(monkeypatch):
+    monkeypatch.delenv("RMC_P2P_ALLOWED_EMAILS", raising=False)
+    monkeypatch.delenv("PROCURE2PAY_HIDDEN_EMAILS", raising=False)
+    assert user_can_see_rmc_p2p(DEEPA) is True
+    assert user_can_see_rmc_p2p(OTHER) is False
+    assert user_can_see_procure2pay(DEEPA) is False
+    assert user_can_see_procure2pay(OTHER) is True
+    assert user_can_see_launcher_app(DEEPA, RMC) is True
+    assert user_can_see_launcher_app(OTHER, RMC) is False
+    assert user_can_see_launcher_app(DEEPA, P2P) is False
+    assert user_can_see_launcher_app(OTHER, P2P) is True
+    assert user_can_see_launcher_app(DEEPA, EMS) is True
+    assert user_can_see_launcher_app(OTHER, EMS) is True

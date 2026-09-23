@@ -71,6 +71,40 @@ export function isReportsLauncherApp(app = {}) {
   return isNeEmbedApp(app);
 }
 
+const RMC_P2P_EMAILS = [
+  'sudharshan.nc@refex.co.in',
+  'deepa.murthy@refex.co.in',
+  'tarkeshwar.singh@refex.co.in',
+  'mounesh.r@refex.co.in',
+];
+
+const compactAppName = (value = '') => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+export function isRmcP2pApp(app = {}) {
+  const compact = compactAppName(`${app.name || ''} ${app.description || ''}`);
+  if (!compact.includes('rmc')) return false;
+  return compact.includes('p2p') || compact.includes('procure');
+}
+
+export function isProcure2PayApp(app = {}) {
+  if (isRmcP2pApp(app) || isReportsLauncherApp(app)) return false;
+  const compact = compactAppName(app.name || '');
+  return compact.includes('procure2pay') || compact.includes('procurementtopay');
+}
+
+function userEmail(user = {}) {
+  return String(user?.email || '').trim().toLowerCase();
+}
+
+export function userCanSeeRmcP2p(user = {}) {
+  const email = userEmail(user);
+  return Boolean(email) && RMC_P2P_EMAILS.includes(email);
+}
+
+export function userCanSeeProcure2Pay(user = {}) {
+  return !RMC_P2P_EMAILS.includes(userEmail(user));
+}
+
 /** Reports stay on the Reports tab — never mix them into All Apps. */
 export function shouldShowOnAllTab(app = {}) {
   return !isReportsLauncherApp(app);
@@ -113,6 +147,8 @@ export function filterLauncherAppsForUser(apps, user) {
   const list = Array.isArray(apps) ? apps : [];
   return list.filter((app) => {
     if (isReportsLauncherApp(app) && !userCanSeeReports(user)) return false;
+    if (isRmcP2pApp(app) && !userCanSeeRmcP2p(user)) return false;
+    if (isProcure2PayApp(app) && !userCanSeeProcure2Pay(user)) return false;
     return true;
   });
 }
