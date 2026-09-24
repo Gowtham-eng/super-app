@@ -46,6 +46,7 @@ def test_reports_visible_to_chiefs_only(monkeypatch):
     assert user_can_see_reports({"designation": "Chief Human Resources Officer"}) is True
     assert user_can_see_reports({"role": "org_admin", "designation": "Analyst"}) is False
     assert user_can_see_reports({"email": "anyone@refex.co.in", "designation": "Analyst"}) is False
+    assert user_can_see_reports({"email": "gowtham.s@refex.co.in", "designation": "Analyst"}) is True
 
 
 def test_reports_email_allowlist_override(monkeypatch):

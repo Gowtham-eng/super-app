@@ -26,6 +26,15 @@ Copy this block to the **top** of the log (newest first):
 
 # Log
 
+### 2026-09-24 — Show Reports for gowtham.s@refex.co.in
+- **Problem:** Reports tiles were hidden unless the user's job title matched Chief / C-suite. Gowtham (org admin) could not see Reports.
+- **Cause:** `user_can_see_reports` / `userCanSeeReports` only checked chief title (plus optional env `REPORTS_ALLOWED_EMAILS` with no default).
+- **Change / solution:** Default allowlist includes `gowtham.s@refex.co.in` in `backend/services/launcher_access.py` and `frontend/src/utils/launcherApps.js`. Chiefs still see Reports. Other analysts still do not. Env `REPORTS_ALLOWED_EMAILS` still overrides the full default list if set.
+- **Flows:** F03 Launcher, F06 OIDC / NE Reports.
+- **Verify:** Sign in as Gowtham → Reports tab and NE dashboard tiles appear. Sign in as a non-chief user → Reports still hidden.
+- **Git / deploy:** `yarn build` + restart backend.
+
+---
 ### 2026-09-24 — Solution log created
 - **Problem:** No single file listing RefexOne changes and fixes.
 - **Change / solution:** Added this document: `docs/REFEXONE_CHANGE_SOLUTION_LOG.md`.

@@ -1,6 +1,7 @@
 """Launcher visibility helpers.
 
-Reports apps are shown only to chief-position users (and org admins).
+Reports apps are shown to chief-position users and an email allowlist
+(default: gowtham.s@refex.co.in).
 RMC P2P is shown only to a fixed email allowlist.
 Procure2Pay is hidden from that same list.
 
@@ -35,6 +36,10 @@ def _email_set(env_name: str, defaults: tuple[str, ...] = ()) -> set[str]:
     return {e.lower() for e in defaults}
 
 
+DEFAULT_REPORTS_ALLOWED_EMAILS = (
+    "gowtham.s@refex.co.in",
+)
+
 DEFAULT_RMC_P2P_EMAILS = (
     "sudharshan.nc@refex.co.in",
     "deepa.murthy@refex.co.in",
@@ -44,7 +49,7 @@ DEFAULT_RMC_P2P_EMAILS = (
 
 
 def reports_allowed_emails() -> set[str]:
-    return _email_set("REPORTS_ALLOWED_EMAILS")
+    return _email_set("REPORTS_ALLOWED_EMAILS", DEFAULT_REPORTS_ALLOWED_EMAILS)
 
 
 def rmc_p2p_allowed_emails() -> set[str]:

@@ -101,6 +101,7 @@ describe('Reports and Kissflow visibility', () => {
     expect(userCanSeeReports({ designation: 'Chief Operating Officer' })).toBe(true);
     expect(userCanSeeReports({ email: 'anyone@refex.co.in', designation: 'Analyst' })).toBe(false);
     expect(userCanSeeReports({ role: 'org_admin', designation: 'Analyst' })).toBe(false);
+    expect(userCanSeeReports({ email: 'gowtham.s@refex.co.in', designation: 'Analyst' })).toBe(true);
   });
 
   it('keeps Reports tiles off the All tab', () => {
@@ -114,6 +115,8 @@ describe('Reports and Kissflow visibility', () => {
     expect(userCanSeeKissflow({ email: 'dinesh@refex.co.in' })).toBe(true);
     const dinesh = filterLauncherAppsForUser(rows, { email: 'dinesh@refex.co.in', designation: 'Chief Executive Officer' }).map((a) => a.id);
     expect(dinesh).toEqual(['saml-ems', 'saml-itsm', 'oidc-itsm', 'itsm-inapp', 'r1']);
+    const gowtham = filterLauncherAppsForUser(rows, { email: 'gowtham.s@refex.co.in', designation: 'Analyst' }).map((a) => a.id);
+    expect(gowtham).toEqual(['saml-ems', 'saml-itsm', 'oidc-itsm', 'itsm-inapp', 'r1']);
     const other = filterLauncherAppsForUser(rows, { email: 'anyone@refex.co.in', designation: 'Analyst' }).map((a) => a.id);
     expect(other).toEqual(['saml-ems', 'saml-itsm', 'itsm-inapp']);
   });

@@ -71,6 +71,10 @@ export function isReportsLauncherApp(app = {}) {
   return isNeEmbedApp(app);
 }
 
+const REPORTS_ALLOWED_EMAILS = [
+  'gowtham.s@refex.co.in',
+];
+
 const RMC_P2P_EMAILS = [
   'sudharshan.nc@refex.co.in',
   'deepa.murthy@refex.co.in',
@@ -129,6 +133,8 @@ export function isChiefPosition(user = {}) {
 }
 
 export function userCanSeeReports(user = {}) {
+  const email = userEmail(user);
+  if (email && REPORTS_ALLOWED_EMAILS.includes(email)) return true;
   return isChiefPosition(user);
 }
 
