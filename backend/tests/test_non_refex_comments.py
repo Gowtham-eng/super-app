@@ -1,20 +1,27 @@
 """Non-Refex Help Desk comment channel + attachment parsing (no live Kissflow)."""
 from routes.itsm import (
+    _admin_process_item_path,
+    _admin_process_item_url,
     _attachment_key_is_image,
     _build_kissflow_upload_object_path,
     _collect_multipart_files,
     _employee_visible_comments,
+    _can_comment_on_step,
     _is_comment_nested_table_step,
+    _is_pickup_step,
     _is_gcs_signed_url,
     _it_agent_solution_text,
     _kissflow_headers,
     _merge_comment_lists,
+    _merge_solution_rows_for_put,
     _normalize_comment_channel,
     _parse_agent_solutions,
     _parse_comment_attachments,
     _parse_report_ticket,
     _thread_from_instance_payload,
     _ticket_webhook_body,
+    _uses_admin_comment_put,
+    _uses_dev_admin_comment_put,
     _uses_extrovis_flow,
     REPORT_FIELD_IDS,
 )
@@ -28,12 +35,12 @@ def test_extrovis_flow_gate():
 
 def test_comment_channel_aliases():
     assert _normalize_comment_channel("External") == "External"
-    assert _normalize_comment_channel("internal") == "External"
+    assert _normalize_comment_channel("internal") == "Internal"
     assert _normalize_comment_channel("User Comments") == "User"
     assert _normalize_comment_channel("") == ""
 
 
-def test_help_desk_shows_user_comments_only():
+def test_help_desk_hides_internal_keeps_thread():
     rows = [
         {"comment": "agent note", "commentsType": "External"},
         {"comment": "employee note", "commentsType": "User"},
@@ -44,15 +51,85 @@ def test_help_desk_shows_user_comments_only():
     ]
     visible = _employee_visible_comments(rows, "Extrovis")
     texts = [row["comment"] for row in visible]
-    assert texts == ["employee note", "user comments alias", "employee alias"]
-    assert [row["comment"] for row in _employee_visible_comments(rows, "Refex")] == [
-        "agent note",
-        "employee note",
-        "user comments alias",
-        "employee alias",
-        "old note",
-        "internal note",
+    assert "internal note" not in texts
+    assert "agent note" in texts
+    assert "employee note" in texts
+    assert "old note" in texts
+
+
+def test_dev_reopened_extrovis_can_comment():
+    ext_ids = REPORT_FIELD_IDS["extrovis"]
+    columns = [
+        {"Id": ext_ids["current_step"][0], "Name": "Current_Step"},
     ]
+    row = {
+        ext_ids["instance_id"][0]: "PkEDIEvs2nrj",
+        ext_ids["item_status"][0]: "Open",
+        ext_ids["reopened"][0]: "Yes",
+        ext_ids["current_step"][0]: "IT Agent Solution",
+    }
+    parsed = _parse_report_ticket(row, columns, 0, "Extrovis", environment="development")
+    assert parsed["canComment"] is True
+    live = _parse_report_ticket(row, columns, 0, "Extrovis", environment="live")
+    assert live["reopened"] is True
+    assert live["canComment"] is True
+    pickup = dict(row)
+    pickup[ext_ids["current_step"][0]] = "IT Agent PickUp"
+    assert _parse_report_ticket(pickup, columns, 0, "Extrovis", environment="live")["canComment"] is False
+
+
+def test_admin_put_keeps_existing_comment_rows():
+    existing = [
+        {"_id": "IT__Agent_Solution_old1", "Name_1": "asik", "Resolution": "yes please", "Comments_2": "External"},
+        {"_id": "IT__Agent_Solution_old2", "Name_1": "Aasik", "Resolution": "still its not working", "Comments_2": "User"},
+    ]
+    new_row = {
+        "_id": "IT__Agent_Solution_new3",
+        "Name_1": "Aasik",
+        "Resolution": "please check again",
+        "Comments_2": "User",
+        "Stages_1": "InProgress",
+    }
+    merged = _merge_solution_rows_for_put(existing, new_row)
+    assert [row["_id"] for row in merged] == [
+        "IT__Agent_Solution_old1",
+        "IT__Agent_Solution_old2",
+        "IT__Agent_Solution_new3",
+    ]
+    assert _merge_solution_rows_for_put(existing, existing[0]) == _merge_solution_rows_for_put(existing, {})
+
+
+def test_reopen_comments_use_setup_admin_put():
+    live_cfg = {
+        "environment": "live",
+        "kissflow_base_url": "https://refexgroup.kissflow.com",
+        "account_id": "AcCMptlq60zH",
+        "process_id": "Live_IT_Service_Request_Extrovis_A00",
+        "access_key_id": "live-key",
+    }
+    dev_cfg = {
+        "environment": "development",
+        "kissflow_base_url": "https://development-refexgroup.kissflow.com",
+        "account_id": "AcCMptp3yqcn",
+        "process_id": "Live_IT_Service_Request_Extrovis_A00",
+        "access_key_id": "dev-key",
+    }
+    assert _uses_admin_comment_put("Extrovis", live_cfg, reopened=True) is True
+    assert _uses_admin_comment_put("Extrovis", live_cfg, reopened=False) is False
+    assert _uses_admin_comment_put("Extrovis", dev_cfg, reopened=False) is True
+    assert _uses_dev_admin_comment_put("Extrovis", dev_cfg) is True
+    assert _uses_admin_comment_put("Refex", live_cfg, reopened=True) is False
+    assert _admin_process_item_url(live_cfg, "PkEDIEvs2nrj") == (
+        "https://refexgroup.kissflow.com/process/2/AcCMptlq60zH/admin/"
+        "Live_IT_Service_Request_Extrovis_A00/PkEDIEvs2nrj"
+    )
+    assert _admin_process_item_url(dev_cfg, "PkEDIEvs2nrj") == (
+        "https://development-refexgroup.kissflow.com/process/2/AcCMptp3yqcn/admin/"
+        "Live_IT_Service_Request_Extrovis_A00/PkEDIEvs2nrj"
+    )
+    assert _admin_process_item_path(live_cfg, "PkX") == (
+        "/process/2/AcCMptlq60zH/admin/Live_IT_Service_Request_Extrovis_A00/PkX"
+    )
 
 
 def test_keeps_all_user_comments_when_attachment_table_is_shorter():
@@ -405,6 +482,13 @@ def test_comment_nested_table_prefers_solution_not_pickup():
     assert _is_comment_nested_table_step("IT Tech Support") is True
     assert _is_comment_nested_table_step("IT Agent PickUp") is False
     assert _is_comment_nested_table_step("PickUp") is False
+
+
+def test_non_refex_comments_blocked_on_pickup():
+    assert _is_pickup_step("IT Agent PickUp") is True
+    assert _can_comment_on_step("IT Agent PickUp", "Extrovis") is False
+    assert _can_comment_on_step("IT Agent Solution", "Extrovis") is True
+    assert _can_comment_on_step("IT Agent Solution", "Refex") is False
 
 
 def test_refex_and_extrovis_it_agent_solution_from_column_and_native():

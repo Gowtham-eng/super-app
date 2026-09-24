@@ -28,11 +28,11 @@ try:
 
     # Phone camera photos are often 6–12MB. Default Starlette/nginx 1MB spool
     # returns 413 before Kissflow upload. Desktop file-picker images stay small.
-    MultiPartParser.spool_max_size = 25 * 1024 * 1024
+    MultiPartParser.spool_max_size = 55 * 1024 * 1024
     if hasattr(MultiPartParser, "max_file_size"):
-        MultiPartParser.max_file_size = 25 * 1024 * 1024
+        MultiPartParser.max_file_size = 55 * 1024 * 1024
     if hasattr(MultiPartParser, "max_part_size"):
-        MultiPartParser.max_part_size = 25 * 1024 * 1024
+        MultiPartParser.max_part_size = 55 * 1024 * 1024
 except Exception:
     pass
 
@@ -438,6 +438,7 @@ class TicketSubmitRequest(BaseModel):
     criticality: str = Field(..., min_length=1)
     description: str = Field(..., min_length=1)
     subject: str = ""
+    attachments: List[str] = Field(default_factory=list)
 
 
 class EntityConfigUpsert(BaseModel):
@@ -700,10 +701,11 @@ def _ticket_webhook_body(
     criticality: str,
     description: str,
     subject: str = "",
+    attachments: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Kissflow create webhook JSON. Non-Refex includes mandatory Subject after Location_user."""
     if _uses_extrovis_flow(entity):
-        return {
+        body = {
             "process_id": process_id,
             "Source": SOURCE_VALUE,
             "Name": name,
@@ -715,17 +717,60 @@ def _ticket_webhook_body(
             "Criticality": criticality,
             "Description": description,
         }
-    return {
-        "process_id": process_id,
-        "Source": SOURCE_VALUE,
-        "Name": name,
-        "Email": email,
-        "Entity": entity,
-        "Location_user": location,
-        "Sub_Type": sub_type,
-        "Criticality": criticality,
-        "Description": description,
-    }
+    else:
+        body = {
+            "process_id": process_id,
+            "Source": SOURCE_VALUE,
+            "Name": name,
+            "Email": email,
+            "Entity": entity,
+            "Location_user": location,
+            "Sub_Type": sub_type,
+            "Criticality": criticality,
+            "Description": description,
+        }
+    urls = [str(item).strip() for item in (attachments or []) if str(item).strip()]
+    if urls:
+        body["Attachment"] = urls
+    return body
+
+
+def _pin_development_submit_config(cfg: Dict[str, Any], entity: Optional[str]) -> Dict[str, Any]:
+    """Force create-ticket onto builtin development Integration webhooks.
+
+    ITSM Setup often stores the live webhook token. Swapping only the account
+    id to AcCMptp3yqcn keeps that live token, Kissflow returns 401/404, and
+    Refex One falls back to a locally created ticket.
+    """
+    out = dict(cfg or {})
+    builtin = _builtin_environments()
+    dev = builtin.get("development") if isinstance(builtin.get("development"), dict) else {}
+    out["environment"] = "development"
+    out["kissflow_base_url"] = (
+        (dev.get("kissflow_base_url") or KISSFLOW_BASE_URL or "").strip().rstrip("/")
+    )
+    out["account_id"] = (dev.get("account_id") or KISSFLOW_ACCOUNT_ID or "").strip()
+    mapped = "extrovis" if _uses_extrovis_flow(entity) else "refex"
+    profile = ENTITY_REPORTS.get(mapped) or {}
+    out["process_id"] = profile.get("process_id") or _process_id_for_entity(entity)
+    if profile.get("report_id"):
+        out["report_id"] = profile["report_id"]
+    out["webhook_path"] = _webhook_path_for_entity(entity)
+    if dev.get("access_key_id"):
+        out["access_key_id"] = dev["access_key_id"]
+    if dev.get("access_key_secret"):
+        out["access_key_secret"] = dev["access_key_secret"]
+    if dev.get("bot_access_key_id"):
+        out["bot_access_key_id"] = dev["bot_access_key_id"]
+    if dev.get("bot_access_key_secret"):
+        out["bot_access_key_secret"] = dev["bot_access_key_secret"]
+    return out
+
+
+def _development_submit_webhook_url(entity: Optional[str]) -> str:
+    """Full development Integration URL used by POST /itsm/tickets."""
+    pinned = _pin_development_submit_config({}, entity)
+    return f"{pinned['kissflow_base_url']}{pinned['webhook_path']}"
 
 
 def _non_refex_force_development() -> bool:
@@ -1274,12 +1319,14 @@ async def _kf_put_json(
     path: str,
     payload: Dict[str, Any],
     params: Optional[Dict[str, Any]] = None,
+    *,
+    for_write: bool = True,
 ) -> tuple:
     url = path if path.startswith("http") else f"{cfg['kissflow_base_url']}{path}"
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.put(
             url,
-            headers=_kissflow_headers(cfg, for_write=True),
+            headers=_kissflow_headers(cfg, for_write=for_write),
             params=params or {},
             json=payload,
         )
@@ -2028,17 +2075,63 @@ def _comment_step_for_entity(entity: Optional[str]) -> str:
     """Open-ticket comment is only allowed on the active work step(s)."""
     if _report_entity_key(entity) == "refex":
         return "IT Tech / IT Tech Support"
-    return "IT Agent PickUp / IT Agent Solution"
+    return "IT Agent Solution"
+
+
+def _is_development_env(value: Optional[str] = None, cfg: Optional[Dict[str, Any]] = None) -> bool:
+    token = _client_env_name(value) or _client_env_name((cfg or {}).get("environment"))
+    return token == "development"
+
+
+def _uses_admin_comment_put(
+    entity: Optional[str],
+    cfg: Optional[Dict[str, Any]] = None,
+    *,
+    reopened: bool = False,
+) -> bool:
+    """Extrovis admin PUT uses ITSM Setup host/account/keys.
+
+    Reopened tickets always use PUT. Development also uses PUT for normal comments.
+    Live non-reopened comments stay on the activity POST + BOT key.
+    """
+    if not _uses_extrovis_flow(entity):
+        return False
+    if reopened:
+        return True
+    return _is_development_env(cfg=cfg)
+
+
+def _uses_dev_admin_comment_put(entity: Optional[str], cfg: Optional[Dict[str, Any]] = None) -> bool:
+    return _uses_admin_comment_put(entity, cfg, reopened=False)
+
+
+def _admin_process_item_path(cfg: Dict[str, Any], instance_id: str) -> str:
+    account = (cfg.get("account_id") or "").strip()
+    process_id = (cfg.get("process_id") or "").strip()
+    ticket_id = (instance_id or "").strip()
+    return f"/process/2/{account}/admin/{process_id}/{ticket_id}"
+
+
+def _admin_process_item_url(cfg: Dict[str, Any], instance_id: str) -> str:
+    """Full admin PUT URL for the active ITSM Setup environment."""
+    base = (cfg.get("kissflow_base_url") or "").rstrip("/")
+    return f"{base}{_admin_process_item_path(cfg, instance_id)}"
+
+
+def _is_pickup_step(step: str) -> bool:
+    token = re.sub(r"[\s_-]+", "", _as_string(step).strip().lower())
+    return "pickup" in token or token in {"pick", "itagentpickup", "ittechpickup"}
 
 
 def _can_comment_on_step(current_step: str, entity: Optional[str]) -> bool:
     # Refex Help Desk does not expose comments — Extrovis-family only.
     if _report_entity_key(entity) == "refex":
         return False
-    step = re.sub(r"[\s_-]+", " ", _as_string(current_step).strip().lower()).strip()
-    if not step:
+    if not _as_string(current_step).strip():
         return False
-    # Extrovis: PickUp and Solution (same live-work gate as aasik_ITSM).
+    # Non-Refex: IT Agent Solution / Dependency only — never PickUp.
+    if _is_pickup_step(current_step):
+        return False
     return _is_live_work_step(current_step)
 
 
@@ -2168,6 +2261,82 @@ def _all_agent_solution_table_rows(
         if rows:
             groups.append(rows)
     return groups
+
+
+def _solution_row_for_put(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep only nested-table fields Kissflow accepts on admin PUT."""
+    if not isinstance(row, dict):
+        return {}
+    keep = {
+        "_id",
+        "Name_1",
+        "Name",
+        "Resolution",
+        "Stages_1",
+        "Stages",
+        "Comments_2",
+        "Attachments",
+        "ITAgentDate_Time",
+    }
+    out: Dict[str, Any] = {}
+    for key, value in row.items():
+        token = str(key)
+        if token in keep or token.startswith("Column_"):
+            if value not in (None, ""):
+                out[token] = value
+    rid = _as_string(row.get("_id") or row.get("Id") or row.get("id")).strip()
+    if rid:
+        out["_id"] = rid
+    return out
+
+
+def _merge_solution_rows_for_put(
+    existing: List[Dict[str, Any]],
+    new_row: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Admin PUT replaces the nested table — always send prior rows + the new one."""
+    rows = [_solution_row_for_put(row) for row in (existing or []) if isinstance(row, dict)]
+    rows = [row for row in rows if row]
+    new_id = _as_string((new_row or {}).get("_id")).strip()
+    if new_id and any(_as_string(row.get("_id")).strip() == new_id for row in rows):
+        return rows
+    if new_row:
+        rows.append(dict(new_row))
+    return rows
+
+
+async def _fetch_existing_solution_rows_for_put(
+    cfg: Dict[str, Any],
+    process_id: str,
+    instance_id: str,
+    activity_id: str = "",
+    entity: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
+    account = (cfg.get("account_id") or "").strip()
+    paths = [
+        f"/process/2/{account}/admin/{process_id}/{instance_id}",
+    ]
+    if activity_id:
+        paths.insert(0, f"/process/2/{account}/{process_id}/{instance_id}/{activity_id}")
+    field_ids = REPORT_FIELD_IDS.get(_report_entity_key(entity), REPORT_FIELD_IDS["extrovis"])
+    best: List[Dict[str, Any]] = []
+    for path in paths:
+        payload = await _kf_get_json(cfg, path, params)
+        if payload is None:
+            payload = await _kf_get_json(cfg, path, params, for_write=True)
+        if not payload:
+            continue
+        item = _unwrap_process_item(payload)
+        if not isinstance(item, dict):
+            item = payload if isinstance(payload, dict) else {}
+        groups = _all_agent_solution_table_rows(item, field_ids)
+        if isinstance(payload, dict) and payload is not item:
+            groups.extend(_all_agent_solution_table_rows(payload, field_ids))
+        for group in groups:
+            if len(group) > len(best):
+                best = group
+    return [_solution_row_for_put(row) for row in best if isinstance(row, dict) and _solution_row_for_put(row)]
 
 
 def _pick_row_field(row: Dict[str, Any], *candidates: str) -> Any:
@@ -2300,7 +2469,9 @@ def _normalize_comment_channel(value: Any) -> str:
         return ""
     if token in {"user", "usercomments", "employee"}:
         return "User"
-    if token in {"external", "internal"}:
+    if token == "internal":
+        return "Internal"
+    if token == "external":
         return "External"
     return ""
 
@@ -2414,7 +2585,7 @@ def _employee_visible_comments(
         channel = _normalize_comment_channel(
             entry.get("commentsType") or entry.get("Comments_2") or entry.get("commentChannel")
         )
-        if channel != "User":
+        if channel == "Internal":
             continue
         visible.append(entry)
     return visible
@@ -3664,6 +3835,7 @@ def _parse_report_ticket(
     columns: List[Any],
     index: int,
     entity: Optional[str] = None,
+    environment: Optional[str] = None,
 ) -> Dict[str, Any]:
     data = _row_dict(row, columns)
     field_ids = REPORT_FIELD_IDS.get(_report_entity_key(entity), REPORT_FIELD_IDS["refex"])
@@ -3841,10 +4013,30 @@ def _parse_report_ticket(
         "canReopen": _can_reopen_ticket(current_step, workflow_status, data, field_ids),
         "canComment": (
             status not in ("Closed", "Failed", "Rejected")
-            and not _comments_blocked_for_reopen(
-                reopened_raw, reopen_hold, current_step, last_completed_step
+            and not _is_pickup_step(current_step)
+            and (
+                (
+                    _uses_extrovis_flow(entity)
+                    and (
+                        _is_reopened_flag(reopened_raw)
+                        or _comments_blocked_for_reopen(
+                            reopened_raw, reopen_hold, current_step, last_completed_step
+                        )
+                    )
+                )
+                or (
+                    _can_comment_on_step(current_step, entity)
+                    and (
+                        (
+                            _uses_extrovis_flow(entity)
+                            and _is_development_env(environment)
+                        )
+                        or not _comments_blocked_for_reopen(
+                            reopened_raw, reopen_hold, current_step, last_completed_step
+                        )
+                    )
+                )
             )
-            and _can_comment_on_step(current_step, entity)
         ),
         "commentStep": _comment_step_for_entity(entity),
         "slaBreached": _open_sla_breached(data, field_ids, status),
@@ -4018,7 +4210,16 @@ async def _load_kissflow_report_tickets(
         working_param or "$requestor_email",
         len(collected),
     )
-    parsed = [_parse_report_ticket(row, columns, i, entity) for i, row in enumerate(collected)]
+    parsed = [
+        _parse_report_ticket(
+            row,
+            columns,
+            i,
+            entity,
+            environment=cfg.get("environment"),
+        )
+        for i, row in enumerate(collected)
+    ]
     parsed = _scrub_cross_ticket_comment_leaks(parsed)
     want = _normalize_email(email)
     if not want:
@@ -4080,6 +4281,7 @@ class TicketCommentRequest(BaseModel):
     solution_row_id: Optional[str] = None
     commenter_name: Optional[str] = None
     environment: Optional[str] = None
+    reopened: Optional[bool] = None
 
 
 class KissflowEntityApis(BaseModel):
@@ -4277,7 +4479,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         Resolve Kissflow connection.
         - Default: ITSM Setup active (development | live)
         - force_env='live'|'development': override for a specific call
-          (approval-matrix always uses live; create/reports follow Setup)
+          (approval-matrix always uses live; create/reports/comments follow Setup)
         - Local checking: ITSM_NON_REFEX_FORCE_DEVELOPMENT sends Non-Refex
           APIs to development except approval-matrix (allow_live_lock=True).
         """
@@ -4420,13 +4622,17 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 key = _normalize_entity_key(d.get("entity_key") or "")
                 display = _normalize_entity_key(d.get("display_name") or "")
                 if want and (want == key or want == display):
-                    if d.get("webhook_path"):
+                    if d.get("webhook_path") and name != "development":
                         resolved["webhook_path"] = _webhook_path_with_account(
                             d.get("webhook_path"), account_id
                         )
                     resolved["entity_key"] = d.get("entity_key")
                     resolved["source"] = "environment+entity"
                     break
+        if name == "development":
+            # Setup/entity often stores the live webhook token. Account-swap keeps
+            # that token and Kissflow 401s — use the builtin development Integration.
+            resolved["webhook_path"] = _webhook_path_for_entity(entity)
         logger.info(
             "ITSM resolve env=%s setup=%s base=%s account=%s entity=%s",
             name,
@@ -4834,6 +5040,32 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         result["kissflowBaseUrl"] = cfg.get("kissflow_base_url") or ""
         return result
 
+    @api_router.post("/itsm/ticket-attachments")
+    async def upload_ticket_attachments(
+        request: Request,
+        user: dict = Depends(get_current_user),
+    ):
+        """Upload Refex create-ticket files to GCS and return public URLs."""
+        _ = user
+        content_type = (request.headers.get("content-type") or "").lower()
+        if "multipart/form-data" not in content_type:
+            raise HTTPException(status_code=400, detail="Send files as multipart form-data.")
+        form = await request.form()
+        uploads = _collect_multipart_files(form)
+        if not uploads:
+            raise HTTPException(status_code=400, detail="Choose at least one file.")
+        from services.itsm_ticket_attachments import (
+            TICKET_ATTACHMENT_HINT,
+            upload_ticket_attachment_files,
+        )
+
+        urls = await upload_ticket_attachment_files(uploads)
+        return {
+            "success": True,
+            "urls": urls,
+            "hint": TICKET_ATTACHMENT_HINT,
+        }
+
     @api_router.post("/itsm/tickets")
     async def submit_ticket(
         body: TicketSubmitRequest,
@@ -4858,6 +5090,9 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
             raise HTTPException(status_code=400, detail="Invalid email")
 
+        from services.itsm_ticket_attachments import normalize_attachment_urls
+
+        attachment_urls = normalize_attachment_urls(body.attachments)
         cfg = await _resolve_config(user.get("org_id") or "", entity)
         if not cfg.get("webhook_path") or not cfg.get("access_key_secret"):
             raise HTTPException(
@@ -4879,6 +5114,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             criticality=criticality,
             description=description,
             subject=subject,
+            attachments=attachment_urls,
         )
 
         now = datetime.now(timezone.utc).isoformat()
@@ -4919,18 +5155,34 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         await _persist_local()
 
         url = f"{cfg['kissflow_base_url']}{cfg['webhook_path']}"
+        logger.info(
+            "ITSM submit webhook env=%s entity=%s url=%s",
+            active_env,
+            entity,
+            url,
+        )
         raw = None
         webhook_ok = False
+        webhook_status = 0
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
                 response = await client.post(
                     url, headers=_kissflow_headers(cfg), json=webhook_body
                 )
+            webhook_status = int(response.status_code)
             try:
                 raw = response.json()
             except Exception:
                 raw = response.text
-            webhook_ok = 200 <= response.status_code < 300
+            webhook_ok = 200 <= webhook_status < 300
+            if not webhook_ok:
+                logger.warning(
+                    "ITSM webhook HTTP %s env=%s entity=%s body=%s",
+                    webhook_status,
+                    active_env,
+                    entity,
+                    str(raw)[:300],
+                )
         except Exception as exc:
             logger.exception("ITSM webhook submit failed for entity=%s", entity)
             local_doc["local_status"] = "failed"
@@ -4946,6 +5198,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "status": "failed",
                 "message": "Unable to submit ticket to Kissflow.",
                 "entity": entity,
+                "environment": active_env,
+                "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
                 "ticket": _public_local_ticket(local_doc),
             }
 
@@ -5017,6 +5271,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "status": "created",
                 "message": "Ticket created in Kissflow.",
                 "entity": entity,
+                "environment": active_env,
+                "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
                 "ticket": _public_local_ticket(local_doc),
             }
 
@@ -5030,6 +5286,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "status": "created",
                 "message": "Ticket submitted to Kissflow.",
                 "entity": entity,
+                "environment": active_env,
+                "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
                 "ticket": _public_local_ticket(local_doc),
             }
 
@@ -5052,12 +5310,19 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "status": "created",
                 "message": "Ticket submitted to Kissflow (report confirmation pending).",
                 "entity": entity,
+                "environment": active_env,
+                "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
                 "ticket": _public_local_ticket(local_doc),
             }
 
+        fail_message = (
+            f"Kissflow webhook rejected the ticket (HTTP {webhook_status})."
+            if not webhook_ok
+            else "Kissflow did not create the ticket. It is marked as failed."
+        )
         local_doc["local_status"] = "failed"
         local_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
-        local_doc["error"] = "Not found in Kissflow report after submit"
+        local_doc["error"] = fail_message
         await _persist_local({
             "local_status": "failed",
             "updated_at": local_doc["updated_at"],
@@ -5068,8 +5333,10 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         return {
             "success": False,
             "status": "failed",
-            "message": "Kissflow did not create the ticket. It is marked as failed.",
+            "message": fail_message,
             "entity": entity,
+            "environment": active_env,
+            "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
             "ticket": _public_local_ticket(local_doc),
         }
 
@@ -5813,6 +6080,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             comment=comment,
             commenter_name=body.commenter_name,
             solution_row_id=(body.solution_row_id or "").strip(),
+            reopened=bool(body.reopened),
             files=[],
         )
 
@@ -5826,6 +6094,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         comment: str,
         commenter_name: Optional[str],
         solution_row_id: str = "",
+        reopened: bool = False,
         files: Optional[List[UploadFile]] = None,
     ) -> Dict[str, Any]:
         uploads = [item for item in (files or []) if item is not None]
@@ -5835,11 +6104,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         if uploads and not _uses_extrovis_flow(entity):
             raise HTTPException(status_code=400, detail="Attachments are only supported for Non-Refex tickets.")
 
-        cfg = await _resolve_config(
-            user.get("org_id") or "",
-            entity,
-            force_env=_client_env_name(environment),
-        )
+        cfg = await _resolve_config(user.get("org_id") or "", entity)
         requester_name = _commenter_display_name(user, commenter_name)
         process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
         cfg = {**cfg, "process_id": process_id}
@@ -5850,14 +6115,6 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             entity=entity,
         )
         activity_instance_id = activity_candidates[0] if activity_candidates else ""
-        if not activity_instance_id:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Could not find an open work step for this ticket. "
-                    "Comments are only allowed while IT is working on it."
-                ),
-            )
 
         progress = await _kf_get_json(
             cfg,
@@ -5868,7 +6125,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         live_assignee = ""
         for step in _current_branch_steps(progress) or _iter_progress_steps(progress):
             ids = _step_activity_ids(step, instance_id)
-            if activity_instance_id in ids:
+            if activity_instance_id and activity_instance_id in ids:
                 live_step = _as_string(step.get("Name") or step.get("ActivityName")).strip()
                 live_assignee = _step_assignee_detail(step) or _step_assignee_name(step)
                 break
@@ -5878,10 +6135,23 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 if token == "inprogress":
                     live_step = _as_string(step.get("Name") or step.get("ActivityName")).strip()
                     live_assignee = _step_assignee_detail(step) or _step_assignee_name(step)
-        if (
-            not _can_comment_on_step(live_step, entity)
-            or _is_reopen_hold_step(live_step)
-            or _progress_has_completed_reopen(progress)
+        ticket_reopened = bool(reopened) or _is_reopen_hold_step(live_step) or _progress_has_completed_reopen(progress)
+        use_admin_put = _uses_admin_comment_put(entity, cfg, reopened=ticket_reopened)
+        if not activity_instance_id and not use_admin_put:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Could not find an open work step for this ticket. "
+                    "Comments are only allowed while IT is working on it."
+                ),
+            )
+        if _is_pickup_step(live_step) or (
+            not use_admin_put
+            and (
+                not _can_comment_on_step(live_step, entity)
+                or _is_reopen_hold_step(live_step)
+                or _progress_has_completed_reopen(progress)
+            )
         ):
             blocked_reopen = _is_reopen_hold_step(live_step) or _progress_has_completed_reopen(progress)
             want = _comment_step_for_entity(entity)
@@ -5899,7 +6169,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
 
         row_id = solution_row_id or f"IT__Agent_Solution_{uuid.uuid4().hex[:10]}"
         attachments: List[Dict[str, Any]] = []
-        if uploads:
+        if uploads and activity_instance_id:
             attachments = await _upload_comment_attachments(
                 cfg,
                 instance_id=instance_id,
@@ -5922,15 +6192,25 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
 
         save_ids = list(activity_candidates)
         params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
+        table_rows = [row]
+        if use_admin_put:
+            existing_rows = await _fetch_existing_solution_rows_for_put(
+                cfg,
+                process_id,
+                instance_id,
+                activity_instance_id,
+                entity,
+            )
+            table_rows = _merge_solution_rows_for_put(existing_rows, row)
         payload = {
             "_id": instance_id,
-            "Table::IT__Agent_Solution": [row],
+            "Table::IT__Agent_Solution": table_rows,
         }
         env_name = cfg.get("environment") or "development"
         last_detail = "Unable to save comment."
         last_status = 502
 
-        def _comment_ok(message: str, activity_id: str) -> Dict[str, Any]:
+        async def _comment_ok(message: str, activity_id: str) -> Dict[str, Any]:
             local_entry = {
                 "id": row_id,
                 "recordId": row_id,
@@ -5944,7 +6224,20 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "role": "employee",
             }
             _append_ledger_comment(env_name, instance_id, local_entry)
+            thread_comments: List[Dict[str, Any]] = []
+            try:
+                thread = await _load_instance_comment_thread(
+                    cfg,
+                    entity,
+                    instance_id,
+                    activity_id,
+                    viewer_email=(user.get("email") or "").strip(),
+                )
+                thread_comments = thread.get("comments") or []
+            except Exception as exc:
+                logger.warning("ITSM comment reload after save failed instance=%s: %s", instance_id, exc)
             merged = _merge_comment_lists(
+                thread_comments,
                 [local_entry],
                 _ledger_comments(env_name, instance_id),
             )
@@ -5961,38 +6254,67 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "comments": visible,
             }
 
-        for save_activity in save_ids:
-            path = f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}/{save_activity}"
+        if use_admin_put:
+            path = _admin_process_item_path(cfg, instance_id)
             logger.info(
-                "ITSM comment Kissflow POST %s env=%s account=%s key=%s activity=%s table_row=%s",
-                path,
+                "ITSM comment Kissflow PUT %s env=%s setup=%s account=%s key=%s table_row=%s",
+                _admin_process_item_url(cfg, instance_id),
                 env_name,
+                cfg.get("setup_environment") or env_name,
                 cfg.get("account_id") or "",
                 (cfg.get("access_key_id") or "")[:12],
-                save_activity,
                 row_id,
             )
             try:
-                status_code, raw, success_text = await _kf_post_json(cfg, path, payload, params)
+                status_code, raw, success_text = await _kf_put_json(
+                    cfg,
+                    path,
+                    payload,
+                    params,
+                    for_write=False,
+                )
             except Exception as exc:
-                logger.exception("ITSM ticket comment Kissflow failed instance=%s path=%s", instance_id, path)
+                logger.exception("ITSM ticket comment admin PUT failed instance=%s path=%s", instance_id, path)
                 last_detail = f"Unable to save comment: {exc}"
                 last_status = 502
-                continue
-            if _comment_write_accepted(status_code, raw, success_text):
-                return _comment_ok(success_text or "Comment saved", save_activity)
-            last_detail = _kissflow_response_text(raw, last_detail)
-            last_status = status_code
-            if _is_kissflow_queue_error(last_detail, status_code):
-                who = live_assignee or "the assigned IT agent"
-                last_detail = (
-                    f"Kissflow still has this ticket with {who} on '{live_step or 'the live step'}'. "
-                    "RefexOne posts as the ITSM BOT user key. Adding the ITSM Bot role does not put "
-                    "the work item in that user's queue while a person (for example Vishnu) remains "
-                    "a User assignee. Assign the BOT user account (Kind: User), or remove the human "
-                    "assignee and leave the step only on a role the BOT user belongs to."
+            else:
+                if _comment_write_accepted(status_code, raw, success_text):
+                    return await _comment_ok(success_text or "Comment saved", activity_instance_id or instance_id)
+                last_detail = _kissflow_response_text(raw, last_detail)
+                last_status = status_code
+        else:
+            for save_activity in save_ids:
+                path = f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}/{save_activity}"
+                logger.info(
+                    "ITSM comment Kissflow POST %s env=%s account=%s key=%s activity=%s table_row=%s",
+                    path,
+                    env_name,
+                    cfg.get("account_id") or "",
+                    (cfg.get("access_key_id") or "")[:12],
+                    save_activity,
+                    row_id,
                 )
-                continue
+                try:
+                    status_code, raw, success_text = await _kf_post_json(cfg, path, payload, params)
+                except Exception as exc:
+                    logger.exception("ITSM ticket comment Kissflow failed instance=%s path=%s", instance_id, path)
+                    last_detail = f"Unable to save comment: {exc}"
+                    last_status = 502
+                    continue
+                if _comment_write_accepted(status_code, raw, success_text):
+                    return await _comment_ok(success_text or "Comment saved", save_activity)
+                last_detail = _kissflow_response_text(raw, last_detail)
+                last_status = status_code
+                if _is_kissflow_queue_error(last_detail, status_code):
+                    who = live_assignee or "the assigned IT agent"
+                    last_detail = (
+                        f"Kissflow still has this ticket with {who} on '{live_step or 'the live step'}'. "
+                        "RefexOne posts as the ITSM BOT user key. Adding the ITSM Bot role does not put "
+                        "the work item in that user's queue while a person (for example Vishnu) remains "
+                        "a User assignee. Assign the BOT user account (Kind: User), or remove the human "
+                        "assignee and leave the step only on a role the BOT user belongs to."
+                    )
+                    continue
 
         if last_status == 404 or re.search(
             r"not found|could not be located|IdNotFound|DocumentNotFound",
@@ -6025,6 +6347,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         uploads = _collect_multipart_files(form)
         commenter = form.get("commenter_name")
         environment = form.get("environment")
+        reopened_raw = str(form.get("reopened") or "").strip().lower()
         return await _save_employee_comment(
             user=user,
             entity=entity,
@@ -6033,6 +6356,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             environment=str(environment) if environment not in (None, "") else None,
             comment=str(form.get("comment") or ""),
             commenter_name=str(commenter) if commenter not in (None, "") else None,
+            reopened=reopened_raw in ("1", "true", "yes"),
             files=uploads,
         )
 

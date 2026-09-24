@@ -26,10 +26,19 @@ import {
   MapPin,
   Mic,
   MicOff,
+  Paperclip,
   Search,
+  Upload,
   User,
+  X,
   XCircle,
 } from 'lucide-react';
+import {
+  TICKET_ATTACHMENT_ACCEPT,
+  TICKET_ATTACHMENT_HINT,
+  formatTicketAttachmentSize,
+  validateTicketAttachments,
+} from '../utils/itsmTicketAttachments';
 
 const MANUAL_CRITICALITY = ['Low', 'Medium', 'High'];
 
@@ -181,6 +190,8 @@ const CreateITRequest = () => {
     type: '',
   });
   const [manualCriticality, setManualCriticality] = useState('Medium');
+  const [attachments, setAttachments] = useState([]);
+  const fileInputRef = useRef(null);
 
   const recognitionRef = useRef(null);
   const descriptionBeforeListen = useRef('');
@@ -305,6 +316,7 @@ const CreateITRequest = () => {
 
   const canSubmit =
     !!selectedMatrix &&
+    (!isRefex || !!selectedSubType.trim()) &&
     !!criticality &&
     description.trim().length > 0 &&
     (isRefex || subject.trim().length > 0) &&
@@ -720,6 +732,27 @@ const CreateITRequest = () => {
     setManualEdit(false);
     setCascade({ ticketType: '', category: '', subCategory: '', subType: '', type: '' });
     setManualCriticality('Medium');
+    setAttachments([]);
+  };
+
+  const addAttachmentFiles = (fileList) => {
+    const incoming = Array.from(fileList || []).filter(Boolean);
+    if (!incoming.length) return;
+    if (incoming.length > 1) {
+      toast.error('Only one attachment is allowed.');
+      return;
+    }
+    const next = incoming.slice(0, 1);
+    const error = validateTicketAttachments(next);
+    if (error) {
+      toast.error(error);
+      return;
+    }
+    setAttachments(next);
+  };
+
+  const removeAttachment = (index) => {
+    setAttachments((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
   };
 
   const handleSubmit = async () => {
@@ -737,6 +770,24 @@ const CreateITRequest = () => {
 
     setSubmitting(true);
     try {
+      let attachmentUrls = [];
+      if (attachments.length) {
+        const fileError = validateTicketAttachments(attachments);
+        if (fileError) {
+          toast.error(fileError);
+          setSubmitting(false);
+          return;
+        }
+        const form = new FormData();
+        attachments.forEach((file) => form.append('files', file));
+        const auth = getAuthHeader();
+        const uploaded = await axios.post(`${itsmApi}/itsm/ticket-attachments`, form, {
+          headers: { Authorization: auth.headers?.Authorization },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+        });
+        attachmentUrls = Array.isArray(uploaded.data?.urls) ? uploaded.data.urls : [];
+      }
       const res = await axios.post(
         `${itsmApi}/itsm/tickets`,
         {
@@ -748,6 +799,7 @@ const CreateITRequest = () => {
           criticality,
           description: description.trim(),
           ...(isRefex ? {} : { subject: subject.trim() }),
+          ...(attachmentUrls.length ? { attachments: attachmentUrls } : {}),
         },
         getAuthHeader()
       );
@@ -1015,7 +1067,14 @@ const CreateITRequest = () => {
 
           {!useManualCascade ? (
             <section className="form-section !mb-0 lg:col-span-7">
-              <h2 className="form-section-title">Quick Search</h2>
+              <h2 className="form-section-title">
+                Quick Search{isRefex ? ' *' : ''}
+              </h2>
+              {isRefex && (
+                <p className="text-xs text-slate-500 mb-2">
+                  Required. Search and select a service before you submit.
+                </p>
+              )}
               <div className="relative">
                 <Search
                   className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-600 pointer-events-none shrink-0"
@@ -1030,6 +1089,8 @@ const CreateITRequest = () => {
                   placeholder="Search Services"
                   className="input-brutalist w-full !pl-12 !pr-12 py-3"
                   data-testid="itsm-quick-search"
+                  required={isRefex}
+                  aria-required={isRefex ? 'true' : undefined}
                 />
                 {(loadingMatrix || isSearchPending) && (
                   <Loader2
@@ -1276,6 +1337,60 @@ const CreateITRequest = () => {
               </button>
             </div>
           </section>
+
+          <section className="form-section !mb-0 lg:col-span-7" data-testid="itsm-attachments">
+              <h2 className="form-section-title">Supporting Documents</h2>
+              <p className="text-xs text-slate-500 mb-3">Optional. {TICKET_ATTACHMENT_HINT}</p>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={TICKET_ATTACHMENT_ACCEPT}
+                className="hidden"
+                onChange={(event) => {
+                  addAttachmentFiles(event.target.files);
+                  event.target.value = '';
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  addAttachmentFiles(event.dataTransfer?.files);
+                }}
+                className="w-full rounded-xl border-2 border-dashed border-emerald-200 bg-emerald-50/40 px-4 py-8 text-center hover:bg-emerald-50 transition-colors"
+                data-testid="itsm-attachment-dropzone"
+              >
+                <Upload className="mx-auto mb-2 text-emerald-600" size={20} />
+                <div className="text-sm font-semibold text-emerald-800">Upload file</div>
+                <div className="text-xs text-slate-500 mt-1">Drag and drop a file or click to browse</div>
+              </button>
+              {attachments.length > 0 && (
+                <ul className="mt-3 space-y-2">
+                  {attachments.map((file, index) => (
+                    <li
+                      key={`${file.name}-${file.size}-${index}`}
+                      className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2"
+                    >
+                      <Paperclip size={14} className="text-slate-400 shrink-0" />
+                      <span className="min-w-0 flex-1 truncate text-sm text-slate-700">{file.name}</span>
+                      <span className="text-xs text-slate-400 shrink-0">
+                        {formatTicketAttachmentSize(file.size)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => removeAttachment(index)}
+                        className="p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50"
+                        aria-label={`Remove ${file.name}`}
+                      >
+                        <X size={14} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
 
           <div className="lg:col-span-7">
             <button

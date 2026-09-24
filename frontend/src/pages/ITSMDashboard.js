@@ -102,10 +102,6 @@ const isReopenHoldStep = (step) => {
 const ticketAllowsReopen = (ticket) =>
   Boolean(ticket?.canReopen) || isReopenHoldStep(ticket?.currentStep);
 
-/** Same gate as the Action-column stars — reopen-hold or already rated. */
-const showsEmployeeRating = (ticket) =>
-  Boolean(ticket) && (ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1);
-
 const REOPENED_IDS_KEY = 'itsmReopenedTicketIds.v1';
 
 const loadRememberedReopenedIds = () => {
@@ -128,6 +124,21 @@ const rememberReopenedTicket = (ticketId) => {
   } catch {
     // ignore quota / private mode
   }
+};
+
+const ticketIsReopened = (ticket) => {
+  if (!ticket) return false;
+  if (ticket.reopened) return true;
+  const id = String(ticket.id || ticket.localId || '').trim();
+  if (id && rememberedReopenedIds.has(id)) return true;
+  const status = String(ticket.status || '').toLowerCase();
+  return status.includes('reopen') && !status.includes('can be reopen');
+};
+
+/** Stars only on closed / reopen-hold. A reopened ticket is back in the queue. */
+const showsEmployeeRating = (ticket) => {
+  if (!ticket || ticketIsReopened(ticket)) return false;
+  return ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1;
 };
 
 const reopenRelatedBlob = (ticket) =>
@@ -156,8 +167,17 @@ const isReopenRelatedTicket = (ticket) => {
   );
 };
 
-const lockCommentsIfReopened = (ticket) => {
+const isDevHelpdesk = (environment, kissflowBaseUrl = '') => {
+  const token = String(environment || '').trim().toLowerCase();
+  if (token === 'development' || token === 'dev') return true;
+  return String(kissflowBaseUrl || '').toLowerCase().includes('development-refexgroup');
+};
+
+const lockCommentsIfReopened = (ticket, environment = '', kissflowBaseUrl = '') => {
   if (!ticket || !isReopenRelatedTicket(ticket)) return ticket;
+  if (isOpenTicket(ticket) && !isPickupStep(ticket.currentStep)) {
+    return { ...ticket, canComment: true };
+  }
   return { ...ticket, canComment: false };
 };
 
@@ -332,8 +352,7 @@ const prepareCommentFiles = async (files) => {
   return out;
 };
 
-/** Comments UI is Extrovis-family only — Refex Help Desk never shows a thread.
- *  Reopen tickets can view history but never Reply / compose. */
+/** Comments UI is Extrovis-family only — Refex Help Desk never shows a thread. */
 const canShowTicketComments = (entity, ticket) =>
   !isRefexHelpdeskEntity(entity)
   && !isRefexHelpdeskEntity(ticket?.entity);
@@ -361,10 +380,19 @@ const formatAssignedToDisplay = (value) => {
   return unique.join(', ') || '—';
 };
 
-const canCommentTicket = (ticket, entity) => {
-  if (!ticket || showsEmployeeRating(ticket) || isReopenRelatedTicket(ticket)) return false;
+const isPickupStep = (step) => {
+  const token = String(step || '').toLowerCase().replace(/[\s_-]+/g, '');
+  return token.includes('pickup') || token === 'pick' || token.includes('itagentpickup');
+};
+
+const canCommentTicket = (ticket, entity, environment = '', kissflowBaseUrl = '') => {
+  if (!ticket) return false;
+  if (showsEmployeeRating(ticket) && !ticketIsReopened(ticket)) return false;
   if (!canShowTicketComments(entity, ticket)) return false;
-  if (!isOpenTicket(ticket) || ticketAllowsReopen(ticket)) return false;
+  if (!isOpenTicket(ticket)) return false;
+  if (isPickupStep(ticket.currentStep)) return false;
+  if (ticketIsReopened(ticket)) return true;
+  if (isReopenRelatedTicket(ticket) || ticketAllowsReopen(ticket)) return false;
   if (ticket.canComment === false) return false;
   if (ticket.canComment === true) {
     const step = String(ticket.currentStep || '').trim().toLowerCase();
@@ -379,8 +407,6 @@ const canCommentTicket = (ticket, entity) => {
   if (step.includes('reopen')) return false;
   return (
     step.includes('agent solution')
-    || step.includes('pickup')
-    || step.includes('pick up')
     || step.includes('dependency')
   );
 };
@@ -442,7 +468,7 @@ const isEmployeeVisibleComment = (entry, entity = '') => {
     .replace(/[\s_-]+/g, '');
   const entityName = typeof entity === 'string' ? entity : '';
   if (isRefexHelpdeskEntity(entityName)) return true;
-  return token === 'user' || token === 'usercomments' || token === 'employee';
+  return token !== 'internal';
 };
 
 const commentsBelongToTicket = (rows, ticket) => {
@@ -609,6 +635,7 @@ const TicketConversation = ({
   ticket,
   entity = '',
   environment = '',
+  kissflowBaseUrl = '',
   getAuthHeader,
   viewerName = '',
   viewerEmail = '',
@@ -635,10 +662,8 @@ const TicketConversation = ({
   hydrateRef.current = onHydrated;
   ticketRef.current = ticket;
   const entries = revisionEntriesFromTicket(ticket, entity);
-  const allowCompose =
-    Boolean(canComment)
-    && !showsEmployeeRating(ticket)
-    && !isReopenRelatedTicket(ticket);
+  const resolvedEnv = isDevHelpdesk(environment, kissflowBaseUrl) ? 'development' : environment;
+  const allowCompose = Boolean(canComment);
 
   const loadComments = React.useCallback(async (force = false) => {
     const live = ticketRef.current;
@@ -659,7 +684,7 @@ const TicketConversation = ({
           entity,
           instance_id: live.id,
           activity_instance_id: live.activityInstanceId || '',
-          environment: environment || undefined,
+          environment: resolvedEnv || environment || undefined,
           _t: Date.now(),
         },
         ...authRef.current(),
@@ -677,7 +702,7 @@ const TicketConversation = ({
     } finally {
       setHydrating(false);
     }
-  }, [ticket?.id, entity, environment]);
+  }, [ticket?.id, entity, environment, kissflowBaseUrl, resolvedEnv]);
 
   React.useEffect(() => {
     loadComments();
@@ -981,9 +1006,11 @@ const TicketConversation = ({
         </div>
       ) : (
         <p className="border-t border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] text-slate-500">
-          {isReopenRelatedTicket(ticket) || showsEmployeeRating(ticket)
-            ? 'Comments are disabled on reopened tickets.'
-            : 'Replies open when this ticket is with IT on the work step.'}
+          {isPickupStep(ticket.currentStep)
+            ? 'Comments open after IT picks up the ticket.'
+            : showsEmployeeRating(ticket)
+              ? 'This ticket is closed for comments.'
+              : 'Replies open when this ticket is with IT on the work step.'}
         </p>
       )}
     </div>
@@ -1027,7 +1054,7 @@ const ticketsCache = {
   fetchedAt: 0,
 };
 
-const TICKETS_CACHE_KEY = 'itsmTicketsCache.v9';
+const TICKETS_CACHE_KEY = 'itsmTicketsCache.v15';
 const COMMENTS_STORE_KEY = 'itsmCommentsStore.v1';
 const commentsStore = new Map();
 let ticketsInflight = null;
@@ -1128,7 +1155,11 @@ try {
         const withComments = stored.length
           ? { ...row, agentSolutions: mergeCommentRows(realCommentRows(row.agentSolutions), stored) }
           : row;
-        return lockCommentsIfReopened(withComments);
+        return lockCommentsIfReopened(
+          withComments,
+          ticketsCache.activeEnvironment,
+          ticketsCache.kissflowBaseUrl,
+        );
       });
     }
   }
@@ -1164,6 +1195,9 @@ const ITSMDashboard = () => {
   const [error, setError] = useState('');
   const [activeEnvironment, setActiveEnvironment] = useState(() => cached?.activeEnvironment || '');
   const [kissflowBaseUrl, setKissflowBaseUrl] = useState(() => cached?.kissflowBaseUrl || '');
+  const helpdeskEnv = isDevHelpdesk(activeEnvironment, kissflowBaseUrl)
+    ? 'development'
+    : activeEnvironment;
   const [lastFetchedAt, setLastFetchedAt] = useState(() => cached?.fetchedAt || 0);
   const [refreshing, setRefreshing] = useState(false);
   const [reopeningId, setReopeningId] = useState('');
@@ -1253,7 +1287,7 @@ const ITSMDashboard = () => {
             entity,
             instance_id: ticket.id,
             activity_instance_id: ticket.activityInstanceId || '',
-            environment: activeEnvironment || undefined,
+            environment: helpdeskEnv || undefined,
             _t: Date.now(),
           },
           ...getAuthHeader(),
@@ -1379,12 +1413,16 @@ const ITSMDashboard = () => {
         return lockCommentsIfReopened({
           ...row,
           reopened: Boolean(row.reopened || remembered),
-          canComment: remembered || row.reopened ? false : row.canComment,
+          canComment: (
+            (remembered || row.reopened)
+              ? !isPickupStep(row.currentStep)
+              : row.canComment
+          ),
           assignedTo: formatAssignedToDisplay(row.assignedTo || prev?.assignedTo),
           agentSolutions: mergedComments,
           requesterName: row.requesterName || prev?.requesterName,
           requesterEmail: row.requesterEmail || prev?.requesterEmail,
-        });
+        }, incomingEnv, incomingBase);
       });
       const nextEnv = res.data.activeEnvironment || '';
       const nextBase = res.data.kissflowBaseUrl || '';
@@ -1550,13 +1588,13 @@ const ITSMDashboard = () => {
       next.add(rowId);
       return next;
     });
-    if (canCommentTicket(ticket, entity)) setComposerTicketId(rowId);
+    if (canCommentTicket(ticket, entity, activeEnvironment, kissflowBaseUrl)) setComposerTicketId(rowId);
   };
 
   const submitCommentForTicket = async (ticket, rawNote, files = []) => {
     const note = String(rawNote || '').trim();
     const fileList = Array.isArray(files) ? files.filter(Boolean) : [];
-    if (!ticket?.id || !canCommentTicket(ticket, entity)) {
+    if (!ticket?.id || !canCommentTicket(ticket, entity, activeEnvironment, kissflowBaseUrl)) {
       throw new Error('Comments are not available on this step.');
     }
     if (!note && !fileList.length) throw new Error('Please enter a comment or add an attachment.');
@@ -1595,7 +1633,8 @@ const ITSMDashboard = () => {
         form.append('activity_instance_id', ticket.activityInstanceId || '');
         form.append('comment', note);
         if (viewerName) form.append('commenter_name', viewerName);
-        if (activeEnvironment) form.append('environment', activeEnvironment);
+        if (helpdeskEnv) form.append('environment', helpdeskEnv);
+        if (ticket.reopened) form.append('reopened', 'true');
         fileList.forEach((file) => form.append('files', file));
         res = await axios.post(`${ITSM_API}/itsm/reports/comment-with-files`, form, {
           headers: { Authorization: auth.headers?.Authorization },
@@ -1611,7 +1650,8 @@ const ITSMDashboard = () => {
             activity_instance_id: ticket.activityInstanceId || '',
             comment: note,
             commenter_name: viewerName || undefined,
-            environment: activeEnvironment || undefined,
+            environment: helpdeskEnv || undefined,
+            reopened: Boolean(ticket.reopened) || undefined,
           },
           auth
         );
@@ -1701,10 +1741,7 @@ const ITSMDashboard = () => {
               const rowId = ticket.id || ticket.localId;
               const expanded = expandedIds.has(rowId);
               const showCommentSection = canShowTicketComments(entity, ticket);
-              const showComment =
-                canCommentTicket(ticket, entity)
-                && !showsEmployeeRating(ticket)
-                && !isReopenRelatedTicket(ticket);
+              const showComment = canCommentTicket(ticket, entity, activeEnvironment, kissflowBaseUrl);
               const requestId = ticket.requestId || '—';
               const subject = ticketSubject(ticket) || '—';
               const hasDescription = Boolean(String(ticket.description || '').trim());
@@ -1761,7 +1798,7 @@ const ITSMDashboard = () => {
                             {isRefexHelpdeskEntity(entity) ? 'Reply' : 'Reply / Attach'}
                           </button>
                         ) : null}
-                        {ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1 ? (
+                        {!ticketIsReopened(ticket) && (ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1) ? (
                           <>
                             <EmployeeRatingStars ticket={ticket} ratingBusyId={ratingBusyId} onRate={submitRating} />
                             {ticketAllowsReopen(ticket) ? (
@@ -1795,7 +1832,8 @@ const ITSMDashboard = () => {
                         <TicketConversation
                           ticket={ticket}
                           entity={entity}
-                          environment={activeEnvironment}
+                          environment={helpdeskEnv}
+                          kissflowBaseUrl={kissflowBaseUrl}
                           getAuthHeader={getAuthHeader}
                           viewerName={viewerName}
                           viewerEmail={viewerEmail}
@@ -1828,10 +1866,7 @@ const ITSMDashboard = () => {
           const rowId = ticket.id || ticket.localId;
           const expanded = expandedIds.has(rowId);
           const showCommentSection = canShowTicketComments(entity, ticket);
-          const showComment =
-            canCommentTicket(ticket, entity)
-            && !showsEmployeeRating(ticket)
-            && !isReopenRelatedTicket(ticket);
+          const showComment = canCommentTicket(ticket, entity, activeEnvironment, kissflowBaseUrl);
           const hasDescription = Boolean(String(ticket.description || '').trim());
           const hasSolution = Boolean(ticketAgentSolution(ticket));
           const showSolution = isClosedTicket(ticket) || ticketAllowsReopen(ticket) || hasSolution;
@@ -1881,7 +1916,7 @@ const ITSMDashboard = () => {
                     {isRefexHelpdeskEntity(entity) ? 'Reply' : 'Reply / Attach'}
                   </button>
                 ) : null}
-                {ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1 ? (
+                {!ticketIsReopened(ticket) && (ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1) ? (
                   <div className="space-y-2 w-full">
                     <EmployeeRatingStars ticket={ticket} ratingBusyId={ratingBusyId} onRate={submitRating} />
                     {ticketAllowsReopen(ticket) ? (
@@ -1911,7 +1946,8 @@ const ITSMDashboard = () => {
                   <TicketConversation
                     ticket={ticket}
                     entity={entity}
-                    environment={activeEnvironment}
+                    environment={helpdeskEnv}
+                    kissflowBaseUrl={kissflowBaseUrl}
                     getAuthHeader={getAuthHeader}
                     viewerName={viewerName}
                     viewerEmail={viewerEmail}
