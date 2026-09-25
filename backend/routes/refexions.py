@@ -2,8 +2,8 @@
 Refexions web chat — Kissflow WhatsApp BOT Config menus, IT ticket create, policy send.
 
 FAQ answers and Refexions API keys live in Refexions Setup (Mongo), not Kissflow.
-Ticket create still uses ITSM Setup Live Kissflow keys. Production does not need
-a copy of local .env. Set REFEXIONS_TICKET_ENV=development only for local webhook checks.
+Ticket create uses the active ITSM Setup environment (host, account, keys, webhook).
+Set REFEXIONS_TICKET_ENV=development|live only to override that toggle.
 """
 from __future__ import annotations
 
@@ -90,18 +90,14 @@ def _policy_send_ok(status_code: int, raw: Any) -> bool:
     return token not in {"error", "failed", "fail", "rejected"}
 
 
-def _ticket_kissflow_env() -> str:
-    """Which Kissflow account Refexions ticket create uses.
-
-    Live is the default so production never inherits local development .env
-    host/keys. Set REFEXIONS_TICKET_ENV=development only for localhost checks.
-    """
+def _ticket_kissflow_env() -> Optional[str]:
+    """Optional override. None means follow the ITSM Setup active environment."""
     raw = (os.environ.get("REFEXIONS_TICKET_ENV") or "").strip().lower()
     if raw in ("dev", "development"):
         return "development"
     if raw in ("live", "prod", "production"):
         return "live"
-    return "live"
+    return None
 
 
 def _ticket_subject(description: str, sub_type: str, subject: str = "") -> str:
@@ -291,12 +287,10 @@ def register_refexions_routes(
             "policy_template_id": _policy_template_id(),
         }
 
-    async def _live_cfg(user: dict) -> Dict[str, Any]:
+    async def _setup_cfg(user: dict, entity: Optional[str] = None) -> Dict[str, Any]:
         org_id = user.get("org_id") or ""
-        try:
-            return await resolve_config(org_id, None, force_env="live")
-        except HTTPException:
-            return await resolve_config(org_id, None)
+        ticket_env = _ticket_kissflow_env()
+        return await resolve_config(org_id, entity, force_env=ticket_env)
 
     async def _fetch_bot_rows(cfg: Dict[str, Any], name: str) -> List[Dict[str, Any]]:
         account = cfg.get("account_id") or ""
@@ -427,7 +421,7 @@ def register_refexions_routes(
 
         current = await load_setup(db, _legacy_settings())
         menus = dict(current.get("menus") or default_menus())
-        cfg = await _live_cfg(user)
+        cfg = await _setup_cfg(user)
         now = datetime.now(timezone.utc).isoformat()
         pulled: List[str] = []
 
@@ -497,7 +491,7 @@ def register_refexions_routes(
 
             shared = None
             try:
-                shared = await _live_cfg(user)
+                shared = await _setup_cfg(user)
             except Exception:
                 shared = None
             ml_url = resolve_refexions_ml_url(shared)
@@ -650,7 +644,7 @@ def register_refexions_routes(
             raise HTTPException(status_code=400, detail="Your login email is required to send a policy.")
         cfg = {}
         try:
-            cfg = await _live_cfg(user)
+            cfg = await _setup_cfg(user)
         except Exception as exc:
             logger.warning("Refexions policy send: Kissflow cfg unavailable: %s", exc)
         service_url = _policy_service_url(cfg)

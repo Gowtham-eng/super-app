@@ -396,7 +396,7 @@ const CreateITRequest = () => {
       const detail = getApiErrorMessage(err, '');
       if (/401|not authorized|access keys|ITSM Setup|Live access keys/i.test(detail)) {
         setInitError(
-          `${detail}\n\nApproval matrix always uses Kissflow Live. An admin must set valid Live access keys in ITSM Setup (create/submit can stay on Development).`
+          `${detail}\n\nApproval matrix follows the active ITSM Setup environment. An admin must set valid host, account, and access keys for Development or Live, then activate that environment.`
         );
       } else if (/429|rate.?limit|Too Many Requests/i.test(detail) || err?.response?.status === 429) {
         setInitError(

@@ -59,6 +59,8 @@ const emptyConnection = () => ({
   access_key_secret: '',
   bot_access_key_id: '',
   bot_access_key_secret: '',
+  webhook_path_refex: '',
+  webhook_path_extrovis: '',
 });
 
 const emptyShared = () => ({
@@ -75,6 +77,8 @@ const hydrateConnection = (raw = {}) => ({
   access_key_secret: String(raw.access_key_secret || ''),
   bot_access_key_id: String(raw.bot_access_key_id || ''),
   bot_access_key_secret: String(raw.bot_access_key_secret || ''),
+  webhook_path_refex: String(raw.webhook_path_refex || ''),
+  webhook_path_extrovis: String(raw.webhook_path_extrovis || ''),
 });
 
 const hydrateShared = (raw = {}) => ({
@@ -103,6 +107,8 @@ const connectionPayload = (raw = {}) => ({
   access_key_secret: String(raw.access_key_secret || '').trim(),
   bot_access_key_id: String(raw.bot_access_key_id || '').trim(),
   bot_access_key_secret: String(raw.bot_access_key_secret || '').trim(),
+  webhook_path_refex: String(raw.webhook_path_refex || '').trim(),
+  webhook_path_extrovis: String(raw.webhook_path_extrovis || '').trim(),
 });
 
 const sharedPayload = (raw = {}) => {
@@ -293,20 +299,16 @@ const ITSMSetup = () => {
     }));
   };
 
-  const applySharedWebhook = (slice, value) => {
+  const applyEnvWebhook = (envKey, slice, value) => {
     const { path } = splitWebhookInput(value);
-    setEnvForm((prev) => ({
-      ...prev,
-      shared: {
-        ...prev.shared,
-        [slice]: { ...prev.shared[slice], webhook_path: path || value },
-      },
-    }));
+    const field = slice === 'extrovis' ? 'webhook_path_extrovis' : 'webhook_path_refex';
+    setConnectionField(envKey, field, path || value);
   };
 
-  const webhookDisplay = (slice) => {
-    let path = envForm.shared?.[slice]?.webhook_path || '';
-    const conn = envForm[activeEnv] || envForm.development;
+  const webhookDisplay = (envKey, slice) => {
+    const conn = envForm[envKey] || emptyConnection();
+    const field = slice === 'extrovis' ? 'webhook_path_extrovis' : 'webhook_path_refex';
+    let path = conn[field] || '';
     const account = (conn?.account_id || '').trim();
     if (path && account) {
       path = path.replace(/\/integration\/2\/[^/]+\//, `/integration/2/${account}/`);
@@ -337,7 +339,7 @@ const ITSMSetup = () => {
       });
       const host = String(res.data[savedActive]?.kissflow_base_url || '').replace(/\/$/, '');
       toast.success(
-        `Active: ${savedActive === 'live' ? 'Live' : 'Development'}${host ? ` — ${host}` : ''}. Dashboard and create ticket now use this host.`
+        `Active: ${savedActive === 'live' ? 'Live' : 'Development'}${host ? ` — ${host}` : ''}. All Kissflow APIs now use this host, account, keys, and webhooks.`
       );
       if (res.data.persisted === 'memory') {
         toast.message('Database is offline — this switch is kept in memory until Mongo is back.');
@@ -515,8 +517,8 @@ const ITSMSetup = () => {
         </div>
         <p className="text-[11px] text-slate-500">
           {envKey === 'live'
-            ? 'Live Kissflow host and keys. When Live is active, Help Desk uses these for create, comments, reopen, and rating. Save here so production Mongo has the values even without server env.'
-            : 'Development Kissflow host and keys. When Dev is active, Help Desk uses these for create, comments, reopen, and rating.'}
+            ? 'When Live is active, every Help Desk and Refexions Kissflow API uses this host, account, keys, and these webhooks.'
+            : 'When Development is active, every Help Desk and Refexions Kissflow API uses this host, account, keys, and these webhooks.'}
         </p>
         <div className="grid gap-3">
           <Field label="Kissflow URL" hint="Host only, no trailing slash">
@@ -579,6 +581,38 @@ const ITSMSetup = () => {
               />
             </Field>
           </div>
+          <Field
+            label="Refex submit webhook"
+            hint="Full Development or Live Integration URL for this environment. Do not reuse the other environment token."
+          >
+            <textarea
+              rows={2}
+              className={`${monoClass} resize-y`}
+              value={webhookDisplay(envKey, 'refex')}
+              onChange={(e) => applyEnvWebhook(envKey, 'refex', e.target.value)}
+              placeholder={
+                envKey === 'live'
+                  ? 'https://refexgroup.kissflow.com/integration/2/AcCMptlq60zH/webhook/…'
+                  : 'https://development-refexgroup.kissflow.com/integration/2/AcCMptp3yqcn/webhook/…'
+              }
+            />
+          </Field>
+          <Field
+            label="Extrovis submit webhook"
+            hint="Used for Extrovis, ModePro, Kavis, and Pharma Pack on this environment only."
+          >
+            <textarea
+              rows={2}
+              className={`${monoClass} resize-y`}
+              value={webhookDisplay(envKey, 'extrovis')}
+              onChange={(e) => applyEnvWebhook(envKey, 'extrovis', e.target.value)}
+              placeholder={
+                envKey === 'live'
+                  ? 'https://refexgroup.kissflow.com/integration/2/AcCMptlq60zH/webhook/…'
+                  : 'https://development-refexgroup.kissflow.com/integration/2/AcCMptp3yqcn/webhook/…'
+              }
+            />
+          </Field>
         </div>
       </div>
     );
@@ -588,7 +622,7 @@ const ITSMSetup = () => {
     const shared = envForm.shared || emptyShared();
     return (
       <div className="space-y-4">
-        <p className="text-sm font-semibold text-slate-800">Shared APIs (same for Development and Live)</p>
+        <p className="text-sm font-semibold text-slate-800">Process IDs (same names in Development and Live)</p>
         <div className="grid sm:grid-cols-2 gap-4">
           <Field label="Application ID">
             <input
@@ -625,8 +659,8 @@ const ITSMSetup = () => {
             </h4>
             <p className="text-[11px] text-slate-500">
               {slice === 'refex'
-                ? 'Used when the logged-in entity is Refex. Same process, report, and webhook for development and live.'
-                : 'Used for Extrovis, ModePro, Kavis, and Pharma Pack. Same IDs for development and live.'}
+                ? 'Used when the logged-in entity is Refex. Process and report IDs are the same in both environments. Submit webhooks live on each environment card above.'
+                : 'Used for Extrovis, ModePro, Kavis, and Pharma Pack. Process and report IDs are the same in both environments. Submit webhooks live on each environment card above.'}
             </p>
             <div className="grid sm:grid-cols-2 gap-4">
               <Field label="Process ID">
@@ -644,18 +678,6 @@ const ITSMSetup = () => {
                 />
               </Field>
             </div>
-            <Field
-              label="Submit webhook (full URL or path)"
-              hint="Account ID in /integration/2/{account}/ is replaced from the active environment."
-            >
-              <textarea
-                rows={2}
-                className={`${monoClass} resize-y`}
-                value={webhookDisplay(slice)}
-                onChange={(e) => applySharedWebhook(slice, e.target.value)}
-                placeholder="https://…kissflow.com/integration/2/…/webhook/…"
-              />
-            </Field>
           </div>
         ))}
       </div>
@@ -679,10 +701,9 @@ const ITSMSetup = () => {
             ITSM Entity Setup
           </h1>
           <p className="text-sm text-slate-500 max-w-2xl">
-            Kissflow host and access keys. Activate Development or Live for Help Desk. Refexions
-            tickets always use <strong className="font-medium text-slate-700">Live</strong> keys and
-            webhooks saved here — production does not need a local .env. Keyword-match is already
-            the production Cloud Run URL.
+            Activate Development or Live. That switch changes the Kissflow host, account ID, access
+            keys, submit webhooks, approval matrix, comments, dashboard, and Refexions ticket create.
+            Process and report IDs stay the same in both accounts.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -715,8 +736,8 @@ const ITSMSetup = () => {
           <div>
             <h2 className="font-heading font-semibold text-slate-900">Kissflow environments</h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Help Desk (create, comments, reopen, rating) follows the active environment. Refexions
-              ticket create always uses Live keys and the Refex/Extrovis submit webhooks below.
+              Active environment drives every Kissflow API: URL, account, keys, webhooks, matrix,
+              comments, reports, and Refexions ticket create.
             </p>
           </div>
           <div className="flex items-center gap-2">

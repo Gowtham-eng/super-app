@@ -122,9 +122,9 @@ def test_refexions_create_payload_keeps_optional_attachment():
     assert "Attachment" not in skipped
 
 
-def test_ticket_kissflow_env_defaults_to_live(monkeypatch):
+def test_ticket_kissflow_env_follows_setup_unless_overridden(monkeypatch):
     monkeypatch.delenv("REFEXIONS_TICKET_ENV", raising=False)
-    assert _ticket_kissflow_env() == "live"
+    assert _ticket_kissflow_env() is None
     monkeypatch.setenv("REFEXIONS_TICKET_ENV", "development")
     assert _ticket_kissflow_env() == "development"
     monkeypatch.setenv("REFEXIONS_TICKET_ENV", "live")

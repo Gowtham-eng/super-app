@@ -880,7 +880,7 @@ def _report_entity_key(entity: Optional[str]) -> str:
 
 
 def _builtin_environments() -> Dict[str, Any]:
-    """Dev vs live differ only by URL, account id, and access keys. Process/report/webhooks are shared."""
+    """Dev vs live differ by URL, account id, access keys, and Integration webhooks."""
     ext_webhook = ENTITY_WEBHOOK_PATHS.get("Extrovis") or ""
     dev_id = KISSFLOW_ACCESS_KEY_ID
     dev_secret = KISSFLOW_ACCESS_KEY_SECRET
@@ -914,6 +914,8 @@ def _builtin_environments() -> Dict[str, Any]:
             "access_key_secret": dev_secret,
             "bot_access_key_id": os.environ.get("ITSM_BOT_ACCESS_KEY_ID", "") or dev_id,
             "bot_access_key_secret": os.environ.get("ITSM_BOT_ACCESS_KEY_SECRET", "") or dev_secret,
+            "webhook_path_refex": KISSFLOW_WEBHOOK_PATH,
+            "webhook_path_extrovis": ext_webhook,
         },
         "live": {
             "kissflow_base_url": os.environ.get(
@@ -924,6 +926,8 @@ def _builtin_environments() -> Dict[str, Any]:
             "access_key_secret": live_secret,
             "bot_access_key_id": os.environ.get("ITSM_LIVE_BOT_ACCESS_KEY_ID", "") or live_id,
             "bot_access_key_secret": os.environ.get("ITSM_LIVE_BOT_ACCESS_KEY_SECRET", "") or live_secret,
+            "webhook_path_refex": os.environ.get("ITSM_LIVE_WEBHOOK_PATH", "").strip(),
+            "webhook_path_extrovis": os.environ.get("ITSM_LIVE_EXTROVIS_WEBHOOK_PATH", "").strip(),
         },
     }
 
@@ -953,13 +957,101 @@ def _shared_from_legacy_block(block: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _normalize_webhook_path(value: str) -> str:
+    """Accept a full Kissflow webhook URL or path; store path only."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("http://") or text.startswith("https://"):
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(text)
+            text = parsed.path or ""
+            if parsed.query:
+                text = f"{text}?{parsed.query}"
+        except Exception:
+            return text
+    if text and not text.startswith("/"):
+        text = f"/{text}"
+    return text
+
+
+def _webhook_path_account_id(path: str) -> str:
+    match = re.search(r"/integration/2/([^/]+)/", path or "")
+    return (match.group(1) if match else "").strip()
+
+
+def _webhook_belongs_to_account(path: str, account_id: str) -> bool:
+    acc = (account_id or "").strip()
+    token = _webhook_path_account_id(path)
+    return bool(acc and token and acc == token)
+
+
+def _default_env_webhook_path(name: str, slice_key: str) -> str:
+    """Builtin Integration token for this environment. Never reuse the other env's token."""
+    env = "live" if name == "live" else "development"
+    if env == "development":
+        if slice_key == "extrovis":
+            return (ENTITY_WEBHOOK_PATHS.get("Extrovis") or KISSFLOW_WEBHOOK_PATH or "").strip()
+        return (KISSFLOW_WEBHOOK_PATH or "").strip()
+    if slice_key == "extrovis":
+        return os.environ.get("ITSM_LIVE_EXTROVIS_WEBHOOK_PATH", "").strip()
+    return os.environ.get("ITSM_LIVE_WEBHOOK_PATH", "").strip()
+
+
 def _webhook_path_with_account(path: str, account_id: str) -> str:
-    """Keep the same webhook token; swap only the account id segment for live vs development."""
-    text = (path or "").strip()
+    """Rewrite only the account segment. Token stays as stored for that environment."""
+    text = _normalize_webhook_path(path)
     acc = (account_id or "").strip()
     if not text or not acc:
         return text
     return re.sub(r"/integration/2/[^/]+/", f"/integration/2/{acc}/", text)
+
+
+def _hydrate_env_webhooks(
+    name: str,
+    conn: Dict[str, Any],
+    shared: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Fill missing per-env webhooks. Shared webhook is used only when its account matches."""
+    out = dict(conn or {})
+    account = (out.get("account_id") or "").strip()
+    shared_doc = shared if isinstance(shared, dict) else {}
+    for slice_key, field in (("refex", "webhook_path_refex"), ("extrovis", "webhook_path_extrovis")):
+        path = _normalize_webhook_path(out.get(field) or "")
+        if not path:
+            shared_path = _normalize_webhook_path(
+                ((shared_doc.get(slice_key) or {}) if isinstance(shared_doc.get(slice_key), dict) else {}).get(
+                    "webhook_path"
+                )
+                or ""
+            )
+            if _webhook_belongs_to_account(shared_path, account):
+                path = shared_path
+        if not path:
+            path = _normalize_webhook_path(_default_env_webhook_path(name, slice_key))
+        if path and account:
+            path = _webhook_path_with_account(path, account)
+        out[field] = path
+    return out
+
+
+def _resolve_webhook_path(
+    name: str,
+    entity: Optional[str],
+    conn: Dict[str, Any],
+    shared: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Webhook for the active environment. Development and Live use different tokens."""
+    slice_key = "extrovis" if _uses_extrovis_flow(entity) else "refex"
+    field = "webhook_path_extrovis" if slice_key == "extrovis" else "webhook_path_refex"
+    hydrated = _hydrate_env_webhooks(name, conn, shared)
+    path = (hydrated.get(field) or "").strip()
+    account = (hydrated.get("account_id") or conn.get("account_id") or "").strip()
+    if path and account:
+        return _webhook_path_with_account(path, account)
+    return path
 
 
 def _entity_api_slice(shared: Dict[str, Any], entity: Optional[str]) -> Dict[str, str]:
@@ -986,6 +1078,8 @@ def _public_connection(block: Dict[str, Any]) -> Dict[str, Any]:
         "bot_access_key_id": block.get("bot_access_key_id") or "",
         "bot_access_key_secret": bot_secret,
         "has_bot_secret": bool(bot_secret),
+        "webhook_path_refex": block.get("webhook_path_refex") or "",
+        "webhook_path_extrovis": block.get("webhook_path_extrovis") or "",
     }
 
 
@@ -1025,6 +1119,8 @@ def _merge_connection(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[st
         "access_key_secret": base.get("access_key_secret") or "",
         "bot_access_key_id": base.get("bot_access_key_id") or "",
         "bot_access_key_secret": base.get("bot_access_key_secret") or "",
+        "webhook_path_refex": _normalize_webhook_path(base.get("webhook_path_refex") or ""),
+        "webhook_path_extrovis": _normalize_webhook_path(base.get("webhook_path_extrovis") or ""),
     }
     for key in ("kissflow_base_url", "account_id", "access_key_id", "bot_access_key_id"):
         value = str(incoming.get(key) or "").strip()
@@ -1040,6 +1136,12 @@ def _merge_connection(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[st
         out["bot_access_key_id"] = out.get("access_key_id") or ""
     if not out.get("bot_access_key_secret"):
         out["bot_access_key_secret"] = out.get("access_key_secret") or ""
+    for key in ("webhook_path_refex", "webhook_path_extrovis"):
+        value = _normalize_webhook_path(incoming.get(key) or "")
+        if value:
+            out[key] = value
+        elif out.get(key):
+            out[key] = _normalize_webhook_path(out.get(key) or "")
     return out
 
 
@@ -4297,6 +4399,8 @@ class KissflowConnectionBlock(BaseModel):
     access_key_secret: Optional[str] = None
     bot_access_key_id: str = ""
     bot_access_key_secret: Optional[str] = None
+    webhook_path_refex: str = ""
+    webhook_path_extrovis: str = ""
 
 
 class KissflowSharedApis(BaseModel):
@@ -4440,6 +4544,12 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                         _trip_itsm_db_circuit(exc)
                         logger.warning("ITSM env seed skipped (DB unavailable): %s", exc)
                 await _ensure_policy_key_persisted(builtin.get("shared") or {}, {})
+                builtin["development"] = _hydrate_env_webhooks(
+                    "development", builtin.get("development") or {}, builtin.get("shared") or {}
+                )
+                builtin["live"] = _hydrate_env_webhooks(
+                    "live", builtin.get("live") or {}, builtin.get("shared") or {}
+                )
                 return builtin
             shared_src = doc.get("shared") if isinstance(doc.get("shared"), dict) else {}
             if not shared_src:
@@ -4448,11 +4558,21 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 _merge_shared(builtin["shared"], shared_src),
                 shared_src,
             )
+            development = _hydrate_env_webhooks(
+                "development",
+                _merge_connection(builtin["development"], doc.get("development") or {}),
+                shared,
+            )
+            live = _hydrate_env_webhooks(
+                "live",
+                _merge_connection(builtin["live"], doc.get("live") or {}),
+                shared,
+            )
             return {
                 "active": (doc.get("active") or "development").strip().lower(),
                 "shared": shared,
-                "development": _merge_connection(builtin["development"], doc.get("development") or {}),
-                "live": _merge_connection(builtin["live"], doc.get("live") or {}),
+                "development": development,
+                "live": live,
             }
         except Exception as exc:
             _trip_itsm_db_circuit(exc)
@@ -4476,12 +4596,9 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         allow_live_lock: bool = False,
     ) -> Dict[str, Any]:
         """
-        Resolve Kissflow connection.
-        - Default: ITSM Setup active (development | live)
-        - force_env='live'|'development': override for a specific call
-          (approval-matrix always uses live; create/reports/comments follow Setup)
-        - Local checking: ITSM_NON_REFEX_FORCE_DEVELOPMENT sends Non-Refex
-          APIs to development except approval-matrix (allow_live_lock=True).
+        Resolve Kissflow connection for the active ITSM Setup environment.
+        Host, account, keys, and webhooks all come from that environment.
+        force_env='live'|'development' overrides only when a caller asks.
         """
         envs = await _load_environments(org_id)
         setup_active = (
@@ -4583,6 +4700,16 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 bot_access_key_id = live_bot_id
                 if live_bot_secret:
                     bot_access_key_secret = live_bot_secret
+        else:
+            dev_base = (same_builtin.get("kissflow_base_url") or KISSFLOW_BASE_URL or "").strip().rstrip("/")
+            dev_account = (same_builtin.get("account_id") or KISSFLOW_ACCOUNT_ID or "").strip()
+            live_account = os.environ.get("ITSM_LIVE_ACCOUNT_ID", "AcCMptlq60zH").strip()
+            if (base_url or "").lower().startswith("https://refexgroup.kissflow.com"):
+                logger.warning("ITSM development resolve used live host; forcing development base URL")
+                base_url = dev_base
+            if account_id and live_account and account_id == live_account and dev_account:
+                logger.warning("ITSM development resolve used live account; forcing development account")
+                account_id = dev_account
         if not base_url or not account_id or not access_key_id or not access_key_secret:
             label = "Live" if name == "live" else "Development"
             raise HTTPException(
@@ -4595,7 +4722,18 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             )
         shared = envs.get("shared") or {}
         sl = _entity_api_slice(shared, entity)
-        webhook = sl["webhook_path"] or _webhook_path_for_entity(entity)
+        env_conn = {
+            **(conn if isinstance(conn, dict) else {}),
+            "kissflow_base_url": base_url,
+            "account_id": account_id,
+            "webhook_path_refex": (conn.get("webhook_path_refex") if isinstance(conn, dict) else "")
+            or same_builtin.get("webhook_path_refex")
+            or "",
+            "webhook_path_extrovis": (conn.get("webhook_path_extrovis") if isinstance(conn, dict) else "")
+            or same_builtin.get("webhook_path_extrovis")
+            or "",
+        }
+        webhook = _resolve_webhook_path(name, entity, env_conn, shared)
         resolved = {
             "environment": name,
             "setup_environment": setup_active,
@@ -4605,7 +4743,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             "process_id": sl["process_id"] or _process_id_for_entity(entity),
             "report_id": sl["report_id"],
             "approval_matrix_id": shared.get("approval_matrix_id") or KISSFLOW_APPROVAL_MATRIX_ID,
-            "webhook_path": _webhook_path_with_account(webhook, account_id),
+            "webhook_path": webhook,
             "access_key_id": access_key_id,
             "access_key_secret": access_key_secret,
             "bot_access_key_id": bot_access_key_id,
@@ -4622,24 +4760,23 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 key = _normalize_entity_key(d.get("entity_key") or "")
                 display = _normalize_entity_key(d.get("display_name") or "")
                 if want and (want == key or want == display):
-                    if d.get("webhook_path") and name != "development":
+                    entity_webhook = _normalize_webhook_path(d.get("webhook_path") or "")
+                    # Only honor a per-entity webhook that already belongs to this env.
+                    if entity_webhook and _webhook_belongs_to_account(entity_webhook, account_id):
                         resolved["webhook_path"] = _webhook_path_with_account(
-                            d.get("webhook_path"), account_id
+                            entity_webhook, account_id
                         )
                     resolved["entity_key"] = d.get("entity_key")
                     resolved["source"] = "environment+entity"
                     break
-        if name == "development":
-            # Setup/entity often stores the live webhook token. Account-swap keeps
-            # that token and Kissflow 401s — use the builtin development Integration.
-            resolved["webhook_path"] = _webhook_path_for_entity(entity)
         logger.info(
-            "ITSM resolve env=%s setup=%s base=%s account=%s entity=%s",
+            "ITSM resolve env=%s setup=%s base=%s account=%s entity=%s webhook=%s",
             name,
             setup_active,
             base_url,
             account_id,
             entity or "",
+            (resolved.get("webhook_path") or "")[:80],
         )
         return resolved
 
@@ -4804,6 +4941,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             live["access_key_id"] = live.get("bot_access_key_id") or ""
         if not live.get("access_key_secret"):
             live["access_key_secret"] = live.get("bot_access_key_secret") or ""
+        development = _hydrate_env_webhooks("development", development, shared)
+        live = _hydrate_env_webhooks("live", live, shared)
         if active == "live" and (
             not live.get("kissflow_base_url")
             or not live.get("account_id")
@@ -5027,16 +5166,16 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         entity: Optional[str] = Query(None),
         user: dict = Depends(get_current_user),
     ):
-        """Catalog always from Live Kissflow; create/submit still follow ITSM Setup active env."""
+        """Approval matrix follows the active ITSM Setup environment (host, account, keys)."""
         org_id = user.get("org_id") or ""
         entities = await _entity_options(org_id)
-        cfg = await _resolve_config(org_id, entity, force_env="live", allow_live_lock=True)
+        cfg = await _resolve_config(org_id, entity)
         result = await _fetch_matrix(cfg)
         result["entityOptions"] = entities
         result["resolved_entity"] = entity
-        # Badge / ops env = ITSM Setup toggle; matrix host is always Live.
-        result["activeEnvironment"] = cfg.get("setup_environment") or "development"
-        result["matrixEnvironment"] = "live"
+        active_env = cfg.get("environment") or cfg.get("setup_environment") or "development"
+        result["activeEnvironment"] = active_env
+        result["matrixEnvironment"] = active_env
         result["kissflowBaseUrl"] = cfg.get("kissflow_base_url") or ""
         return result
 

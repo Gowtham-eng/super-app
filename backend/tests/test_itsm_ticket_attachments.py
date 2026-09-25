@@ -4,7 +4,9 @@ import pytest
 from routes.itsm import (
     _development_submit_webhook_url,
     _pin_development_submit_config,
+    _resolve_webhook_path,
     _ticket_webhook_body,
+    _webhook_belongs_to_account,
 )
 from services.itsm_ticket_attachments import (
     TICKET_ATTACHMENT_MAX_FILE_BYTES,
@@ -129,3 +131,42 @@ def test_submit_pins_builtin_development_webhook_not_live_token():
     assert _development_submit_webhook_url("Extrovis").startswith(
         "https://development-refexgroup.kissflow.com/integration/2/AcCMptp3yqcn/webhook/"
     )
+
+
+def test_webhook_follows_active_environment_and_does_not_swap_tokens():
+    live_token = (
+        "/integration/2/AcCMptlq60zH/webhook/"
+        "LIVE_TOKEN_ONLY"
+    )
+    dev_conn = {
+        "account_id": "AcCMptp3yqcn",
+        "webhook_path_refex": (
+            "/integration/2/AcCMptp3yqcn/webhook/"
+            "J1VLVRMG2wXYcRkvDBHLxx0L5fNELbNtFYhPNtUg7kMbhvZSFxJL44ZEjn0htxhGqNCWqOntb7ZcbAz4MNWtQ"
+        ),
+    }
+    live_conn = {
+        "account_id": "AcCMptlq60zH",
+        "webhook_path_refex": live_token,
+    }
+    shared = {
+        "refex": {"webhook_path": live_token},
+    }
+    dev_path = _resolve_webhook_path("development", "Refex", dev_conn, shared)
+    live_path = _resolve_webhook_path("live", "Refex", live_conn, shared)
+    assert "J1VLVRMG2wXYcRkvDBHLxx0L5fNELbNtFYhPNtUg7kMbhvZSFxJL44ZEjn0htxhGqNCWqOntb7ZcbAz4MNWtQ" in dev_path
+    assert "AcCMptp3yqcn" in dev_path
+    assert "LIVE_TOKEN_ONLY" not in dev_path
+    assert "LIVE_TOKEN_ONLY" in live_path
+    assert "AcCMptlq60zH" in live_path
+    assert _webhook_belongs_to_account(live_token, "AcCMptlq60zH") is True
+    assert _webhook_belongs_to_account(live_token, "AcCMptp3yqcn") is False
+    # Shared live token must not be rewritten onto development.
+    stolen = _resolve_webhook_path(
+        "development",
+        "Refex",
+        {"account_id": "AcCMptp3yqcn"},
+        shared,
+    )
+    assert "LIVE_TOKEN_ONLY" not in stolen
+    assert "AcCMptp3yqcn" in stolen
