@@ -449,7 +449,7 @@ class EntityConfigUpsert(BaseModel):
     application_id: str = Field(..., min_length=1)
     process_id: str = Field(..., min_length=1)
     approval_matrix_id: str = Field(..., min_length=1)
-    webhook_path: str = Field(..., min_length=1)
+    webhook_path: str = ""
     access_key_id: str = Field(..., min_length=1)
     access_key_secret: Optional[str] = None  # omit / blank = keep existing on update
     enabled: bool = True
@@ -502,12 +502,47 @@ def _kissflow_headers(
         )
     headers = {
         "Accept": "application/json" if json_body else "*/*",
+        "User-Agent": "RefexOne-ITSM/1.0",
         "X-Access-Key-Id": key_id,
         "X-Access-Key-Secret": key_secret,
     }
     if json_body:
         headers["Content-Type"] = "application/json"
     return headers
+
+
+def _looks_like_html(value: Any) -> bool:
+    text = value if isinstance(value, str) else ""
+    if not text:
+        return False
+    head = text.lstrip()[:500].lower()
+    return (
+        head.startswith("<!doctype html")
+        or head.startswith("<html")
+        or "just a moment" in head
+        or "cf-browser-verification" in head
+        or "challenge-platform" in head
+    )
+
+
+def _kissflow_challenge_message(host: str = "") -> str:
+    where = f" ({host})" if host else ""
+    return (
+        f"Kissflow is temporarily blocking the request{where}. "
+        "Wait a few seconds and try again — this is not a ticket data error."
+    )
+
+
+def _response_is_kissflow_challenge(response: Any) -> bool:
+    if response is None:
+        return False
+    text = getattr(response, "text", "") or ""
+    if _looks_like_html(text):
+        return True
+    ctype = str((getattr(response, "headers", None) or {}).get("content-type") or "").lower()
+    if "text/html" in ctype and "json" not in ctype:
+        return True
+    return False
 
 
 def _as_string(value: Any) -> str:
@@ -1354,6 +1389,27 @@ def _is_tech_completed_step(item: Dict[str, Any]) -> bool:
     return True
 
 
+def _parse_kissflow_write_response(response: Any, host: str = "") -> tuple:
+    if _response_is_kissflow_challenge(response):
+        message = _kissflow_challenge_message(host)
+        return 502, {"challenge": True, "message": message}, message
+    raw: Any = None
+    try:
+        raw = response.json()
+    except Exception:
+        text = getattr(response, "text", "") or ""
+        if _looks_like_html(text):
+            message = _kissflow_challenge_message(host)
+            return 502, {"challenge": True, "message": message}, message
+        raw = text
+    success_text = ""
+    if isinstance(raw, dict):
+        success_text = _as_string(
+            raw.get("Success") or raw.get("success") or raw.get("message") or raw.get("en_message")
+        ).strip()
+    return int(getattr(response, "status_code", 502) or 502), raw, success_text
+
+
 async def _kf_get_json(
     cfg: Dict[str, Any],
     path: str,
@@ -1362,30 +1418,50 @@ async def _kf_get_json(
     for_write: bool = False,
 ) -> Any:
     url = path if path.startswith("http") else f"{cfg['kissflow_base_url']}{path}"
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.get(
-            url,
-            headers=_kissflow_headers(cfg, for_write=for_write),
-            params=params or {},
-        )
-    if response.status_code >= 400:
-        logger.warning("Kissflow GET %s -> %s %s", path, response.status_code, (response.text or "")[:200])
-        return None
-    try:
-        return response.json()
-    except Exception:
-        return None
+    host = cfg.get("kissflow_base_url") or ""
+    for attempt in range(2):
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(
+                url,
+                headers=_kissflow_headers(cfg, for_write=for_write),
+                params=params or {},
+            )
+        if _response_is_kissflow_challenge(response) or _looks_like_html(getattr(response, "text", "") or ""):
+            logger.warning(
+                "Kissflow GET challenge %s -> %s",
+                path,
+                getattr(response, "status_code", "?"),
+            )
+            if attempt == 0:
+                await asyncio.sleep(1.2)
+                continue
+            raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+        if response.status_code >= 400:
+            logger.warning("Kissflow GET %s -> %s %s", path, response.status_code, (response.text or "")[:200])
+            return None
+        try:
+            return response.json()
+        except Exception:
+            if _looks_like_html(response.text or ""):
+                raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+            return None
+    raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
 
 
 def _kissflow_response_text(raw: Any, fallback: str = "") -> str:
+    if _looks_like_html(raw):
+        return _kissflow_challenge_message()
     if isinstance(raw, dict):
+        if raw.get("challenge"):
+            return _as_string(raw.get("message")).strip() or _kissflow_challenge_message()
         for key in ("message", "error", "Error", "en_message", "Success", "success"):
             text = _as_string(raw.get(key)).strip()
             if text:
-                return text
+                return text if not _looks_like_html(text) else _kissflow_challenge_message()
         return fallback
     if raw:
-        return str(raw)[:240]
+        text = str(raw)
+        return _kissflow_challenge_message() if _looks_like_html(text) else text[:240]
     return fallback
 
 
@@ -1396,24 +1472,21 @@ async def _kf_post_json(
     params: Optional[Dict[str, Any]] = None,
 ) -> tuple:
     url = path if path.startswith("http") else f"{cfg['kissflow_base_url']}{path}"
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            url,
-            headers=_kissflow_headers(cfg, for_write=True),
-            params=params or {},
-            json=payload,
-        )
-    raw: Any = None
-    try:
-        raw = response.json()
-    except Exception:
-        raw = response.text
-    success_text = ""
-    if isinstance(raw, dict):
-        success_text = _as_string(
-            raw.get("Success") or raw.get("success") or raw.get("message") or raw.get("en_message")
-        ).strip()
-    return response.status_code, raw, success_text
+    host = cfg.get("kissflow_base_url") or ""
+    response = None
+    for attempt in range(2):
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                url,
+                headers=_kissflow_headers(cfg, for_write=True),
+                params=params or {},
+                json=payload,
+            )
+        if _response_is_kissflow_challenge(response) and attempt == 0:
+            await asyncio.sleep(1.2)
+            continue
+        break
+    return _parse_kissflow_write_response(response, host)
 
 
 async def _kf_put_json(
@@ -1425,24 +1498,21 @@ async def _kf_put_json(
     for_write: bool = True,
 ) -> tuple:
     url = path if path.startswith("http") else f"{cfg['kissflow_base_url']}{path}"
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.put(
-            url,
-            headers=_kissflow_headers(cfg, for_write=for_write),
-            params=params or {},
-            json=payload,
-        )
-    raw: Any = None
-    try:
-        raw = response.json()
-    except Exception:
-        raw = response.text
-    success_text = ""
-    if isinstance(raw, dict):
-        success_text = _as_string(
-            raw.get("Success") or raw.get("success") or raw.get("message") or raw.get("en_message")
-        ).strip()
-    return response.status_code, raw, success_text
+    host = cfg.get("kissflow_base_url") or ""
+    response = None
+    for attempt in range(2):
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.put(
+                url,
+                headers=_kissflow_headers(cfg, for_write=for_write),
+                params=params or {},
+                json=payload,
+            )
+        if _response_is_kissflow_challenge(response) and attempt == 0:
+            await asyncio.sleep(1.2)
+            continue
+        break
+    return _parse_kissflow_write_response(response, host)
 
 
 async def _kf_put_bytes(url: str, content: bytes, content_type: str) -> None:
@@ -1582,8 +1652,15 @@ async def _upload_comment_attachments(
 def _comment_write_accepted(status_code: int, raw: Any, success_text: str) -> bool:
     if not (200 <= status_code < 300):
         return False
-    if success_text and re.search(
-        r"fail|error|permission|queue|moved out|not found|anymore", success_text, re.I
+    if _looks_like_html(raw) or (isinstance(raw, dict) and raw.get("challenge")):
+        return False
+    if success_text and (
+        _looks_like_html(success_text)
+        or re.search(
+            r"fail|error|permission|queue|moved out|not found|anymore|just a moment",
+            success_text,
+            re.I,
+        )
     ):
         return False
     saved = raw.get("Table::IT__Agent_Solution") if isinstance(raw, dict) else None
@@ -1986,12 +2063,22 @@ async def _fetch_kissflow_report_count(
             except Exception as exc:
                 last_detail = str(exc)
                 continue
+            if _response_is_kissflow_challenge(response) or _looks_like_html(getattr(response, "text", "") or ""):
+                raise HTTPException(
+                    status_code=502,
+                    detail=_kissflow_challenge_message(cfg.get("kissflow_base_url") or ""),
+                )
             if response.status_code >= 400:
                 last_detail = f"Kissflow count HTTP {response.status_code}"
                 continue
             try:
                 payload = response.json()
             except Exception:
+                if _looks_like_html(getattr(response, "text", "") or ""):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=_kissflow_challenge_message(cfg.get("kissflow_base_url") or ""),
+                    )
                 payload = {}
             raw = None
             if isinstance(payload, dict):
@@ -2413,7 +2500,7 @@ async def _fetch_existing_solution_rows_for_put(
     instance_id: str,
     activity_id: str = "",
     entity: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], bool]:
     params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
     account = (cfg.get("account_id") or "").strip()
     paths = [
@@ -2423,12 +2510,14 @@ async def _fetch_existing_solution_rows_for_put(
         paths.insert(0, f"/process/2/{account}/{process_id}/{instance_id}/{activity_id}")
     field_ids = REPORT_FIELD_IDS.get(_report_entity_key(entity), REPORT_FIELD_IDS["extrovis"])
     best: List[Dict[str, Any]] = []
+    saw_instance = False
     for path in paths:
         payload = await _kf_get_json(cfg, path, params)
         if payload is None:
             payload = await _kf_get_json(cfg, path, params, for_write=True)
         if not payload:
             continue
+        saw_instance = True
         item = _unwrap_process_item(payload)
         if not isinstance(item, dict):
             item = payload if isinstance(payload, dict) else {}
@@ -2438,7 +2527,10 @@ async def _fetch_existing_solution_rows_for_put(
         for group in groups:
             if len(group) > len(best):
                 best = group
-    return [_solution_row_for_put(row) for row in best if isinstance(row, dict) and _solution_row_for_put(row)]
+    return (
+        [_solution_row_for_put(row) for row in best if isinstance(row, dict) and _solution_row_for_put(row)],
+        saw_instance,
+    )
 
 
 def _pick_row_field(row: Dict[str, Any], *candidates: str) -> Any:
@@ -4268,11 +4360,21 @@ async def _load_kissflow_report_tickets(
                 )
             except Exception:
                 continue
+            if _response_is_kissflow_challenge(response) or _looks_like_html(getattr(response, "text", "") or ""):
+                raise HTTPException(
+                    status_code=502,
+                    detail=_kissflow_challenge_message(cfg.get("kissflow_base_url") or ""),
+                )
             if response.status_code >= 400:
                 continue
             try:
                 payload = response.json()
             except Exception:
+                if _looks_like_html(getattr(response, "text", "") or ""):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=_kissflow_challenge_message(cfg.get("kissflow_base_url") or ""),
+                    )
                 payload = {}
             columns, page_rows = _extract_report_rows(payload)
             if page_rows:
@@ -4290,11 +4392,21 @@ async def _load_kissflow_report_tickets(
                 )
             except Exception:
                 break
+            if _response_is_kissflow_challenge(response) or _looks_like_html(getattr(response, "text", "") or ""):
+                raise HTTPException(
+                    status_code=502,
+                    detail=_kissflow_challenge_message(cfg.get("kissflow_base_url") or ""),
+                )
             if response.status_code >= 400:
                 break
             try:
                 payload = response.json()
             except Exception:
+                if _looks_like_html(getattr(response, "text", "") or ""):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=_kissflow_challenge_message(cfg.get("kissflow_base_url") or ""),
+                    )
                 payload = {}
             next_columns, page_rows = _extract_report_rows(payload)
             if next_columns:
@@ -5803,6 +5915,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             report_tickets = await _load_kissflow_report_tickets(
                 cfg, report_profile, email, entity
             )
+        except HTTPException:
+            raise
         except Exception as exc:
             report_error = str(exc)
             logger.warning(
@@ -6168,6 +6282,10 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         thread["comments"] = visible
         thread["messageCount"] = len(visible)
         thread["commentParser"] = "nested-merge-v3"
+        thread["kissflowBaseUrl"] = cfg.get("kissflow_base_url") or ""
+        thread["activeEnvironment"] = env_name
+        thread["accountId"] = cfg.get("account_id") or ""
+        thread["adminItemUrl"] = _admin_process_item_url(cfg, instance_id)
         return {"success": True, **thread}
 
     @api_router.get("/itsm/reports/attachment-preview")
@@ -6243,7 +6361,11 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         if uploads and not _uses_extrovis_flow(entity):
             raise HTTPException(status_code=400, detail="Attachments are only supported for Non-Refex tickets.")
 
-        cfg = await _resolve_config(user.get("org_id") or "", entity)
+        cfg = await _resolve_config(
+            user.get("org_id") or "",
+            entity,
+            force_env=_client_env_name(environment),
+        )
         requester_name = _commenter_display_name(user, commenter_name)
         process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
         cfg = {**cfg, "process_id": process_id}
@@ -6333,13 +6455,21 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
         table_rows = [row]
         if use_admin_put:
-            existing_rows = await _fetch_existing_solution_rows_for_put(
+            existing_rows, saw_instance = await _fetch_existing_solution_rows_for_put(
                 cfg,
                 process_id,
                 instance_id,
                 activity_instance_id,
                 entity,
             )
+            if not saw_instance:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Could not read this ticket from the Kissflow admin API before saving. "
+                        "The comment was not written, so the existing thread stays intact. Try again."
+                    ),
+                )
             table_rows = _merge_solution_rows_for_put(existing_rows, row)
         payload = {
             "_id": instance_id,
@@ -6390,6 +6520,9 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "kissflowSynced": True,
                 "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
                 "activeEnvironment": env_name,
+                "accountId": cfg.get("account_id") or "",
+                "commentWrite": "admin-put" if use_admin_put else "activity-post",
+                "adminPutUrl": _admin_process_item_url(cfg, instance_id) if use_admin_put else None,
                 "comments": visible,
             }
 

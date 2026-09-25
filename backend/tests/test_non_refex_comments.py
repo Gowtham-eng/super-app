@@ -2,6 +2,9 @@
 from routes.itsm import (
     _admin_process_item_path,
     _admin_process_item_url,
+    _comment_write_accepted,
+    _kissflow_response_text,
+    _looks_like_html,
     _attachment_key_is_image,
     _build_kissflow_upload_object_path,
     _collect_multipart_files,
@@ -97,6 +100,21 @@ def test_admin_put_keeps_existing_comment_rows():
         "IT__Agent_Solution_new3",
     ]
     assert _merge_solution_rows_for_put(existing, existing[0]) == _merge_solution_rows_for_put(existing, {})
+
+
+CLOUDFLARE_HTML = (
+    "<!DOCTYPE html><html lang=\"en-US\"><head><title>Just a moment...</title>"
+    "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\">"
+)
+
+
+def test_cloudflare_html_is_never_treated_as_kissflow_success():
+    assert _looks_like_html(CLOUDFLARE_HTML) is True
+    assert "Just a moment" not in _kissflow_response_text(CLOUDFLARE_HTML, "fallback")
+    assert "temporarily blocking" in _kissflow_response_text(CLOUDFLARE_HTML, "fallback")
+    assert _comment_write_accepted(200, CLOUDFLARE_HTML, "") is False
+    assert _comment_write_accepted(200, {"challenge": True, "message": "blocked"}, "blocked") is False
+    assert _comment_write_accepted(403, CLOUDFLARE_HTML, CLOUDFLARE_HTML) is False
 
 
 def test_reopen_comments_use_setup_admin_put():

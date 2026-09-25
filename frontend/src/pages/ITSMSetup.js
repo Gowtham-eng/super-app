@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
@@ -6,11 +6,9 @@ import { ITSM_API } from '../config/api';
 import { toast } from 'sonner';
 import { getApiErrorMessage } from '../utils/apiError';
 import {
-  AlertTriangle,
   Building2,
   CheckCircle,
   Headphones,
-  Link2,
   Loader2,
   Pencil,
   Plus,
@@ -182,21 +180,6 @@ const ITSMSetup = () => {
     live: emptyConnection(),
   });
 
-  const webhookDupes = useMemo(() => {
-    const map = new Map();
-    for (const e of entities) {
-      const key = (e.webhook_path || '').trim();
-      if (!key) continue;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(e.entity_key || e.display_name);
-    }
-    const shared = new Set();
-    for (const [, names] of map) {
-      if (names.length > 1) names.forEach((n) => shared.add(n));
-    }
-    return shared;
-  }, [entities]);
-
   const fetchEnvironments = async () => {
     setEnvLoading(true);
     try {
@@ -238,8 +221,6 @@ const ITSMSetup = () => {
 
   const openCreate = () => {
     setEditingId(null);
-    // Do NOT prefill submit webhook — each entity must get its own URL.
-    // Credentials / IDs can start from env templates as optional starting point.
     setForm({
       ...emptyForm(),
       kissflow_base_url: envDefaults.kissflow_base_url || '',
@@ -353,17 +334,6 @@ const ITSMSetup = () => {
 
   const setField = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
 
-  const applyWebhookPaste = (value) => {
-    const { base, path } = splitWebhookInput(value);
-    setForm((prev) => ({
-      ...prev,
-      webhook_input: value,
-      // If user pasted a full URL, keep base in sync; path lives in webhook_input until save
-      kissflow_base_url: base || prev.kissflow_base_url,
-      _parsed_webhook_path: path,
-    }));
-  };
-
   const resolveWebhookPath = () => {
     const parsed = splitWebhookInput(form.webhook_input);
     return parsed.path || form._parsed_webhook_path || '';
@@ -374,11 +344,6 @@ const ITSMSetup = () => {
       toast.error('Entity key is required');
       return;
     }
-    const webhookPath = resolveWebhookPath();
-    if (!webhookPath) {
-      toast.error('Submit webhook is required (paste full URL or path)');
-      return;
-    }
     if (!form.kissflow_base_url.trim()) {
       toast.error('Kissflow base URL is required');
       return;
@@ -386,19 +351,6 @@ const ITSMSetup = () => {
     if (!editingId && !form.access_key_secret.trim()) {
       toast.error('Access key secret is required for new entities');
       return;
-    }
-
-    const collision = entities.find(
-      (e) =>
-        e.id !== editingId &&
-        (e.webhook_path || '').trim() === webhookPath.trim()
-    );
-    if (collision) {
-      const ok = window.confirm(
-        `Warning: "${collision.display_name || collision.entity_key}" already uses this same submit webhook.\n` +
-          `Each entity should normally have its own webhook. Save anyway?`
-      );
-      if (!ok) return;
     }
 
     setSaving(true);
@@ -411,7 +363,7 @@ const ITSMSetup = () => {
         application_id: form.application_id.trim(),
         process_id: form.process_id.trim(),
         approval_matrix_id: form.approval_matrix_id.trim(),
-        webhook_path: webhookPath,
+        webhook_path: resolveWebhookPath(),
         access_key_id: form.access_key_id.trim(),
         enabled: !!form.enabled,
         sort_order: Number(form.sort_order) || 0,
@@ -789,26 +741,13 @@ const ITSMSetup = () => {
         </div>
       </div>
 
-      {webhookDupes.size > 0 && (
-        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 flex gap-2">
-          <AlertTriangle size={18} className="shrink-0 mt-0.5" />
-          <div>
-            <p className="font-medium">Shared submit webhook detected</p>
-            <p className="text-amber-800/90 text-xs mt-0.5">
-              {Array.from(webhookDupes).join(', ')} currently use the same webhook path. Update each entity’s
-              submit webhook when Kissflow issues a unique integration URL.
-            </p>
-          </div>
-        </div>
-      )}
-
       {entities.length === 0 ? (
         <div className="bg-white rounded-xl border border-dashed border-slate-300 p-8 text-center">
           <Building2 className="mx-auto text-slate-300 mb-3" size={36} />
           <h2 className="font-heading font-semibold text-slate-800 mb-1">No entity configs yet</h2>
           <p className="text-sm text-slate-500 mb-4 max-w-md mx-auto">
-            Add an entity and paste its Kissflow <em>submit webhook</em> URL. Create IT Request will route tickets
-            for that entity to that webhook only.
+            Add an entity label so Create IT Request can map users. Submit webhooks live only on the
+            Development and Live cards above — they switch with the active environment.
             {fallbackOptions.length > 0 ? ` Fallback labels: ${fallbackOptions.join(', ')}.` : ''}
           </p>
           <button
@@ -823,8 +762,6 @@ const ITSMSetup = () => {
       ) : (
         <div className="space-y-3" data-testid="itsm-entity-list">
           {entities.map((entity) => {
-            const shared = webhookDupes.has(entity.entity_key) || webhookDupes.has(entity.display_name);
-            const fullWebhook = `${(entity.kissflow_base_url || '').replace(/\/$/, '')}${entity.webhook_path || ''}`;
             return (
               <div
                 key={entity.id}
@@ -846,20 +783,12 @@ const ITSMSetup = () => {
                           Disabled
                         </span>
                       )}
-                      {shared && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-50 text-amber-800 text-xs font-medium rounded-full">
-                          <AlertTriangle size={12} /> Shared webhook
-                        </span>
-                      )}
                       <span className="text-xs text-slate-400 font-mono">key: {entity.entity_key}</span>
                     </div>
-
-                    <div className="rounded-lg bg-slate-50 border border-slate-100 p-3 mb-3">
-                      <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600 mb-1">
-                        <Link2 size={13} /> Submit webhook (ticket destination)
-                      </div>
-                      <p className="font-mono text-[11px] sm:text-xs text-slate-700 break-all">{fullWebhook || '—'}</p>
-                    </div>
+                    <p className="text-[11px] text-slate-500 mb-3">
+                      Submit webhooks are on the Development / Live cards above. This row is the
+                      entity label and leftover IDs only.
+                    </p>
 
                     <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1 text-xs text-slate-600">
                       <div>
@@ -934,7 +863,7 @@ const ITSMSetup = () => {
                   {editingId ? 'Edit entity config' : 'Add entity config'}
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Submit webhook is independent per entity — paste the Kissflow URL for this entity only.
+                  Entity label only. Submit webhooks are edited on the Development / Live cards.
                 </p>
               </div>
               <button
@@ -972,40 +901,20 @@ const ITSMSetup = () => {
                 </div>
               </section>
 
-              <section className="space-y-3 rounded-xl border border-blue-100 bg-blue-50/40 p-4">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-blue-700 flex items-center gap-1.5">
-                  <Link2 size={14} /> Submit webhook (ticket destination)
-                </h3>
-                <Field
-                  label="Webhook URL or path"
-                  required
-                  hint="Paste the full Kissflow integration URL. Base URL is filled automatically when you paste a full URL."
-                >
-                  <textarea
-                    rows={3}
-                    value={form.webhook_input}
-                    onChange={(e) => applyWebhookPaste(e.target.value)}
-                    placeholder="https://…kissflow.com/integration/2/…/webhook/…"
-                    className={`${monoClass} resize-y`}
-                    data-testid="itsm-field-webhook"
-                  />
-                </Field>
-                <Field label="Kissflow base URL" required>
-                  <input
-                    type="text"
-                    value={form.kissflow_base_url}
-                    onChange={(e) => setField('kissflow_base_url', e.target.value)}
-                    placeholder="https://development-refexgroup.kissflow.com"
-                    className={monoClass}
-                  />
-                </Field>
-              </section>
-
               <section className="space-y-3">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
                   Kissflow IDs (can stay same today, changeable later)
                 </h3>
                 <div className="grid sm:grid-cols-2 gap-4">
+                  <Field label="Kissflow base URL" required>
+                    <input
+                      type="text"
+                      value={form.kissflow_base_url}
+                      onChange={(e) => setField('kissflow_base_url', e.target.value)}
+                      placeholder="https://development-refexgroup.kissflow.com"
+                      className={`${monoClass} sm:col-span-2`}
+                    />
+                  </Field>
                   <Field label="Account ID" required>
                     <input type="text" value={form.account_id} onChange={(e) => setField('account_id', e.target.value)} className={monoClass} />
                   </Field>

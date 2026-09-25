@@ -1054,7 +1054,7 @@ const ticketsCache = {
   fetchedAt: 0,
 };
 
-const TICKETS_CACHE_KEY = 'itsmTicketsCache.v15';
+const TICKETS_CACHE_KEY = 'itsmTicketsCache.v16';
 const COMMENTS_STORE_KEY = 'itsmCommentsStore.v1';
 const commentsStore = new Map();
 let ticketsInflight = null;
@@ -1401,6 +1401,15 @@ const ITSMDashboard = () => {
         && ticketsCache.activeEnvironment === incomingEnv
         && ticketsCache.kissflowBaseUrl === incomingBase;
       const previous = sameHost ? ticketsCache.tickets : [];
+      if (!incoming.length && previous.length && (sameHost || res.data.reportError)) {
+        ticketsCache.fetchedAt = Date.now();
+        persistTicketsCache();
+        return {
+          ...res.data,
+          tickets: previous,
+          keptCachedTickets: true,
+        };
+      }
       const nextTickets = incoming.map((row) => {
         const prev = previous.find((item) => item.id === row.id || item.localId === row.localId);
         const ticketKey = row.id || row.localId;
@@ -1443,8 +1452,8 @@ const ITSMDashboard = () => {
       setActiveEnvironment(ticketsCache.activeEnvironment);
       setKissflowBaseUrl(ticketsCache.kissflowBaseUrl);
       setLastFetchedAt(ticketsCache.fetchedAt);
-      if (data?.reportError) {
-        toast.error(`Kissflow report: ${data.reportError}`);
+      if (data?.reportError && !data?.keptCachedTickets && !data?.skippedFull) {
+        toast.error(`Kissflow report: ${getApiErrorMessage({ detail: data.reportError }, data.reportError)}`);
       }
     } catch (err) {
       if (!ticketsCache.tickets.length) {
@@ -1657,10 +1666,7 @@ const ITSMDashboard = () => {
         );
       }
       toast.success(res.data.message || 'Comment sent');
-      if (Array.isArray(res.data.comments) && res.data.comments.length) {
-        applyCommentThread(ticket.id, res.data);
-      }
-      await fetchTickets({ force: true, silent: true });
+      applyCommentThread(ticket.id, res.data || {});
     } catch (err) {
       setTickets((prev) => {
         const next = prev.map((row) =>
