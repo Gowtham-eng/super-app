@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Loader2, MessageCircle, Send, X } from 'lucide-react';
+import { Loader2, MessageCircle, Paperclip, Send, Upload, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API, ITSM_API } from '../config/api';
 import {
@@ -12,6 +12,12 @@ import {
   mergeItsmProfile,
 } from '../utils/itsmEntity';
 import { getApiErrorMessage } from '../utils/apiError';
+import {
+  TICKET_ATTACHMENT_ACCEPT,
+  TICKET_ATTACHMENT_HINT,
+  formatTicketAttachmentSize,
+  validateTicketAttachments,
+} from '../utils/itsmTicketAttachments';
 
 const FALLBACK_MAIN = ['Expense', 'Travel', 'IT HelpDesk', 'Policies'];
 const BACK = 'Back';
@@ -85,8 +91,10 @@ const RefexionsChat = () => {
   });
   const [nonRefexLocations, setNonRefexLocations] = useState([]);
   const [policyDraft, setPolicyDraft] = useState(null);
+  const [attachments, setAttachments] = useState([]);
   const scrollerRef = useRef(null);
   const inputRef = useRef(null);
+  const fileInputRef = useRef(null);
   const policiesRef = useRef(STATIC_POLICIES);
   const stepRef = useRef('main');
   const profile = useMemo(() => mergeItsmProfile(user), [user]);
@@ -104,6 +112,7 @@ const RefexionsChat = () => {
       entity: profile.entity || '',
       location: profile.location || '',
     });
+    setAttachments([]);
     setPolicyDraft(null);
     setChips(mainChipList(opts));
     setMessages([
@@ -264,6 +273,7 @@ const RefexionsChat = () => {
   const startItHelpdesk = async () => {
     const entity = profile.entity || '';
     const location = profile.location || '';
+    setAttachments([]);
     setItDraft({ description: '', subject: '', subType: '', entity, location });
     if (!entity) {
       setStep('it_entity');
@@ -298,7 +308,7 @@ const RefexionsChat = () => {
       setChips([BACK, 'Confirm', 'Edit']);
       const subjectLine = subject ? `\nSubject: ${subject}` : '';
       push(botMsg(
-        `Detected: ${subType}${res.data?.matched_keyword ? ` (${res.data.matched_keyword})` : ''}.${subjectLine}\n\nCreate this ticket as ${entity} / ${location}?`,
+        `Detected: ${subType}${res.data?.matched_keyword ? ` (${res.data.matched_keyword})` : ''}.${subjectLine}\n\nCreate this ticket as ${entity} / ${location}?\n\nOptional: attach one supporting file (${TICKET_ATTACHMENT_HINT})`,
         ['Confirm', 'Edit'],
       ));
     } catch (err) {
@@ -309,9 +319,46 @@ const RefexionsChat = () => {
     }
   };
 
+  const addAttachmentFiles = (fileList) => {
+    const incoming = Array.from(fileList || []).filter(Boolean);
+    if (!incoming.length) return;
+    if (incoming.length > 1) {
+      push(botMsg('Only one attachment is allowed.'));
+      return;
+    }
+    const next = incoming.slice(0, 1);
+    const error = validateTicketAttachments(next);
+    if (error) {
+      push(botMsg(error));
+      return;
+    }
+    setAttachments(next);
+  };
+
+  const removeAttachment = (index) => {
+    setAttachments((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
+  };
+
   const createTicket = async () => {
     setBusy(true);
     try {
+      let attachmentUrls = [];
+      if (attachments.length) {
+        const fileError = validateTicketAttachments(attachments);
+        if (fileError) {
+          push(botMsg(fileError));
+          return;
+        }
+        const form = new FormData();
+        attachments.forEach((file) => form.append('files', file));
+        const auth = getAuthHeader();
+        const uploaded = await axios.post(`${ITSM_API}/itsm/ticket-attachments`, form, {
+          headers: { Authorization: auth.headers?.Authorization },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+        });
+        attachmentUrls = Array.isArray(uploaded.data?.urls) ? uploaded.data.urls : [];
+      }
       const res = await axios.post(
         `${API}/refexions/it/create`,
         {
@@ -323,15 +370,18 @@ const RefexionsChat = () => {
           entity: itDraft.entity,
           location: itDraft.location,
           criticality: 'Medium',
+          ...(attachmentUrls.length ? { attachments: attachmentUrls } : {}),
         },
         getAuthHeader(),
       );
       setStep('it_done');
       setChips([BACK, 'View my tickets']);
+      const attachedNote = attachments[0]?.name ? `\n\nAttached: ${attachments[0].name}` : '';
       push(botMsg(
-        res.data?.message || 'Ticket created successfully. You may get a notification by email.',
+        `${res.data?.message || 'Ticket created successfully. You may get a notification by email.'}${attachedNote}`,
         ['View my tickets'],
       ));
+      setAttachments([]);
     } catch (err) {
       setChips([BACK, 'Try again']);
       push(botMsg(getApiErrorMessage(err, 'Could not create the ticket. Please try again.')));
@@ -663,6 +713,66 @@ const RefexionsChat = () => {
             </div>
           ) : null}
         </div>
+
+        {step === 'it_confirm' ? (
+          <div className="border-t border-slate-100 bg-white px-3 pt-2" data-testid="refexions-attachments">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={TICKET_ATTACHMENT_ACCEPT}
+              className="hidden"
+              onChange={(event) => {
+                addAttachmentFiles(event.target.files);
+                event.target.value = '';
+              }}
+            />
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+              Supporting document
+            </p>
+            <p className="mt-0.5 text-[11px] text-slate-500">Optional. {TICKET_ATTACHMENT_HINT}</p>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault();
+                addAttachmentFiles(event.dataTransfer?.files);
+              }}
+              className="mt-2 w-full rounded-xl border-2 border-dashed border-emerald-200 bg-emerald-50/40 px-3 py-3 text-center hover:bg-emerald-50 disabled:opacity-50"
+              data-testid="refexions-attachment-dropzone"
+            >
+              <Upload className="mx-auto mb-1 text-emerald-600" size={16} />
+              <div className="text-xs font-semibold text-emerald-800">Upload file</div>
+              <div className="text-[11px] text-slate-500">Drag and drop or click to browse</div>
+            </button>
+            {attachments.length > 0 ? (
+              <ul className="mt-2 space-y-1.5">
+                {attachments.map((file, index) => (
+                  <li
+                    key={`${file.name}-${file.size}-${index}`}
+                    className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5"
+                  >
+                    <Paperclip size={13} className="shrink-0 text-slate-400" />
+                    <span className="min-w-0 flex-1 truncate text-xs text-slate-700">{file.name}</span>
+                    <span className="shrink-0 text-[11px] text-slate-400">
+                      {formatTicketAttachmentSize(file.size)}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => removeAttachment(index)}
+                      className="rounded-md p-1 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                      aria-label={`Remove ${file.name}`}
+                    >
+                      <X size={12} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
 
         {visibleChips.length ? (
           <div className="flex max-h-32 flex-wrap gap-1.5 overflow-y-auto border-t border-slate-100 bg-white px-3 pb-1 pt-2 sm:max-h-28">

@@ -86,6 +86,42 @@ def test_refexions_non_refex_ticket_includes_subject():
     assert "Subject" not in refex
 
 
+def test_refexions_create_payload_keeps_optional_attachment():
+    from routes.refexions import ItCreateRequest
+
+    body = ItCreateRequest(
+        description="vpn down",
+        sub_type="VPN",
+        entity="Refex",
+        location="Chennai",
+        attachments=["https://storage.googleapis.com/refexone-itsm-ticket-attachments/a.png"],
+    )
+    webhook = _ticket_webhook_body(
+        process_id="Live_IT_Service_Request_A00",
+        name="A",
+        email="a@refex.com",
+        entity=body.entity,
+        location=body.location,
+        sub_type=body.sub_type,
+        criticality=body.criticality,
+        description=body.description,
+        attachments=body.attachments,
+    )
+    assert webhook["Attachment"] == body.attachments
+    skipped = _ticket_webhook_body(
+        process_id="Live_IT_Service_Request_A00",
+        name="A",
+        email="a@refex.com",
+        entity="Refex",
+        location="Chennai",
+        sub_type="VPN",
+        criticality="Medium",
+        description="vpn down",
+        attachments=[],
+    )
+    assert "Attachment" not in skipped
+
+
 def test_ticket_kissflow_env_defaults_to_live(monkeypatch):
     monkeypatch.delenv("REFEXIONS_TICKET_ENV", raising=False)
     assert _ticket_kissflow_env() == "live"

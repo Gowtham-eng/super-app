@@ -178,6 +178,7 @@ class ItCreateRequest(BaseModel):
     entity: Optional[str] = None
     location: Optional[str] = None
     criticality: str = "Medium"
+    attachments: List[str] = Field(default_factory=list)
 
 
 class PolicySendRequest(BaseModel):
@@ -568,6 +569,10 @@ def register_refexions_routes(
         if _uses_extrovis_flow(entity) and not asked_subject:
             raise HTTPException(status_code=400, detail="Subject is required.")
 
+        from services.itsm_ticket_attachments import normalize_attachment_urls
+
+        attachment_urls = normalize_attachment_urls(body.attachments)
+
         ticket_env = _ticket_kissflow_env()
         cfg = await resolve_config(
             user.get("org_id") or "",
@@ -589,6 +594,7 @@ def register_refexions_routes(
             criticality=criticality,
             description=description,
             subject=_ticket_subject(description, sub_type, asked_subject),
+            attachments=attachment_urls,
         )
         url = f"{cfg['kissflow_base_url']}{cfg['webhook_path']}"
         host = (cfg.get("kissflow_base_url") or "").replace("https://", "").replace("http://", "").split("/")[0]
