@@ -51,6 +51,8 @@
     <key>LSApplicationQueriesSchemes</key>
     <array>
         <string>kissflow</string>
+        <string>adrmax2scheme</string>
+        <string>max2uaescheme</string>
     </array>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>

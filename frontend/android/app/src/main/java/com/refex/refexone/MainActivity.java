@@ -46,6 +46,14 @@ public class MainActivity extends BridgeActivity {
 
     private static final String APP_HOST = "refexone.com";
     private static final String KISSFLOW_DOMAIN = "kissflow.com";
+    private static final String ADRENALIN_DOMAIN = "myadrenalin.com";
+    private static final String[] ADRENALIN_PACKAGES = {
+        "com.myadrenalin.max2",
+        "com.aes.hrms",
+        "com.myadrenalin.hrms55"
+    };
+    private static final String ADRENALIN_SCHEME = "adrmax2scheme://";
+    private static final String ADRENALIN_PLAY_STORE_PACKAGE = "com.myadrenalin.max2";
     private static final String LAUNCHER_URL = "https://refexone.com/launcher";
     private static final String SAML_ACS_PATH = "/signin/";
     private static final String SAML_LOGIN_PATH = "/view/login";
@@ -346,13 +354,20 @@ public class MainActivity extends BridgeActivity {
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                captureModuleFromUrl(request.getUrl().toString());
+                String url = request.getUrl().toString();
+                if (handleAdrenalinOrExternalLaunch(view, url)) {
+                    return true;
+                }
+                captureModuleFromUrl(url);
                 return false; // keep navigation in-app
             }
 
             @Override
             @SuppressWarnings("deprecation")
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                if (handleAdrenalinOrExternalLaunch(view, url)) {
+                    return true;
+                }
                 captureModuleFromUrl(url);
                 return false;
             }
@@ -362,6 +377,7 @@ public class MainActivity extends BridgeActivity {
                 super.onPageFinished(view, url);
                 scheduleHidePageLoader(view);
                 captureModuleFromUrl(url);
+                injectAdrenalinClickHook(view, url);
                 clearWebHistoryIfNeeded(view, url);
                 checkSessionStorageModule(view, url, () -> {
                     maybeRedirectToPendingModule(view, url);
@@ -706,6 +722,35 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    /**
+     * Capture-phase hook so Adrenalin tiles open MAX 2 even before the website JS is deployed.
+     */
+    private void injectAdrenalinClickHook(WebView view, String url) {
+        if (view == null || !isRefexOneLauncherUrl(url)) return;
+        view.evaluateJavascript(
+            "(function(){"
+                + "if(window.__refexAdrenalinTapHook)return;"
+                + "window.__refexAdrenalinTapHook=true;"
+                + "document.addEventListener('click',function(ev){"
+                + "var el=ev.target;"
+                + "for(var i=0;i<12&&el;i++){"
+                + "var tid=el.getAttribute&&el.getAttribute('data-testid')||'';"
+                + "if(/^launch-app-/.test(tid)){"
+                + "var name=(el.innerText||el.textContent||'').toLowerCase();"
+                + "if(/adrenalin/.test(name)&&window.RefexOneBridge&&window.RefexOneBridge.openAdrenalinApp){"
+                + "ev.preventDefault();ev.stopImmediatePropagation();"
+                + "window.RefexOneBridge.openAdrenalinApp();"
+                + "}"
+                + "return;"
+                + "}"
+                + "el=el.parentElement;"
+                + "}"
+                + "},true);"
+                + "})();",
+            null
+        );
+    }
+
     private boolean wouldBackLeaveRefexOne(WebView webView) {
         if (webView == null || !webView.canGoBack() || !isRefexOneUrl(webView.getUrl())) {
             return false;
@@ -792,6 +837,92 @@ public class MainActivity extends BridgeActivity {
             return host != null && host.contains(KISSFLOW_DOMAIN);
         } catch (Exception e) {
             return url.contains(KISSFLOW_DOMAIN);
+        }
+    }
+
+    /**
+     * Adrenalin tile / SSO should land in the native Adrenalin MAX 2 app.
+     * Keep SAML ACS in the WebView so the POST can complete, then hop out.
+     */
+    private boolean handleAdrenalinOrExternalLaunch(WebView view, String url) {
+        if (url == null || url.isEmpty()) return false;
+        String lower = url.toLowerCase();
+        if (lower.startsWith("adrmax2scheme:") || lower.startsWith("max2uaescheme:")
+                || (lower.startsWith("intent:") && lower.contains("myadrenalin"))) {
+            launchAdrenalinNativeApp();
+            returnToLauncher(view);
+            return true;
+        }
+        if (isAdrenalinWebUrl(url) && !isAdrenalinSamlUrl(url)) {
+            launchAdrenalinNativeApp();
+            returnToLauncher(view);
+            return true;
+        }
+        return false;
+    }
+
+    private boolean isAdrenalinWebUrl(String url) {
+        if (url == null) return false;
+        try {
+            String host = Uri.parse(url).getHost();
+            return host != null && host.toLowerCase().contains(ADRENALIN_DOMAIN);
+        } catch (Exception e) {
+            return url.toLowerCase().contains(ADRENALIN_DOMAIN);
+        }
+    }
+
+    private boolean isAdrenalinSamlUrl(String url) {
+        if (!isAdrenalinWebUrl(url)) return false;
+        try {
+            String path = Uri.parse(url).getPath();
+            if (path == null) path = "";
+            String p = path.toLowerCase();
+            return p.contains("/saml") || p.contains("/acs");
+        } catch (Exception e) {
+            String lower = url.toLowerCase();
+            return lower.contains("/saml") || lower.contains("/acs");
+        }
+    }
+
+    private void launchAdrenalinNativeApp() {
+        PackageManager pm = getPackageManager();
+        for (String pkg : ADRENALIN_PACKAGES) {
+            Intent launch = pm.getLaunchIntentForPackage(pkg);
+            if (launch != null) {
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                try {
+                    startActivity(launch);
+                    return;
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        try {
+            Intent scheme = new Intent(Intent.ACTION_VIEW, Uri.parse(ADRENALIN_SCHEME));
+            scheme.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(scheme);
+            return;
+        } catch (Exception ignored) {
+        }
+        openAdrenalinPlayStore();
+    }
+
+    private void openAdrenalinPlayStore() {
+        try {
+            Intent store = new Intent(
+                Intent.ACTION_VIEW,
+                Uri.parse("market://details?id=" + ADRENALIN_PLAY_STORE_PACKAGE)
+            );
+            store.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(store);
+        } catch (Exception e) {
+            try {
+                startActivity(new Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://play.google.com/store/apps/details?id=" + ADRENALIN_PLAY_STORE_PACKAGE)
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -888,6 +1019,11 @@ public class MainActivity extends BridgeActivity {
             if (url != null && !url.isEmpty()) {
                 pendingModuleUrl = url;
             }
+        }
+
+        @JavascriptInterface
+        public void openAdrenalinApp() {
+            runOnUiThread(MainActivity.this::launchAdrenalinNativeApp);
         }
 
         @JavascriptInterface

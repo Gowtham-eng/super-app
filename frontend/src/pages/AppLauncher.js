@@ -2,13 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { launchUrlAfterKissflowClear } from '../utils/nativeSession';
+import { launchUrlAfterKissflowClear, openAdrenalinNativeApp } from '../utils/nativeSession';
 import { BACKEND_ORIGIN, ITSM_API } from '../config/api';
 import RefexOneAppDownload from '../components/RefexOneAppDownload';
 import RefexionsChat from '../components/RefexionsChat';
 import {
   isItsmNamedApp as isItsmApp,
   isKissflowApp,
+  isAdrenalinApp,
   isKissflowApiOk,
   isNeEmbedApp,
   itsmKissflowFallbackReason,
@@ -259,11 +260,6 @@ const AppLauncher = () => {
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
   const isSafari = /Safari/i.test(ua) && !/Chrome|CriOS|Chromium|Edg|Android/i.test(ua);
 
-  const isAdrenalinApp = (app = {}) => {
-    const blob = `${app.name || ''} ${app.description || ''} ${app.home_url || ''} ${app.acs_url || ''}`.toLowerCase();
-    return /adrenalin|myadrenalin/.test(blob);
-  };
-
   /** Adrenalin: top-level ACS POST only — never pass module_url (iframe ACS breaks Adrenalin session). */
   const launchDesktopAdrenalinSso = (appId, token) => {
     const completeUrl = `${BACKEND_ORIGIN}/api/saml/${appId}/complete?token=${encodeURIComponent(token)}`;
@@ -505,12 +501,17 @@ const AppLauncher = () => {
       toast.error(app.policy_reason || 'Access blocked by policy');
       return;
     }
+
+    const mobileFlow = isCapacitor || (isPWA && isMobile);
+    if (mobileFlow && isAdrenalinApp(app) && openAdrenalinNativeApp()) {
+      return;
+    }
+
     const baseUrl = BACKEND_ORIGIN;
     const token = localStorage.getItem('iam_token');
 
     if (app.type === 'saml' && token) {
       warnIfKissflowIdentityMissing(app);
-      const mobileFlow = isCapacitor || (isPWA && isMobile);
 
       if (mobileFlow) {
         // Step 1: SAML SSO → Kissflow. Step 2: native redirect to module (Expense, Solar, etc.)

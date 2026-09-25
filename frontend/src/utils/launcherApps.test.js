@@ -14,6 +14,7 @@ import {
   isProcure2PayApp,
   userCanSeeRmcP2p,
   userCanSeeProcure2Pay,
+  isAdrenalinApp,
 } from './launcherApps';
 
 const EMS = {
@@ -144,5 +145,13 @@ describe('RMC P2P vs Procure2Pay visibility', () => {
     const otherIds = filterLauncherAppsForUser([EMS, rmc, p2p], other).map((a) => a.id);
     expect(deepaIds).toEqual(['saml-ems', 'rmc-p2p']);
     expect(otherIds).toEqual(['saml-ems', 'procure2pay']);
+  });
+});
+
+describe('Adrenalin launcher detection', () => {
+  it('matches Adrenalin by name or myadrenalin host', () => {
+    expect(isAdrenalinApp({ name: 'Adrenalin ESS' })).toBe(true);
+    expect(isAdrenalinApp({ home_url: 'https://refex.myadrenalin.com/' })).toBe(true);
+    expect(isAdrenalinApp({ name: 'Expense Management', home_url: EMS.home_url })).toBe(false);
   });
 });
