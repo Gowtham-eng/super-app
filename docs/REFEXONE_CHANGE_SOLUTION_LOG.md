@@ -26,17 +26,6 @@ Copy this block to the **top** of the log (newest first):
 
 # Log
 
-### 2026-09-25 — Microsoft SSO like Google (no org list)
-- **Problem:** Sign in with Microsoft showed Venwindrefex / extrovis / kavispharma boxes. User wants one button like Google. Earlier AADSTS50020 sent Extrovis into Venwind Login (`1c3df89e-…`).
-- **Cause:** Three single-tenant Azure AD Login rows. The login page listed them so the wrong tenant was not guessed. Google has one app, so Google has no list.
-- **Change / solution:** Removed the 3-field picker. **Sign in with Microsoft** opens `login.microsoftonline.com/common`. User types work email on Microsoft’s page. Callback maps `@extrovis.com` / `@venwindrefex.com` / `@kavispharma.com` to the matching Azure AD Login row.
-- **Azure (required):** Each App Registration → **Accounts in any organizational directory (multitenant)**. Email domains stay on the Azure AD Login rows. User must exist in that Entra tenant and as an active RefexOne user.
-- **Flows:** F01 Login, F12 Azure AD admin.
-- **Verify:** `/login` → Sign in with Microsoft → no company list → Microsoft email page → Extrovis / Venwind / Kavis succeed. Reload login: Google and Microsoft buttons only.
-- **Git / deploy:** Restart backend + `yarn build`.
-
----
-
 ### 2026-09-24 — Show Reports for gowtham.s@refex.co.in
 - **Problem:** Reports tiles were hidden unless the user's job title matched Chief / C-suite. Gowtham (org admin) could not see Reports.
 - **Cause:** `user_can_see_reports` / `userCanSeeReports` only checked chief title (plus optional env `REPORTS_ALLOWED_EMAILS` with no default).

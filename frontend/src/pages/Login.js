@@ -5,7 +5,6 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Eye, EyeSlash, ArrowRight } from '@phosphor-icons/react';
 import { API, BACKEND_ORIGIN } from '../config/api';
-import { pickSsoProvider } from '../utils/ssoProvider';
 
 const REFEX_LOGO = '/refexone-logo.png';
 
@@ -279,31 +278,46 @@ const Login = ({ allowPasswordLogin = false }) => {
     window.location.href = url;
   };
 
-  const pickProvider = (providers) => pickSsoProvider(providers, email);
+  const emailDomain = () => {
+    const raw = (email || '').trim().toLowerCase();
+    if (!raw.includes('@')) return '';
+    return raw.split('@').pop() || '';
+  };
+
+  /** Prefer domain match from email field; else prefer Refex-labeled config; else first. No 2nd-tap picker. */
+  const pickProvider = (providers) => {
+    if (!providers?.length) return null;
+    if (providers.length === 1) return providers[0];
+    const domain = emailDomain();
+    if (domain) {
+      const byDomain = providers.find((p) =>
+        (p.email_domains || []).some(
+          (d) => String(d).toLowerCase().replace(/^@/, '') === domain
+        )
+      );
+      if (byDomain) return byDomain;
+    }
+    const refex = providers.find((p) => /refex/i.test(p.label || ''));
+    if (refex) return refex;
+    return providers[0];
+  };
 
   const handleGoogleClick = () => {
-    const { provider, reason } = pickProvider(googleProviders);
-    if (reason === 'none') {
+    const provider = pickProvider(googleProviders);
+    if (!provider) {
       toast.error('Google login is not configured yet');
       return;
     }
-    if (provider) {
-      startGoogleLogin(provider.id);
-      return;
-    }
-    if (reason === 'no_match') {
-      toast.error('No Google organization is configured for this email domain');
-      return;
-    }
-    startGoogleLogin(googleProviders[0]?.id);
+    startGoogleLogin(provider.id);
   };
 
   const handleMicrosoftClick = () => {
-    if (!azureProviders.length) {
+    const provider = pickProvider(azureProviders);
+    if (!provider) {
       toast.error('Microsoft login is not configured yet');
       return;
     }
-    startAzureLogin();
+    startAzureLogin(provider.id);
   };
 
   const handleLogin = async (e) => {
