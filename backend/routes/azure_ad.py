@@ -24,6 +24,27 @@ logger = logging.getLogger("azure_ad")
 COLLECTION = "azure_ad_configs"
 OAUTH_STATES = "azure_ad_oauth_states"
 DEFAULT_SCOPES = ["openid", "profile", "email", "offline_access"]
+# Home-realm discovery: user types email on Microsoft's page (Extrovis / Venwind / Kavis).
+MS_OAUTH_AUTHORITY = "common"
+
+
+def _ms_oauth_url(path: str) -> str:
+    return f"https://login.microsoftonline.com/{MS_OAUTH_AUTHORITY}/oauth2/v2.0/{path}"
+
+
+def match_config_for_email(configs: List[dict], email: str) -> Optional[dict]:
+    """Map a Microsoft email to the Azure AD Login row for that domain."""
+    raw = (email or "").strip().lower()
+    if "@" not in raw:
+        return None
+    domain = raw.split("@")[-1]
+    for cfg in configs or []:
+        allowed = {
+            str(d).lower().lstrip("@") for d in (cfg.get("email_domains") or []) if d
+        }
+        if domain in allowed:
+            return cfg
+    return None
 
 
 class AzureADConfigCreate(BaseModel):
@@ -322,18 +343,17 @@ def register_azure_ad_routes(
             )
 
         if not cfg:
-            # If exactly one active config and no selector, use it
             all_active = await db[COLLECTION].find(
                 {"status": "active"}, {"_id": 0}
-            ).to_list(5)
-            if len(all_active) == 1 and not config_id and not domain:
-                cfg = all_active[0]
-            else:
+            ).to_list(200)
+            if not all_active:
                 login_url = _frontend_login_url(public_url, request)
                 return RedirectResponse(
-                    f"{login_url}?azure_error={urllib.parse.quote('Select a Microsoft AD organization')}",
+                    f"{login_url}?azure_error={urllib.parse.quote('Microsoft login is not configured yet')}",
                     status_code=302,
                 )
+            # OAuth client only. Microsoft /common routes the user to Extrovis / Venwind / Kavis.
+            cfg = all_active[0]
 
         verifier, challenge = _pkce_pair()
         state = secrets.token_urlsafe(32)
@@ -352,7 +372,6 @@ def register_azure_ad_routes(
             }
         )
 
-        tenant = cfg["tenant_id"]
         params = {
             "client_id": cfg["client_id"],
             "response_type": "code",
@@ -362,11 +381,9 @@ def register_azure_ad_routes(
             "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
+            "prompt": "select_account",
         }
-        auth_url = (
-            f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize?"
-            + urllib.parse.urlencode(params)
-        )
+        auth_url = _ms_oauth_url("authorize") + "?" + urllib.parse.urlencode(params)
         return RedirectResponse(auth_url, status_code=302)
 
     @api_router.get("/auth/azure/callback")
@@ -405,13 +422,12 @@ def register_azure_ad_routes(
             except Exception:
                 pass
 
-        cfg = await db[COLLECTION].find_one({"id": st["config_id"]}, {"_id": 0})
-        if not cfg or cfg.get("status") != "active":
+        oauth_cfg = await db[COLLECTION].find_one({"id": st["config_id"]}, {"_id": 0})
+        if not oauth_cfg or oauth_cfg.get("status") != "active":
             return fail("Azure AD configuration is not available")
+        cfg = oauth_cfg
 
-        token_url = (
-            f"https://login.microsoftonline.com/{cfg['tenant_id']}/oauth2/v2.0/token"
-        )
+        token_url = _ms_oauth_url("token")
         data = {
             "client_id": cfg["client_id"],
             "client_secret": cfg["client_secret"],
@@ -450,8 +466,6 @@ def register_azure_ad_routes(
 
         if claims.get("aud") != cfg["client_id"]:
             return fail("Token audience mismatch")
-        if claims.get("tid") and claims.get("tid") != cfg["tenant_id"]:
-            return fail("Token tenant mismatch")
 
         email = (
             claims.get("email")
@@ -463,9 +477,14 @@ def register_azure_ad_routes(
         if not email or "@" not in email:
             return fail("Microsoft account did not return an email address")
 
-        domain = email.split("@")[-1]
-        allowed = cfg.get("email_domains") or []
-        if allowed and domain not in allowed:
+        all_active = await db[COLLECTION].find(
+            {"status": "active"}, {"_id": 0}
+        ).to_list(200)
+        domain_cfg = match_config_for_email(all_active, email)
+        if domain_cfg:
+            cfg = domain_cfg
+        else:
+            domain = email.split("@")[-1]
             return fail(f"Email domain @{domain} is not allowed for this Azure AD")
 
         import re as _re

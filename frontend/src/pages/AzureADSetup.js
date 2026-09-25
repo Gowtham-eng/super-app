@@ -223,7 +223,7 @@ const AzureADSetup = () => {
             Azure AD Login
           </h1>
           <p className="text-sm text-slate-400">
-            Configure multiple Microsoft Entra ID tenants for RefexOne login (OIDC — not SAML).
+            One Sign in with Microsoft button. Each company is an Azure AD Login row (email domains). The App Registration must be <strong>multitenant</strong> (Accounts in any organizational directory).
           </p>
         </div>
         <button
@@ -242,8 +242,7 @@ const AzureADSetup = () => {
         <div>
           <p className="text-sm font-medium text-slate-800 mb-1">Multi-company setup (Extrovis, Kavipharm, …)</p>
           <p className="text-xs text-slate-500">
-            Add <strong>one Azure AD config per company</strong>. Use <strong>Sync users</strong> on each row to pull
-            that tenant’s users into RefexOne. Ask each AD team for Application permission{' '}
+            Add <strong>one Azure AD config per company</strong> (Extrovis, Venwind, Kavis). Login does not show a company list — Microsoft’s page asks for the work email. Each App Registration: <strong>Accounts in any organizational directory (multitenant)</strong>. Use <strong>Sync users</strong> on each row to pull that tenant’s users. Ask each AD team for Application permission{' '}
             <code className="bg-white border px-1 rounded">User.Read.All</code> + admin consent.
           </p>
         </div>
@@ -397,7 +396,7 @@ const AzureADSetup = () => {
               </button>
             </div>
             <div className="p-5 space-y-4">
-              <Field label="Display name" required hint="Shown on login company picker">
+              <Field label="Display name" required hint="Admin label only (not shown as a login picker)">
                 <input
                   className={inputClass}
                   value={form.label}
