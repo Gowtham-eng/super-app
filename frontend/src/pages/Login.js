@@ -5,6 +5,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Eye, EyeSlash, ArrowRight } from '@phosphor-icons/react';
 import { API, BACKEND_ORIGIN } from '../config/api';
+import { pickSsoProvider } from '../utils/ssoProvider';
 
 const REFEX_LOGO = '/refexone-logo.png';
 
@@ -259,8 +260,13 @@ const Login = ({ allowPasswordLogin = false }) => {
       relayState: searchParams.get('relay_state') || pending.relayState,
       oidcRedirect: searchParams.get('oidc_redirect') || pending.oidcRedirect,
     });
-    const url = configId
-      ? `${BACKEND_ORIGIN}/api/auth/azure/login?config_id=${encodeURIComponent(configId)}`
+    const domain = (email || '').includes('@') ? email.trim() : '';
+    const params = new URLSearchParams();
+    if (configId) params.set('config_id', configId);
+    if (domain) params.set('domain', domain);
+    const qs = params.toString();
+    const url = qs
+      ? `${BACKEND_ORIGIN}/api/auth/azure/login?${qs}`
       : `${BACKEND_ORIGIN}/api/auth/azure/login`;
     window.location.href = url;
   };
@@ -272,38 +278,29 @@ const Login = ({ allowPasswordLogin = false }) => {
       relayState: searchParams.get('relay_state') || pending.relayState,
       oidcRedirect: searchParams.get('oidc_redirect') || pending.oidcRedirect,
     });
-    const url = configId
-      ? `${BACKEND_ORIGIN}/api/auth/google/login?config_id=${encodeURIComponent(configId)}`
+    const domain = (email || '').includes('@') ? email.trim() : '';
+    const params = new URLSearchParams();
+    if (configId) params.set('config_id', configId);
+    if (domain) params.set('domain', domain);
+    const qs = params.toString();
+    const url = qs
+      ? `${BACKEND_ORIGIN}/api/auth/google/login?${qs}`
       : `${BACKEND_ORIGIN}/api/auth/google/login`;
     window.location.href = url;
   };
 
-  const emailDomain = () => {
-    const raw = (email || '').trim().toLowerCase();
-    if (!raw.includes('@')) return '';
-    return raw.split('@').pop() || '';
-  };
-
-  /** Prefer domain match from email field; else prefer Refex-labeled config; else first. No 2nd-tap picker. */
-  const pickProvider = (providers) => {
-    if (!providers?.length) return null;
-    if (providers.length === 1) return providers[0];
-    const domain = emailDomain();
-    if (domain) {
-      const byDomain = providers.find((p) =>
-        (p.email_domains || []).some(
-          (d) => String(d).toLowerCase().replace(/^@/, '') === domain
-        )
-      );
-      if (byDomain) return byDomain;
-    }
-    const refex = providers.find((p) => /refex/i.test(p.label || ''));
-    if (refex) return refex;
-    return providers[0];
-  };
+  const pickProvider = (providers) => pickSsoProvider(providers, email);
 
   const handleGoogleClick = () => {
-    const provider = pickProvider(googleProviders);
+    const { provider, reason, domain } = pickProvider(googleProviders);
+    if (reason === 'need_email') {
+      toast.error('Enter your work email first so we open the correct Google login.');
+      return;
+    }
+    if (reason === 'no_match') {
+      toast.error(`No Google login is configured for @${domain}. Ask an admin to add this domain.`);
+      return;
+    }
     if (!provider) {
       toast.error('Google login is not configured yet');
       return;
@@ -312,7 +309,15 @@ const Login = ({ allowPasswordLogin = false }) => {
   };
 
   const handleMicrosoftClick = () => {
-    const provider = pickProvider(azureProviders);
+    const { provider, reason, domain } = pickProvider(azureProviders);
+    if (reason === 'need_email') {
+      toast.error('Enter your work email first (for example you@extrovis.com) so we open the correct Microsoft login.');
+      return;
+    }
+    if (reason === 'no_match') {
+      toast.error(`No Microsoft login is configured for @${domain}. Ask an admin to add this domain on Azure AD Login.`);
+      return;
+    }
     if (!provider) {
       toast.error('Microsoft login is not configured yet');
       return;
@@ -439,6 +444,27 @@ const Login = ({ allowPasswordLogin = false }) => {
             <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-xl">
               <p className="text-sm text-blue-800 font-medium">
                 Sign in to continue to your application
+              </p>
+            </div>
+          )}
+
+          {!allowPasswordLogin && (azureProviders.length > 0 || googleProviders.length > 0) && (
+            <div className="mb-5" data-testid="sso-email-field">
+              <label className="block text-sm font-semibold text-zinc-700 mb-2">
+                Work email
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@extrovis.com"
+                className="w-full px-4 py-3.5 bg-zinc-50 border border-zinc-200 rounded-xl text-base focus:outline-none focus:border-zinc-400 focus:bg-white transition-all"
+                data-testid="sso-email-input"
+                autoComplete="email"
+                inputMode="email"
+              />
+              <p className="mt-1.5 text-xs text-zinc-400">
+                Enter your company email first so Microsoft or Google opens the right organisation.
               </p>
             </div>
           )}

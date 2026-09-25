@@ -26,6 +26,16 @@ Copy this block to the **top** of the log (newest first):
 
 # Log
 
+### 2026-09-25 — Microsoft SSO AADSTS50020 Extrovis user in Venwind tenant
+- **Problem:** `ajjusyed@extrovis.com` got AADSTS50020: account does not exist in tenant **Venwind Refex Power Ltd**, app **Venwind Login**.
+- **Cause:** Public `/login` had no email field. Microsoft click used a provider whose **label** contained "Refex" (Venwind Refex). That sent Extrovis users into the Venwind App Registration instead of Extrovis.
+- **Change / solution:** Login always asks for work email first. Provider is chosen only by **email domain** (`extrovis.com` → Extrovis Azure config). No fallback to a "Refex" label. If the domain is missing from Azure AD Login configs, show a toast instead of opening Venwind.
+- **Also required in admin:** Settings → **Azure AD Login** → Extrovis row must include `extrovis.com` in Email domains. User `ajjusyed@extrovis.com` must exist and be Active in Users. User must exist in the **Extrovis** Entra tenant (not as a Venwind guest, unless this is a Teams meeting).
+- **If the URL is `teams.microsoft.com`:** that is a Teams join, not RefexOne. Fix in Venwind Entra: allow guests / external access, or add the user as a guest. RefexOne code cannot fix a Teams tenant guest error.
+- **Flows:** F01 Login, F13 Azure admin.
+- **Verify:** `/login` → type `ajjusyed@extrovis.com` → Microsoft → Extrovis tenant, not Venwind.
+
+---
 ### 2026-09-24 — Show Reports for gowtham.s@refex.co.in
 - **Problem:** Reports tiles were hidden unless the user's job title matched Chief / C-suite. Gowtham (org admin) could not see Reports.
 - **Cause:** `user_can_see_reports` / `userCanSeeReports` only checked chief title (plus optional env `REPORTS_ALLOWED_EMAILS` with no default).
