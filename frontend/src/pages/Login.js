@@ -5,6 +5,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Eye, EyeSlash, ArrowRight } from '@phosphor-icons/react';
 import { API, BACKEND_ORIGIN } from '../config/api';
+import { selectMicrosoftProvider } from '../utils/microsoftProvider';
 
 const REFEX_LOGO = '/refexone-logo.png';
 
@@ -75,6 +76,7 @@ const Login = ({ allowPasswordLogin = false }) => {
   const [currentSlide, setCurrentSlide] = useState(0);
   const [ssoAppId, setSsoAppId] = useState(null);
   const [azureProviders, setAzureProviders] = useState([]);
+  const [showMicrosoftCompanies, setShowMicrosoftCompanies] = useState(false);
   const [azureBusy, setAzureBusy] = useState(false);
   const [googleProviders, setGoogleProviders] = useState([]);
   const [googleBusy, setGoogleBusy] = useState(false);
@@ -312,12 +314,23 @@ const Login = ({ allowPasswordLogin = false }) => {
   };
 
   const handleMicrosoftClick = () => {
-    const provider = pickProvider(azureProviders);
-    if (!provider) {
+    if (!azureProviders.length) {
       toast.error('Microsoft login is not configured yet');
       return;
     }
-    startAzureLogin(provider.id);
+    if (azureProviders.length === 1) {
+      startAzureLogin(azureProviders[0].id);
+      return;
+    }
+    // Developer login already has an email field; retain exact-domain routing.
+    if (allowPasswordLogin && email.trim()) {
+      const { provider } = selectMicrosoftProvider(azureProviders, email);
+      if (provider) {
+        startAzureLogin(provider.id);
+        return;
+      }
+    }
+    setShowMicrosoftCompanies((visible) => !visible);
   };
 
   const handleLogin = async (e) => {
@@ -540,6 +553,8 @@ const Login = ({ allowPasswordLogin = false }) => {
                   onClick={handleMicrosoftClick}
                   disabled={azureBusy}
                   data-testid="microsoft-login-button"
+                  aria-expanded={showMicrosoftCompanies}
+                  aria-controls={showMicrosoftCompanies ? 'microsoft-companies' : undefined}
                   className="w-full py-3.5 border border-zinc-200 hover:border-zinc-300 bg-white text-zinc-800 font-semibold rounded-xl transition-colors flex items-center justify-center gap-3 disabled:opacity-60"
                 >
                   <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
@@ -550,6 +565,25 @@ const Login = ({ allowPasswordLogin = false }) => {
                   </svg>
                   {azureBusy ? 'Signing in…' : 'Sign in with Microsoft'}
                 </button>
+              )}
+              {showMicrosoftCompanies && azureProviders.length > 1 && (
+                <div id="microsoft-companies" className="mt-3 rounded-xl border border-zinc-200 p-3">
+                  <p className="mb-2 text-sm font-medium text-zinc-700">Select your company</p>
+                  <div className="space-y-2">
+                    {azureProviders.map((provider) => (
+                      <button
+                        key={provider.id}
+                        type="button"
+                        onClick={() => startAzureLogin(provider.id)}
+                        disabled={azureBusy}
+                        data-testid={`microsoft-company-${provider.id}`}
+                        className="w-full rounded-lg bg-zinc-50 px-4 py-3 text-left text-sm font-semibold text-zinc-800 hover:bg-zinc-100 disabled:opacity-60"
+                      >
+                        {provider.label || (provider.email_domains || []).join(', ') || 'Microsoft organization'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           )}
