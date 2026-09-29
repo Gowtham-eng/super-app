@@ -73,6 +73,50 @@ const formatTicketDate = (value) => {
   return `${day} ${month} ${d.getFullYear()}`;
 };
 
+const TICKET_STAGE_VALUES = [
+  'Open',
+  'InProgress',
+  'OnHold',
+  'Pending with Vendor',
+  'Pending with Employee',
+  'Closed',
+];
+
+const canonicalizeTicketStage = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const token = raw.toLowerCase().replace(/[\s_-]+/g, '');
+  const mapped = {
+    open: 'Open',
+    inprogress: 'InProgress',
+    onhold: 'OnHold',
+    hold: 'OnHold',
+    pendingwithvendor: 'Pending with Vendor',
+    pendingvendor: 'Pending with Vendor',
+    pendingwithemployee: 'Pending with Employee',
+    pendingemployee: 'Pending with Employee',
+    closed: 'Closed',
+    close: 'Closed',
+  };
+  if (mapped[token]) return mapped[token];
+  const exact = TICKET_STAGE_VALUES.find((label) => label.toLowerCase().replace(/[\s_-]+/g, '') === token);
+  return exact || raw;
+};
+
+const ticketDisplayStatus = (ticket) => {
+  const stage = canonicalizeTicketStage(ticket?.stage);
+  const status = String(ticket?.status || '').trim().toLowerCase();
+  if (stage === 'Closed' || status.includes('closed') || status.includes('completed') || status.includes('reject') || status.includes('fail')) {
+    return 'Closed';
+  }
+  return 'Open';
+};
+
+const ticketStageLabel = (ticket) => {
+  if (ticketDisplayStatus(ticket) === 'Closed') return 'Closed';
+  return canonicalizeTicketStage(ticket?.stage) || 'Open';
+};
+
 const statusBadgeClass = (status = '') => {
   const v = status.toLowerCase();
   if (v.includes('fail')) return 'bg-red-100 text-red-800 border-red-200';
@@ -207,7 +251,7 @@ const matchesKpiFilter = (ticket, tab) => {
 const isOpenTicket = (ticket) => matchesKpiFilter(ticket, 'Open');
 
 const TicketStatusTags = ({ ticket, size = 'md' }) => {
-  const status = (ticket?.status || '').trim() || '—';
+  const status = ticketDisplayStatus(ticket);
   const statusLower = status.toLowerCase();
   const showReopenedTag =
     Boolean(ticket?.reopened) && !statusLower.includes('reopen');
@@ -462,6 +506,8 @@ const realCommentRows = (rows) =>
   });
 
 const isEmployeeVisibleComment = (entry, entity = '') => {
+  const role = String(entry?.role || '').trim().toLowerCase();
+  if (role === 'reopen') return true;
   const token = String(entry?.commentsType || entry?.Comments_2 || entry?.commentChannel || '')
     .trim()
     .toLowerCase()
@@ -685,6 +731,10 @@ const TicketConversation = ({
           instance_id: live.id,
           activity_instance_id: live.activityInstanceId || '',
           environment: resolvedEnv || environment || undefined,
+          reopened: ticketIsReopened(live) || isReopenRelatedTicket(live) || isClosedTicket(live),
+          status: live.status || '',
+          current_step: live.currentStep || '',
+          last_completed_step: live.lastCompletedStep || '',
           _t: Date.now(),
         },
         ...authRef.current(),
@@ -756,7 +806,7 @@ const TicketConversation = ({
               ) : null}
               {statusLabel ? (
                 <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
-                  {statusLabel}
+                  {ticketDisplayStatus(ticket)}
                 </span>
               ) : null}
               {stepLabel ? (
@@ -1054,7 +1104,7 @@ const ticketsCache = {
   fetchedAt: 0,
 };
 
-const TICKETS_CACHE_KEY = 'itsmTicketsCache.v16';
+const TICKETS_CACHE_KEY = 'itsmTicketsCache.v17';
 const COMMENTS_STORE_KEY = 'itsmCommentsStore.v1';
 const commentsStore = new Map();
 let ticketsInflight = null;
@@ -1288,6 +1338,10 @@ const ITSMDashboard = () => {
             instance_id: ticket.id,
             activity_instance_id: ticket.activityInstanceId || '',
             environment: helpdeskEnv || undefined,
+            reopened: ticketIsReopened(ticket) || isReopenRelatedTicket(ticket) || isClosedTicket(ticket),
+            status: ticket.status || '',
+            current_step: ticket.currentStep || '',
+            last_completed_step: ticket.lastCompletedStep || '',
             _t: Date.now(),
           },
           ...getAuthHeader(),
@@ -1720,7 +1774,7 @@ const ITSMDashboard = () => {
 
   const renderTicketTable = (rows) => {
     const showSubjectColumn = !isRefexHelpdeskEntity(entity);
-    const conversationColSpan = showSubjectColumn ? 9 : 8;
+    const conversationColSpan = showSubjectColumn ? 10 : 9;
     return (
     <>
       {/* Desktop only — tablets use cards (md table was too cramped). */}
@@ -1736,7 +1790,8 @@ const ITSMDashboard = () => {
               {showSubjectColumn ? <th className="w-[280px]">Subject</th> : null}
               <th className="w-[120px]">Created On</th>
               <th className="w-[150px]">Assigned To</th>
-              <th className="w-[160px]">Status</th>
+              <th className="w-[120px]">Ticket Status</th>
+              <th className="w-[160px]">Stage</th>
               <th className="w-[140px]">Closed By</th>
               <th className="w-[120px]">Closed On</th>
               <th className="w-[130px] text-right">Action</th>
@@ -1785,6 +1840,9 @@ const ITSMDashboard = () => {
                     </td>
                     <td className="!whitespace-normal">
                       <TicketStatusTags ticket={ticket} />
+                    </td>
+                    <td className="text-slate-700" title={ticketStageLabel(ticket)}>
+                      {ticketStageLabel(ticket)}
                     </td>
                     <td className="text-slate-700" title={ticket.closedBy || ''}>
                       {ticket.closedBy || '—'}
@@ -1892,6 +1950,7 @@ const ITSMDashboard = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1 mb-3">
                 <p className="text-xs text-slate-500">Created On: {formatTicketDate(ticket.createdOn)}</p>
                 <p className="text-xs text-slate-500">Assigned To: {formatAssignedToDisplay(ticket.assignedTo)}</p>
+                <p className="text-xs text-slate-500">Stage: {ticketStageLabel(ticket)}</p>
                 <p className="text-xs text-slate-500">Closed By: {ticket.closedBy || '—'}</p>
                 <p className="text-xs text-slate-500">Closed On: {formatTicketDate(ticket.closedOn)}</p>
                 {ticket.currentStep ? (

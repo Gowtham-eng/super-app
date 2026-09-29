@@ -21,6 +21,10 @@ from routes.itsm import (
     _parse_agent_solutions,
     _parse_comment_attachments,
     _parse_report_ticket,
+    _canonicalize_ticket_stage,
+    _collect_reopen_notes_from_progress,
+    _needs_reopen_progress_fetch,
+    _display_ticket_status,
     _thread_from_instance_payload,
     _ticket_webhook_body,
     _uses_admin_comment_put,
@@ -566,3 +570,102 @@ def test_it_agent_solution_ignores_nested_table_and_reads_instance_payload():
         REPORT_FIELD_IDS["refex"],
     )
     assert nested_only["solution"] == "VPN profile rebuilt"
+
+
+def test_ticket_status_stays_open_unless_closed_stage_from_status():
+    assert _canonicalize_ticket_stage("On Hold") == "OnHold"
+    assert _canonicalize_ticket_stage("Pending with Vendor") == "Pending with Vendor"
+    assert _display_ticket_status("Open", "OnHold") == "Open"
+    assert _display_ticket_status("Open", "Closed") == "Closed"
+    ext_ids = REPORT_FIELD_IDS["extrovis"]
+    columns = [
+        {"Id": ext_ids["status"][0], "Name": "Status"},
+        {"Id": ext_ids["item_status"][0], "Name": "Item_Status"},
+        {"Id": ext_ids["system_status"][0], "Name": "System_Status"},
+        {"Id": ext_ids["current_step"][0], "Name": "Current_Step"},
+    ]
+    hold = _parse_report_ticket(
+        {
+            ext_ids["instance_id"][0]: "PkHold1",
+            ext_ids["status"][0]: "OnHold",
+            ext_ids["item_status"][0]: "Open",
+            ext_ids["system_status"][0]: "InProgress",
+            ext_ids["current_step"][0]: "IT Agent Solution",
+        },
+        columns,
+        0,
+        "Extrovis",
+    )
+    assert hold["status"] == "Open"
+    assert hold["stage"] == "OnHold"
+    closed = _parse_report_ticket(
+        {
+            ext_ids["instance_id"][0]: "PkClosed1",
+            ext_ids["status"][0]: "Closed",
+            ext_ids["item_status"][0]: "Closed",
+            ext_ids["system_status"][0]: "Completed",
+            ext_ids["current_step"][0]: "Completed",
+        },
+        columns,
+        0,
+        "Extrovis",
+    )
+    assert closed["status"] == "Closed"
+    assert closed["stage"] == "Closed"
+
+
+def test_reopen_notes_from_progress_are_user_comments():
+    progress = {
+        "Steps": [
+            {
+                "_id": "ActSendback1",
+                "Name": "IT Tech Reopen",
+                "_status": "SentBack",
+                "Note": "Please fix the printer again",
+                "ActedBy": {"Name": "Aasik"},
+                "ActedAt": "2026-09-24T10:00:00.000Z",
+            }
+        ]
+    }
+    notes = _collect_reopen_notes_from_progress(progress, "Aasik")
+    assert len(notes) == 1
+    assert notes[0]["role"] == "reopen"
+    assert notes[0]["commentsType"] == "User"
+    assert notes[0]["comment"] == "Please fix the printer again"
+    visible = _employee_visible_comments(
+        [
+            {"comment": "internal note", "commentsType": "Internal"},
+            notes[0],
+        ],
+        "Extrovis",
+    )
+    texts = [row["comment"] for row in visible]
+    assert "Please fix the printer again" in texts
+    assert "internal note" not in texts
+
+
+def test_live_extrovis_reopen_window_note_from_progress():
+    progress = {
+        "Steps": [
+            {
+                "Id": "Activity_7rCa3_zSic",
+                "_activity_instance_id": "PkEHItYwLZHX",
+                "Name": "ReOpen Window",
+                "_status": "SentBack",
+                "_note": "Still i am facing the issue\n\nRequester: Syed Ajju\nEmail: ajjusyed@extrovis.com",
+                "ActedAt": "2026-09-29T06:57:30Z",
+                "MoveToType": "SendBack",
+                "ActedBy": [{"Name": "ITSM BOT", "Kind": "ServiceAccount"}],
+            }
+        ]
+    }
+    notes = _collect_reopen_notes_from_progress(progress, "Syed Ajju")
+    assert len(notes) == 1
+    assert notes[0]["comment"].startswith("Still i am facing the issue")
+    assert notes[0]["dateTime"] == "2026-09-29T06:57:30Z"
+    assert notes[0]["userName"] == "Syed Ajju"
+    assert notes[0]["role"] == "reopen"
+    assert notes[0]["commentsType"] == "User"
+    assert _needs_reopen_progress_fetch(reopened=True) is True
+    assert _needs_reopen_progress_fetch(status="Closed") is True
+    assert _needs_reopen_progress_fetch(current_step="IT Agent Solution") is False

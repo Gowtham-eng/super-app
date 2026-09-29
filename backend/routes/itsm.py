@@ -2776,6 +2776,10 @@ def _employee_visible_comments(
         return rows
     visible: List[Dict[str, Any]] = []
     for entry in rows:
+        role = _as_string(entry.get("role")).strip().lower()
+        if role == "reopen":
+            visible.append(entry)
+            continue
         channel = _normalize_comment_channel(
             entry.get("commentsType") or entry.get("Comments_2") or entry.get("commentChannel")
         )
@@ -2783,6 +2787,78 @@ def _employee_visible_comments(
             continue
         visible.append(entry)
     return visible
+
+
+def _progress_step_is_reopen_sendback(step: Dict[str, Any]) -> bool:
+    token = _status_token(str(step.get("_status") or step.get("Status") or step.get("status") or ""))
+    move = _status_token(str(step.get("MoveToType") or step.get("moveToType") or ""))
+    name = _as_string(step.get("Name") or step.get("ActivityName") or step.get("name"))
+    return (
+        token == "sentback"
+        or (move == "sendback" and token != "completed")
+        or (_is_reopen_hold_step(name) and token == "sentback")
+    )
+
+
+def _needs_reopen_progress_fetch(
+    *,
+    reopened: bool = False,
+    status: str = "",
+    current_step: str = "",
+    last_completed_step: str = "",
+) -> bool:
+    """Progress GET is only for reopen notes — not every Help Desk expand."""
+    if reopened:
+        return True
+    if _is_reopen_hold_step(current_step) or _is_reopen_hold_step(last_completed_step):
+        return True
+    blob = f"{current_step} {last_completed_step}".lower()
+    if "reopen" in blob and "reopened" not in blob.replace("can be reopened", ""):
+        return True
+    status_token = _status_token(status)
+    # Closed tickets that already went through ReOpen Window still have the sendback note.
+    if status_token in ("closed", "close", "completed", "complete"):
+        return True
+    return False
+
+
+def _collect_reopen_notes_from_progress(
+    progress: Any,
+    requester_name: str = "",
+) -> List[Dict[str, Any]]:
+    """Sendback `_note` on ReOpen Window / IT Tech Reopen — same as aasik collectReopenNotesFromProgress."""
+    entries: List[Dict[str, Any]] = []
+    for index, step in enumerate(_iter_progress_steps(progress)):
+        if not isinstance(step, dict):
+            continue
+        if not _progress_step_is_reopen_sendback(step):
+            continue
+        note = _as_string(
+            step.get("_note") or step.get("Note") or step.get("note") or step.get("_Note")
+        ).strip()
+        if not note:
+            continue
+        acted = _person_label(step.get("ActedBy") or step.get("actedBy"))
+        if not acted or _is_system_actor(acted):
+            acted = requester_name or "Employee"
+        date_time = step.get("ActedAt") or step.get("actedAt")
+        record_id = _as_string(
+            step.get("_id")
+            or step.get("_activity_instance_id")
+            or f"reopen-note-{index}"
+        ).strip()
+        entries.append({
+            "id": record_id or f"reopen-note-{index}",
+            "recordId": record_id or f"reopen-note-{index}",
+            "userName": acted,
+            "comment": note,
+            "resolution": note,
+            "dateTime": date_time,
+            "commentsType": "User",
+            "role": "reopen",
+            "attachments": [],
+        })
+    return entries
 
 
 def _parse_agent_solution_rows(
@@ -3025,40 +3101,40 @@ async def _load_instance_comment_thread(
     instance_id: str,
     hinted_activity: str = "",
     viewer_email: str = "",
+    need_reopen_progress: bool = False,
 ) -> Dict[str, Any]:
-    """Same sequence as aasik IT Head Comments: progress → GET instance/activity (never bare instance)."""
+    """Load IT__Agent_Solution comments. Progress GET only when the ticket was reopened."""
     process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
     field_ids = REPORT_FIELD_IDS.get(_report_entity_key(entity), REPORT_FIELD_IDS["refex"])
     params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
-    activity_id = await _resolve_open_work_activity_id(cfg, instance_id, hinted_activity, entity=entity)
+    activity_id = _usable_activity_id(hinted_activity, instance_id)
     base = f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}"
 
     paths: List[str] = []
-    for aid in (activity_id, hinted_activity):
-        usable = _usable_activity_id(aid, instance_id)
-        if usable:
-            path = f"{base}/{usable}"
+    if activity_id:
+        paths.append(f"{base}/{activity_id}")
+
+    progress: Any = None
+    if need_reopen_progress:
+        # ITSM Setup read keys — never a hardcoded secret or .env key dump.
+        progress = await _kf_get_json(cfg, f"{base}/progress", params)
+        preferred: List[str] = []
+        others: List[str] = []
+        for step in _iter_progress_steps(progress):
+            if not isinstance(step, dict):
+                continue
+            name = _as_string(step.get("Name") or step.get("name") or step.get("StepName") or "")
+            for aid in _step_activity_ids(step, instance_id):
+                path = f"{base}/{aid}"
+                if path in paths:
+                    continue
+                if _is_comment_nested_table_step(name):
+                    preferred.append(path)
+                else:
+                    others.append(path)
+        for path in preferred + others[:4]:
             if path not in paths:
                 paths.append(path)
-
-    progress = await _kf_get_json(cfg, f"{base}/progress", params)
-    preferred: List[str] = []
-    others: List[str] = []
-    for step in _iter_progress_steps(progress):
-        if not isinstance(step, dict):
-            continue
-        name = _as_string(step.get("Name") or step.get("name") or step.get("StepName") or "")
-        for aid in _step_activity_ids(step, instance_id):
-            path = f"{base}/{aid}"
-            if path in paths:
-                continue
-            if _is_comment_nested_table_step(name):
-                preferred.append(path)
-            else:
-                others.append(path)
-    for path in preferred + others[:4]:
-        if path not in paths:
-            paths.append(path)
     # aasik: bare GET /{instanceId} is 404 and has no nested table — do not call it.
 
     best: Dict[str, Any] = {"comments": [], "activityInstanceId": activity_id or hinted_activity or ""}
@@ -3107,6 +3183,13 @@ async def _load_instance_comment_thread(
                 )
         except Exception as exc:
             logger.warning("ITSM comments report fallback failed instance=%s: %s", instance_id, exc)
+    if need_reopen_progress and progress is not None:
+        reopen_notes = _collect_reopen_notes_from_progress(
+            progress,
+            best.get("requesterName") or "",
+        )
+        if reopen_notes:
+            best["comments"] = _merge_comment_lists(best.get("comments") or [], reopen_notes)
     env_name = cfg.get("environment") or "development"
     best["comments"] = _attach_ledger_comments(best.get("comments"), env_name, instance_id)
     best["messageCount"] = len(best.get("comments") or [])
@@ -3308,6 +3391,50 @@ def _status_token(value: str) -> str:
     return re.sub(r"[\s_-]+", "", (value or "").strip().lower())
 
 
+MIS_TICKET_STAGE_VALUES = (
+    "Open",
+    "InProgress",
+    "OnHold",
+    "Pending with Vendor",
+    "Pending with Employee",
+    "Closed",
+)
+
+_STAGE_TOKEN_TO_LABEL = {
+    "open": "Open",
+    "inprogress": "InProgress",
+    "onhold": "OnHold",
+    "hold": "OnHold",
+    "pendingwithvendor": "Pending with Vendor",
+    "pendingvendor": "Pending with Vendor",
+    "pendingwithemployee": "Pending with Employee",
+    "pendingemployee": "Pending with Employee",
+    "closed": "Closed",
+    "close": "Closed",
+}
+
+
+def _canonicalize_ticket_stage(value: Any) -> str:
+    raw = _as_string(value).strip()
+    if not raw:
+        return ""
+    token = _status_token(raw)
+    if token in _STAGE_TOKEN_TO_LABEL:
+        return _STAGE_TOKEN_TO_LABEL[token]
+    for label in MIS_TICKET_STAGE_VALUES:
+        if _status_token(label) == token:
+            return label
+    return raw
+
+
+def _display_ticket_status(status: str, stage: str) -> str:
+    """Ticket Status is Open unless Closed. Stage keeps the exact Status field."""
+    token = _status_token(status)
+    if token in ("closed", "close", "completed", "rejected", "failed") or stage == "Closed":
+        return "Closed"
+    return "Open"
+
+
 def _is_reopen_hold_step(step: str) -> bool:
     """Live reopen hold — Refex: IT Tech Reopen; Extrovis: Ticket Reopen / ReOpen Window."""
     text = (step or "").strip().lower()
@@ -3348,7 +3475,7 @@ def _progress_has_completed_reopen(progress: Any) -> bool:
         if not _is_reopen_hold_step(name):
             continue
         token = _status_token(str(step.get("_status") or step.get("Status") or step.get("status") or ""))
-        if token in ("completed", "complete", "submitted", "done", "closed"):
+        if token in ("completed", "complete", "submitted", "done", "closed", "sentback"):
             return True
     return False
 
@@ -3495,6 +3622,18 @@ def _pick_latest_completed_activity_id(value: Any) -> str:
         elif not fallback:
             fallback = aid
     return best or fallback
+
+
+def _has_reopen_step_history(value: Any) -> bool:
+    """ReOpen Window StepField already acted (Completed / SentBack) — ticket was reopened."""
+    for entry in _activity_entries(value):
+        token = _status_token(str(entry.get("Status") or entry.get("status") or entry.get("_status") or ""))
+        if token in ("completed", "complete", "sentback"):
+            return True
+        move = _status_token(str(entry.get("MoveToType") or entry.get("moveToType") or ""))
+        if move == "sendback":
+            return True
+    return False
 
 
 def _sendback_id_from_report(
@@ -4072,15 +4211,19 @@ def _parse_report_ticket(
         "Ticket_Status",
         "Ticket Status",
     )
+    ticket_stage_raw = _lookup_field(
+        data,
+        *field_ids["status"],
+        "Status",
+    )
     solution = _it_agent_solution_text(data, field_ids)
     employee_rating = _parse_rating(
         _raw_field(data, *field_ids.get("employee_rating", []), "Ratings_emp")
     )
     workflow_status = _lookup_field(
         data,
-        *field_ids["status"],
         *field_ids["system_status"],
-        "Status",
+        "_status",
         "Statu",
         "Current_Status",
         "Flow_Status",
@@ -4107,10 +4250,12 @@ def _parse_report_ticket(
         last_completed_step,
         reopen_hold=False,
     )
+    reopen_activity_raw = _raw_field(data, *field_ids["it_tech_reopen_activity"])
     reopen_activity_id = _pick_open_reopen_activity_id(
-        _raw_field(data, *field_ids["it_tech_reopen_activity"]),
+        reopen_activity_raw,
         instance_id,
     )
+    had_reopen_history = _has_reopen_step_history(reopen_activity_raw)
     activity_instance_id = reopen_activity_id or _usable_activity_id(
         _lookup_field(
             data,
@@ -4123,6 +4268,12 @@ def _parse_report_ticket(
     reopen_hold = bool(reopen_activity_id) or _is_reopen_hold_step(current_step)
     if reopen_hold and status != "Reopened":
         status = "Closed"
+    stage = _canonicalize_ticket_stage(ticket_stage_raw)
+    display_status = _display_ticket_status(status, stage)
+    if display_status == "Closed":
+        stage = "Closed"
+    elif not stage:
+        stage = "Open"
     sendback_id = _sendback_id_from_report(
         data, field_ids, instance_id, reopen_activity_id or activity_instance_id
     )
@@ -4186,7 +4337,8 @@ def _parse_report_ticket(
         "requestId": request_id or "—",
         "subject": subject,
         "description": description,
-        "status": status,
+        "status": display_status,
+        "stage": stage,
         "solution": solution,
         "itAgentSolution": solution,
         "agentSolutions": agent_solutions,
@@ -4196,6 +4348,7 @@ def _parse_report_ticket(
         "closedOn": closed_on,
         "employeeRating": employee_rating,
         "reopened": _is_reopened_flag(reopened_raw)
+        or had_reopen_history
         or (
             status not in ("Closed", "Failed", "Rejected")
             and _is_reopen_hold_step(last_completed_step)
@@ -6255,6 +6408,10 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         instance_id: str = Query(...),
         activity_instance_id: Optional[str] = Query(None),
         environment: Optional[str] = Query(None),
+        reopened: Optional[bool] = Query(None),
+        status: Optional[str] = Query(None),
+        current_step: Optional[str] = Query(None),
+        last_completed_step: Optional[str] = Query(None),
         _t: Optional[str] = Query(None),
         user: dict = Depends(get_current_user),
     ):
@@ -6269,12 +6426,19 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         )
         process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
         cfg = {**cfg, "process_id": process_id}
+        need_reopen_progress = _needs_reopen_progress_fetch(
+            reopened=bool(reopened),
+            status=status or "",
+            current_step=current_step or "",
+            last_completed_step=last_completed_step or "",
+        )
         thread = await _load_instance_comment_thread(
             cfg,
             entity,
             instance_id,
             (activity_instance_id or "").strip(),
             viewer_email=(user.get("email") or "").strip(),
+            need_reopen_progress=need_reopen_progress,
         )
         env_name = cfg.get("environment") or "development"
         merged = _merge_comment_lists(thread.get("comments") or [], _ledger_comments(env_name, instance_id))
@@ -6501,6 +6665,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                     instance_id,
                     activity_id,
                     viewer_email=(user.get("email") or "").strip(),
+                    need_reopen_progress=bool(reopened),
                 )
                 thread_comments = thread.get("comments") or []
             except Exception as exc:
