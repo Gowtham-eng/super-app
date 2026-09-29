@@ -13,6 +13,11 @@ export function isKissflowApp(app = {}) {
   return /kissflow/.test(blob);
 }
 
+export function isAdrenalinApp(app = {}) {
+  const blob = `${app.name || ''} ${app.description || ''} ${app.home_url || ''} ${app.acs_url || ''} ${app.entity_id || ''}`.toLowerCase();
+  return /adrenalin|myadrenalin/.test(blob);
+}
+
 /** Named ITSM / helpdesk tiles. Never NE embed Reports. */
 export function isItsmNamedApp(app = {}) {
   if (isNeEmbedApp(app)) return false;

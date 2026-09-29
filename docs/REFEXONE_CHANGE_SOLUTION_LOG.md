@@ -26,6 +26,15 @@ Copy this block to the **top** of the log (newest first):
 
 # Log
 
+### 2026-09-28 — Microsoft sign-in company selection
+- **Problem:** Public login hid the email field; Microsoft provider selection defaulted to the Refex-labeled tenant, sending Extrovis users to Venwind Refex.
+- **Change / solution:** When multiple Microsoft providers exist, clicking Microsoft sign-in reveals company buttons using the active provider configuration. The selected company determines the tenant without asking for an email on public login. Developer login retains exact-domain routing when its existing email field matches. Preserve direct single-provider sign-in.
+- **Flows:** F01 login selection. Microsoft callback, session handling, pending SAML/OIDC redirects, and provider configuration are unchanged. Google continues using its existing selection function.
+- **Verify:** Provider-selection regression tests cover domain matching. Browser tests cover all three company buttons and confirm the public email field is absent, with API calls mocked and Microsoft navigation intercepted. Live Microsoft sign-in still requires verification with company accounts after deployment.
+- **Deploy:** Frontend build and deployment required; no backend configuration change.
+
+---
+
 ### 2026-09-24 — Show Reports for gowtham.s@refex.co.in
 - **Problem:** Reports tiles were hidden unless the user's job title matched Chief / C-suite. Gowtham (org admin) could not see Reports.
 - **Cause:** `user_can_see_reports` / `userCanSeeReports` only checked chief title (plus optional env `REPORTS_ALLOWED_EMAILS` with no default).

@@ -35,6 +35,43 @@ export const clearNativeAppSession = () => {
   }
 };
 
+export const ADRENALIN_ANDROID_PACKAGE = 'com.myadrenalin.max2';
+export const ADRENALIN_SCHEME = 'adrmax2scheme://';
+export const ADRENALIN_PLAY_STORE =
+  'https://play.google.com/store/apps/details?id=com.myadrenalin.max2';
+
+/** Open native Adrenalin MAX 2. Returns true when a native/intent launch was started. */
+export const openAdrenalinNativeApp = () => {
+  try {
+    if (window.RefexOneBridge?.openAdrenalinApp) {
+      window.RefexOneBridge.openAdrenalinApp();
+      return true;
+    }
+  } catch (e) {
+    // fall through to scheme / intent
+  }
+
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+  const isAndroid = /Android/i.test(ua);
+  const isIOS = /iPhone|iPad|iPod/i.test(ua);
+
+  try {
+    if (isAndroid) {
+      window.location.href =
+        `intent://#Intent;scheme=adrmax2scheme;package=${ADRENALIN_ANDROID_PACKAGE}`
+        + `;S.browser_fallback_url=${encodeURIComponent(ADRENALIN_PLAY_STORE)};end`;
+      return true;
+    }
+    if (isIOS) {
+      window.location.href = ADRENALIN_SCHEME;
+      return true;
+    }
+  } catch (e) {
+    return false;
+  }
+  return false;
+};
+
 export const launchUrlAfterKissflowClear = (url, delayMs = 150) => {
   clearKissflowNativeSession();
   setTimeout(() => {

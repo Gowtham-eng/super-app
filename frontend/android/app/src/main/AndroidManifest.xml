@@ -39,8 +39,19 @@
     <!-- Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Query Kissflow app to check if installed -->
+    <!-- Query native apps we may launch from the WebView -->
     <queries>
         <package android:name="com.orangescape.kfdw" />
+        <package android:name="com.myadrenalin.max2" />
+        <package android:name="com.aes.hrms" />
+        <package android:name="com.myadrenalin.hrms55" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="adrmax2scheme" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="market" />
+        </intent>
     </queries>
 </manifest>
