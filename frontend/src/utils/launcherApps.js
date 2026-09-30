@@ -13,6 +13,11 @@ export function isKissflowApp(app = {}) {
   return /kissflow/.test(blob);
 }
 
+export function isAdrenalinApp(app = {}) {
+  const blob = `${app.name || ''} ${app.description || ''} ${app.home_url || ''} ${app.acs_url || ''} ${app.entity_id || ''}`.toLowerCase();
+  return /adrenalin|myadrenalin/.test(blob);
+}
+
 /** Named ITSM / helpdesk tiles. Never NE embed Reports. */
 export function isItsmNamedApp(app = {}) {
   if (isNeEmbedApp(app)) return false;
@@ -71,6 +76,44 @@ export function isReportsLauncherApp(app = {}) {
   return isNeEmbedApp(app);
 }
 
+const REPORTS_ALLOWED_EMAILS = [
+  'gowtham.s@refex.co.in',
+];
+
+const RMC_P2P_EMAILS = [
+  'sudharshan.nc@refex.co.in',
+  'deepa.murthy@refex.co.in',
+  'tarkeshwar.singh@refex.co.in',
+  'mounesh.r@refex.co.in',
+];
+
+const compactAppName = (value = '') => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+export function isRmcP2pApp(app = {}) {
+  const compact = compactAppName(`${app.name || ''} ${app.description || ''}`);
+  if (!compact.includes('rmc')) return false;
+  return compact.includes('p2p') || compact.includes('procure');
+}
+
+export function isProcure2PayApp(app = {}) {
+  if (isRmcP2pApp(app) || isReportsLauncherApp(app)) return false;
+  const compact = compactAppName(app.name || '');
+  return compact.includes('procure2pay') || compact.includes('procurementtopay');
+}
+
+function userEmail(user = {}) {
+  return String(user?.email || '').trim().toLowerCase();
+}
+
+export function userCanSeeRmcP2p(user = {}) {
+  const email = userEmail(user);
+  return Boolean(email) && RMC_P2P_EMAILS.includes(email);
+}
+
+export function userCanSeeProcure2Pay(user = {}) {
+  return !RMC_P2P_EMAILS.includes(userEmail(user));
+}
+
 /** Reports stay on the Reports tab — never mix them into All Apps. */
 export function shouldShowOnAllTab(app = {}) {
   return !isReportsLauncherApp(app);
@@ -95,6 +138,8 @@ export function isChiefPosition(user = {}) {
 }
 
 export function userCanSeeReports(user = {}) {
+  const email = userEmail(user);
+  if (email && REPORTS_ALLOWED_EMAILS.includes(email)) return true;
   return isChiefPosition(user);
 }
 
@@ -113,6 +158,8 @@ export function filterLauncherAppsForUser(apps, user) {
   const list = Array.isArray(apps) ? apps : [];
   return list.filter((app) => {
     if (isReportsLauncherApp(app) && !userCanSeeReports(user)) return false;
+    if (isRmcP2pApp(app) && !userCanSeeRmcP2p(user)) return false;
+    if (isProcure2PayApp(app) && !userCanSeeProcure2Pay(user)) return false;
     return true;
   });
 }
@@ -127,6 +174,20 @@ export function filterReportsForUser(apps, user) {
  * Prefer the tapped app, then an ITSM-named Kissflow SAML row — never the first
  * Kissflow module in the list (that was sending ITSM clicks to EMS_001_A00).
  */
+/**
+ * Same probe as the Help Desk KPI tile: Kissflow up + user in Kissflow → SAML app;
+ * otherwise the in-app /itsm dashboard.
+ */
+export function resolveItsmLaunchFromKissflowStatus(res, apps = [], tappedApp = null) {
+  const userInKissflow = res?.data?.user_in_kissflow === true;
+  if (isKissflowApiOk(res) && userInKissflow) {
+    const target = resolveKissflowLaunchApp(apps, tappedApp);
+    if (target) return { mode: 'kissflow', app: target };
+    return { mode: 'itsm', reason: 'no_sso_target' };
+  }
+  return { mode: 'itsm', reason: itsmKissflowFallbackReason(res, userInKissflow) };
+}
+
 export function resolveKissflowLaunchApp(list, tappedApp) {
   const rows = Array.isArray(list) ? list : [];
   if (tappedApp && usableLauncherApp(tappedApp) && tappedApp.type === 'saml' && isKissflowApp(tappedApp)) {

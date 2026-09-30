@@ -3,6 +3,7 @@ import {
   isItsmNamedApp,
   shouldHijackItsmLaunch,
   resolveKissflowLaunchApp,
+  resolveItsmLaunchFromKissflowStatus,
   isKissflowApiOk,
   itsmKissflowFallbackReason,
   userCanSeeReports,
@@ -10,6 +11,11 @@ import {
   filterLauncherAppsForUser,
   isChiefPosition,
   shouldShowOnAllTab,
+  isRmcP2pApp,
+  isProcure2PayApp,
+  userCanSeeRmcP2p,
+  userCanSeeProcure2Pay,
+  isAdrenalinApp,
 } from './launcherApps';
 
 const EMS = {
@@ -78,6 +84,14 @@ describe('launcher ITSM vs Reports vs EMS', () => {
     expect(hit.home_url).toContain('IT_Service_Management_A00');
   });
 
+  it('Refexions My Tickets uses the same Kissflow probe as Help Desk', () => {
+    const up = { status: 200, data: { ok: true, status_code: 200, user_in_kissflow: true } };
+    const kissflow = resolveItsmLaunchFromKissflowStatus(up, [EMS, ITSM_SAML], VIRTUAL);
+    expect(kissflow).toEqual({ mode: 'kissflow', app: ITSM_SAML });
+    const down = { status: 200, data: { ok: false, status_code: 502, user_in_kissflow: true } };
+    expect(resolveItsmLaunchFromKissflowStatus(down, [ITSM_SAML]).mode).toBe('itsm');
+  });
+
   it('virtual ITSM tile prefers the ITSM Kissflow app over EMS', () => {
     const hit = resolveKissflowLaunchApp([EMS, ITSM_SAML], VIRTUAL);
     expect(hit).toBe(ITSM_SAML);
@@ -97,6 +111,7 @@ describe('Reports and Kissflow visibility', () => {
     expect(userCanSeeReports({ designation: 'Chief Operating Officer' })).toBe(true);
     expect(userCanSeeReports({ email: 'anyone@refex.co.in', designation: 'Analyst' })).toBe(false);
     expect(userCanSeeReports({ role: 'org_admin', designation: 'Analyst' })).toBe(false);
+    expect(userCanSeeReports({ email: 'gowtham.s@refex.co.in', designation: 'Analyst' })).toBe(true);
   });
 
   it('keeps Reports tiles off the All tab', () => {
@@ -110,7 +125,42 @@ describe('Reports and Kissflow visibility', () => {
     expect(userCanSeeKissflow({ email: 'dinesh@refex.co.in' })).toBe(true);
     const dinesh = filterLauncherAppsForUser(rows, { email: 'dinesh@refex.co.in', designation: 'Chief Executive Officer' }).map((a) => a.id);
     expect(dinesh).toEqual(['saml-ems', 'saml-itsm', 'oidc-itsm', 'itsm-inapp', 'r1']);
+    const gowtham = filterLauncherAppsForUser(rows, { email: 'gowtham.s@refex.co.in', designation: 'Analyst' }).map((a) => a.id);
+    expect(gowtham).toEqual(['saml-ems', 'saml-itsm', 'oidc-itsm', 'itsm-inapp', 'r1']);
     const other = filterLauncherAppsForUser(rows, { email: 'anyone@refex.co.in', designation: 'Analyst' }).map((a) => a.id);
     expect(other).toEqual(['saml-ems', 'saml-itsm', 'itsm-inapp']);
+  });
+});
+
+describe('RMC P2P vs Procure2Pay visibility', () => {
+  const rmc = { id: 'rmc-p2p', name: 'RMC P2P', type: 'saml', has_access: true };
+  const p2p = { id: 'procure2pay', name: 'Procure2Pay', type: 'saml', has_access: true };
+  const deepa = { email: 'deepa.murthy@refex.co.in' };
+  const other = { email: 'anyone@refex.co.in' };
+
+  it('detects RMC P2P and Procure2Pay by name', () => {
+    expect(isRmcP2pApp(rmc)).toBe(true);
+    expect(isRmcP2pApp(p2p)).toBe(false);
+    expect(isProcure2PayApp(p2p)).toBe(true);
+    expect(isProcure2PayApp(rmc)).toBe(false);
+  });
+
+  it('shows RMC P2P only to the allowlisted users and hides Procure2Pay from them', () => {
+    expect(userCanSeeRmcP2p(deepa)).toBe(true);
+    expect(userCanSeeRmcP2p(other)).toBe(false);
+    expect(userCanSeeProcure2Pay(deepa)).toBe(false);
+    expect(userCanSeeProcure2Pay(other)).toBe(true);
+    const deepaIds = filterLauncherAppsForUser([EMS, rmc, p2p], deepa).map((a) => a.id);
+    const otherIds = filterLauncherAppsForUser([EMS, rmc, p2p], other).map((a) => a.id);
+    expect(deepaIds).toEqual(['saml-ems', 'rmc-p2p']);
+    expect(otherIds).toEqual(['saml-ems', 'procure2pay']);
+  });
+});
+
+describe('Adrenalin launcher detection', () => {
+  it('matches Adrenalin by name or myadrenalin host', () => {
+    expect(isAdrenalinApp({ name: 'Adrenalin ESS' })).toBe(true);
+    expect(isAdrenalinApp({ home_url: 'https://refex.myadrenalin.com/' })).toBe(true);
+    expect(isAdrenalinApp({ name: 'Expense Management', home_url: EMS.home_url })).toBe(false);
   });
 });

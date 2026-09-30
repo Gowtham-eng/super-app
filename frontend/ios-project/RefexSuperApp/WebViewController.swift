@@ -13,6 +13,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
 
     private let appHost = "refexone.com"
     private let kissflowDomain = "kissflow.com"
+    private let adrenalinDomain = "myadrenalin.com"
     private let launcherURL = "https://refexone.com/launcher"
     /// Root URL — web app routes to login or dashboard/launcher (same as Android Capacitor).
     private let appURL = "https://refexone.com/"
@@ -144,6 +145,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
           }
           window.RefexOneBridge = {
             setPendingModule: function(url) { post('setPendingModule', url); },
+            openAdrenalinApp: function() { post('openAdrenalinApp'); },
             clearKissflowSession: function() { post('clearKissflowSession'); },
             clearAppSession: function() { post('clearAppSession'); }
           };
@@ -756,6 +758,10 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
 
         if let target {
             captureModuleFromUrl(target)
+            if self.handleAdrenalinOrExternalLaunch(target) {
+                decisionHandler(.cancel)
+                return
+            }
         }
         // Keep Kissflow + SAML + RefexOne + OIDC apps inside the WebView
         decisionHandler(.allow)
@@ -782,6 +788,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         }
         scheduleHidePageLoader()
         captureModuleFromUrl(url)
+        injectAdrenalinClickHook(url)
 
         clearWebHistoryIfNeeded(url: url)
         checkSessionStorageModule(url: url) { [weak self] in
@@ -1148,6 +1155,78 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         return host.contains(kissflowDomain)
     }
 
+    private func isAdrenalinWebUrl(_ url: String?) -> Bool {
+        guard let host = URL(string: url ?? "")?.host?.lowercased() else {
+            return url?.lowercased().contains(adrenalinDomain) == true
+        }
+        return host.contains(adrenalinDomain)
+    }
+
+    private func isAdrenalinSamlUrl(_ url: String?) -> Bool {
+        guard isAdrenalinWebUrl(url), let url else { return false }
+        let path = (URL(string: url)?.path ?? url).lowercased()
+        return path.contains("/saml") || path.contains("/acs")
+    }
+
+    /// Open Adrenalin MAX 2 instead of keeping HRIS in the WebView.
+    @discardableResult
+    private func handleAdrenalinOrExternalLaunch(_ url: String) -> Bool {
+        let lower = url.lowercased()
+        if lower.hasPrefix("adrmax2scheme:") || lower.hasPrefix("max2uaescheme:") {
+            openAdrenalinNativeApp()
+            returnToLauncher()
+            return true
+        }
+        if isAdrenalinWebUrl(url) && !isAdrenalinSamlUrl(url) {
+            openAdrenalinNativeApp()
+            returnToLauncher()
+            return true
+        }
+        return false
+    }
+
+    private func openAdrenalinNativeApp() {
+        let candidates = [
+            URL(string: "adrmax2scheme://"),
+            URL(string: "max2uaescheme://")
+        ].compactMap { $0 }
+        for scheme in candidates {
+            if UIApplication.shared.canOpenURL(scheme) {
+                UIApplication.shared.open(scheme, options: [:], completionHandler: nil)
+                return
+            }
+        }
+        if let store = URL(string: "https://apps.apple.com/search?term=Adrenalin%20MAX") {
+            UIApplication.shared.open(store, options: [:], completionHandler: nil)
+        }
+    }
+
+    private func injectAdrenalinClickHook(_ url: String?) {
+        guard isRefexOneLauncherUrl(url) else { return }
+        let script = """
+        (function(){
+          if(window.__refexAdrenalinTapHook)return;
+          window.__refexAdrenalinTapHook=true;
+          document.addEventListener('click',function(ev){
+            var el=ev.target;
+            for(var i=0;i<12&&el;i++){
+              var tid=el.getAttribute&&el.getAttribute('data-testid')||'';
+              if(/^launch-app-/.test(tid)){
+                var name=(el.innerText||el.textContent||'').toLowerCase();
+                if(/adrenalin/.test(name)&&window.RefexOneBridge&&window.RefexOneBridge.openAdrenalinApp){
+                  ev.preventDefault();ev.stopImmediatePropagation();
+                  window.RefexOneBridge.openAdrenalinApp();
+                }
+                return;
+              }
+              el=el.parentElement;
+            }
+          },true);
+        })();
+        """
+        webView.evaluateJavaScript(script, completionHandler: nil)
+    }
+
     // MARK: - Close bar
 
     private func updateCloseBar(url: String?) {
@@ -1277,6 +1356,8 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
                 if let url = body["url"] as? String, !url.isEmpty {
                     self.pendingModuleUrl = url
                 }
+            case "openAdrenalinApp":
+                self.openAdrenalinNativeApp()
             case "clearKissflowSession":
                 self.clearKissflowSession()
             case "clearAppSession":

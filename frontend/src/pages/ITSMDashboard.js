@@ -73,6 +73,50 @@ const formatTicketDate = (value) => {
   return `${day} ${month} ${d.getFullYear()}`;
 };
 
+const TICKET_STAGE_VALUES = [
+  'Open',
+  'InProgress',
+  'OnHold',
+  'Pending with Vendor',
+  'Pending with Employee',
+  'Closed',
+];
+
+const canonicalizeTicketStage = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const token = raw.toLowerCase().replace(/[\s_-]+/g, '');
+  const mapped = {
+    open: 'Open',
+    inprogress: 'InProgress',
+    onhold: 'OnHold',
+    hold: 'OnHold',
+    pendingwithvendor: 'Pending with Vendor',
+    pendingvendor: 'Pending with Vendor',
+    pendingwithemployee: 'Pending with Employee',
+    pendingemployee: 'Pending with Employee',
+    closed: 'Closed',
+    close: 'Closed',
+  };
+  if (mapped[token]) return mapped[token];
+  const exact = TICKET_STAGE_VALUES.find((label) => label.toLowerCase().replace(/[\s_-]+/g, '') === token);
+  return exact || raw;
+};
+
+const ticketDisplayStatus = (ticket) => {
+  const stage = canonicalizeTicketStage(ticket?.stage);
+  const status = String(ticket?.status || '').trim().toLowerCase();
+  if (stage === 'Closed' || status.includes('closed') || status.includes('completed') || status.includes('reject') || status.includes('fail')) {
+    return 'Closed';
+  }
+  return 'Open';
+};
+
+const ticketStageLabel = (ticket) => {
+  if (ticketDisplayStatus(ticket) === 'Closed') return 'Closed';
+  return canonicalizeTicketStage(ticket?.stage) || 'Open';
+};
+
 const statusBadgeClass = (status = '') => {
   const v = status.toLowerCase();
   if (v.includes('fail')) return 'bg-red-100 text-red-800 border-red-200';
@@ -102,10 +146,6 @@ const isReopenHoldStep = (step) => {
 const ticketAllowsReopen = (ticket) =>
   Boolean(ticket?.canReopen) || isReopenHoldStep(ticket?.currentStep);
 
-/** Same gate as the Action-column stars — reopen-hold or already rated. */
-const showsEmployeeRating = (ticket) =>
-  Boolean(ticket) && (ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1);
-
 const REOPENED_IDS_KEY = 'itsmReopenedTicketIds.v1';
 
 const loadRememberedReopenedIds = () => {
@@ -128,6 +168,21 @@ const rememberReopenedTicket = (ticketId) => {
   } catch {
     // ignore quota / private mode
   }
+};
+
+const ticketIsReopened = (ticket) => {
+  if (!ticket) return false;
+  if (ticket.reopened) return true;
+  const id = String(ticket.id || ticket.localId || '').trim();
+  if (id && rememberedReopenedIds.has(id)) return true;
+  const status = String(ticket.status || '').toLowerCase();
+  return status.includes('reopen') && !status.includes('can be reopen');
+};
+
+/** Stars only on closed / reopen-hold. A reopened ticket is back in the queue. */
+const showsEmployeeRating = (ticket) => {
+  if (!ticket || ticketIsReopened(ticket)) return false;
+  return ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1;
 };
 
 const reopenRelatedBlob = (ticket) =>
@@ -156,8 +211,17 @@ const isReopenRelatedTicket = (ticket) => {
   );
 };
 
-const lockCommentsIfReopened = (ticket) => {
+const isDevHelpdesk = (environment, kissflowBaseUrl = '') => {
+  const token = String(environment || '').trim().toLowerCase();
+  if (token === 'development' || token === 'dev') return true;
+  return String(kissflowBaseUrl || '').toLowerCase().includes('development-refexgroup');
+};
+
+const lockCommentsIfReopened = (ticket, environment = '', kissflowBaseUrl = '') => {
   if (!ticket || !isReopenRelatedTicket(ticket)) return ticket;
+  if (isOpenTicket(ticket) && !isPickupStep(ticket.currentStep)) {
+    return { ...ticket, canComment: true };
+  }
   return { ...ticket, canComment: false };
 };
 
@@ -187,7 +251,7 @@ const matchesKpiFilter = (ticket, tab) => {
 const isOpenTicket = (ticket) => matchesKpiFilter(ticket, 'Open');
 
 const TicketStatusTags = ({ ticket, size = 'md' }) => {
-  const status = (ticket?.status || '').trim() || '—';
+  const status = ticketDisplayStatus(ticket);
   const statusLower = status.toLowerCase();
   const showReopenedTag =
     Boolean(ticket?.reopened) && !statusLower.includes('reopen');
@@ -213,6 +277,32 @@ const TicketStatusTags = ({ ticket, size = 'md' }) => {
 const isRefexHelpdeskEntity = (entity) => isRefexEntity(entity);
 
 const ticketSubject = (ticket) => String(ticket?.subject || ticket?.Subject || '').trim();
+
+const ticketAgentSolution = (ticket) =>
+  String(ticket?.itAgentSolution || ticket?.solution || '').trim();
+
+const isClosedTicket = (ticket) => matchesKpiFilter(ticket, 'Closed');
+
+const AgentSolutionBlock = ({ ticket, loading = false }) => {
+  const text = ticketAgentSolution(ticket);
+  const rowId = ticket?.id || ticket?.localId || 'ticket';
+  return (
+    <div
+      className="rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-3"
+      data-testid={`itsm-agent-solution-${rowId}`}
+    >
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">IT Agent Solution</p>
+      {loading && !text ? (
+        <p className="mt-1 flex items-center gap-2 text-sm text-slate-500">
+          <Loader2 size={14} className="animate-spin" />
+          Loading solution…
+        </p>
+      ) : (
+        <p className="mt-1 text-sm leading-relaxed text-slate-800 whitespace-pre-wrap">{text || '—'}</p>
+      )}
+    </div>
+  );
+};
 
 const isMobileHelpDeskView = () => {
   if (typeof window === 'undefined') return false;
@@ -306,8 +396,7 @@ const prepareCommentFiles = async (files) => {
   return out;
 };
 
-/** Comments UI is Extrovis-family only — Refex Help Desk never shows a thread.
- *  Reopen tickets can view history but never Reply / compose. */
+/** Comments UI is Extrovis-family only — Refex Help Desk never shows a thread. */
 const canShowTicketComments = (entity, ticket) =>
   !isRefexHelpdeskEntity(entity)
   && !isRefexHelpdeskEntity(ticket?.entity);
@@ -318,11 +407,24 @@ const isItsmBotAssignedPart = (value) => {
   return compact.includes('itsmbot') || compact === 'bot' || compact.endsWith('bot');
 };
 
+const ITSM_PERSON_ALIASES = {
+  'it manager': 'Sakthivel',
+  'it manager refex': 'Sakthivel',
+  'it head': 'Mugesh',
+  'it head refex': 'Mugesh',
+};
+
+const displayItsmPersonName = (value) => {
+  const text = String(value || '').trim();
+  const key = text.toLowerCase().replace(/\./g, ' ').replace(/\s+/g, ' ').trim();
+  return ITSM_PERSON_ALIASES[key] || text;
+};
+
 /** Hide ITSM BOT / AppRole from Assigned To — keep the human name. */
 const formatAssignedToDisplay = (value) => {
   const parts = String(value || '')
     .split(',')
-    .map((part) => part.trim())
+    .map((part) => displayItsmPersonName(part.trim()))
     .filter((part) => part && part !== '—' && !isItsmBotAssignedPart(part));
   const seen = new Set();
   const unique = [];
@@ -335,10 +437,19 @@ const formatAssignedToDisplay = (value) => {
   return unique.join(', ') || '—';
 };
 
-const canCommentTicket = (ticket, entity) => {
-  if (!ticket || showsEmployeeRating(ticket) || isReopenRelatedTicket(ticket)) return false;
+const isPickupStep = (step) => {
+  const token = String(step || '').toLowerCase().replace(/[\s_-]+/g, '');
+  return token.includes('pickup') || token === 'pick' || token.includes('itagentpickup');
+};
+
+const canCommentTicket = (ticket, entity, environment = '', kissflowBaseUrl = '') => {
+  if (!ticket) return false;
+  if (showsEmployeeRating(ticket) && !ticketIsReopened(ticket)) return false;
   if (!canShowTicketComments(entity, ticket)) return false;
-  if (!isOpenTicket(ticket) || ticketAllowsReopen(ticket)) return false;
+  if (!isOpenTicket(ticket)) return false;
+  if (isPickupStep(ticket.currentStep)) return false;
+  if (ticketIsReopened(ticket)) return true;
+  if (isReopenRelatedTicket(ticket) || ticketAllowsReopen(ticket)) return false;
   if (ticket.canComment === false) return false;
   if (ticket.canComment === true) {
     const step = String(ticket.currentStep || '').trim().toLowerCase();
@@ -353,8 +464,6 @@ const canCommentTicket = (ticket, entity) => {
   if (step.includes('reopen')) return false;
   return (
     step.includes('agent solution')
-    || step.includes('pickup')
-    || step.includes('pick up')
     || step.includes('dependency')
   );
 };
@@ -410,13 +519,15 @@ const realCommentRows = (rows) =>
   });
 
 const isEmployeeVisibleComment = (entry, entity = '') => {
+  const role = String(entry?.role || '').trim().toLowerCase();
+  if (role === 'reopen') return true;
   const token = String(entry?.commentsType || entry?.Comments_2 || entry?.commentChannel || '')
     .trim()
     .toLowerCase()
     .replace(/[\s_-]+/g, '');
   const entityName = typeof entity === 'string' ? entity : '';
   if (isRefexHelpdeskEntity(entityName)) return true;
-  return token === 'user' || token === 'usercomments' || token === 'employee';
+  return token !== 'internal';
 };
 
 const commentsBelongToTicket = (rows, ticket) => {
@@ -583,6 +694,7 @@ const TicketConversation = ({
   ticket,
   entity = '',
   environment = '',
+  kissflowBaseUrl = '',
   getAuthHeader,
   viewerName = '',
   viewerEmail = '',
@@ -609,10 +721,8 @@ const TicketConversation = ({
   hydrateRef.current = onHydrated;
   ticketRef.current = ticket;
   const entries = revisionEntriesFromTicket(ticket, entity);
-  const allowCompose =
-    Boolean(canComment)
-    && !showsEmployeeRating(ticket)
-    && !isReopenRelatedTicket(ticket);
+  const resolvedEnv = isDevHelpdesk(environment, kissflowBaseUrl) ? 'development' : environment;
+  const allowCompose = Boolean(canComment);
 
   const loadComments = React.useCallback(async (force = false) => {
     const live = ticketRef.current;
@@ -633,7 +743,11 @@ const TicketConversation = ({
           entity,
           instance_id: live.id,
           activity_instance_id: live.activityInstanceId || '',
-          environment: environment || undefined,
+          environment: resolvedEnv || environment || undefined,
+          reopened: true,
+          status: live.status || '',
+          current_step: live.currentStep || '',
+          last_completed_step: live.lastCompletedStep || '',
           _t: Date.now(),
         },
         ...authRef.current(),
@@ -651,7 +765,7 @@ const TicketConversation = ({
     } finally {
       setHydrating(false);
     }
-  }, [ticket?.id, entity, environment]);
+  }, [ticket?.id, entity, environment, kissflowBaseUrl, resolvedEnv]);
 
   React.useEffect(() => {
     loadComments();
@@ -705,7 +819,7 @@ const TicketConversation = ({
               ) : null}
               {statusLabel ? (
                 <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
-                  {statusLabel}
+                  {ticketDisplayStatus(ticket)}
                 </span>
               ) : null}
               {stepLabel ? (
@@ -955,9 +1069,11 @@ const TicketConversation = ({
         </div>
       ) : (
         <p className="border-t border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] text-slate-500">
-          {isReopenRelatedTicket(ticket) || showsEmployeeRating(ticket)
-            ? 'Comments are disabled on reopened tickets.'
-            : 'Replies open when this ticket is with IT on the work step.'}
+          {isPickupStep(ticket.currentStep)
+            ? 'Comments open after IT picks up the ticket.'
+            : showsEmployeeRating(ticket)
+              ? 'This ticket is closed for comments.'
+              : 'Replies open when this ticket is with IT on the work step.'}
         </p>
       )}
     </div>
@@ -1001,7 +1117,7 @@ const ticketsCache = {
   fetchedAt: 0,
 };
 
-const TICKETS_CACHE_KEY = 'itsmTicketsCache.v9';
+const TICKETS_CACHE_KEY = 'itsmTicketsCache.v17';
 const COMMENTS_STORE_KEY = 'itsmCommentsStore.v1';
 const commentsStore = new Map();
 let ticketsInflight = null;
@@ -1102,7 +1218,11 @@ try {
         const withComments = stored.length
           ? { ...row, agentSolutions: mergeCommentRows(realCommentRows(row.agentSolutions), stored) }
           : row;
-        return lockCommentsIfReopened(withComments);
+        return lockCommentsIfReopened(
+          withComments,
+          ticketsCache.activeEnvironment,
+          ticketsCache.kissflowBaseUrl,
+        );
       });
     }
   }
@@ -1138,6 +1258,9 @@ const ITSMDashboard = () => {
   const [error, setError] = useState('');
   const [activeEnvironment, setActiveEnvironment] = useState(() => cached?.activeEnvironment || '');
   const [kissflowBaseUrl, setKissflowBaseUrl] = useState(() => cached?.kissflowBaseUrl || '');
+  const helpdeskEnv = isDevHelpdesk(activeEnvironment, kissflowBaseUrl)
+    ? 'development'
+    : activeEnvironment;
   const [lastFetchedAt, setLastFetchedAt] = useState(() => cached?.fetchedAt || 0);
   const [refreshing, setRefreshing] = useState(false);
   const [reopeningId, setReopeningId] = useState('');
@@ -1149,6 +1272,8 @@ const ITSMDashboard = () => {
   const [commentingId, setCommentingId] = useState('');
   const [expandedIds, setExpandedIds] = useState(() => new Set());
   const [composerTicketId, setComposerTicketId] = useState('');
+  const [solutionHydratingIds, setSolutionHydratingIds] = useState(() => new Set());
+  const solutionHydrateRef = React.useRef(new Set());
   const viewerName = useMemo(() => (mergeItsmProfile(user).name || '').trim(), [user]);
   const viewerEmail = useMemo(() => (mergeItsmProfile(user).email || '').trim(), [user]);
 
@@ -1171,6 +1296,7 @@ const ITSMDashboard = () => {
         const nextComments = incoming.length
           ? rememberComments(row.id, mergeCommentRows(incoming, existing), entity)
           : rememberComments(row.id, existing, entity);
+        const nextSolution = String(payload.itAgentSolution || payload.solution || '').trim();
         return {
           ...row,
           agentSolutions: nextComments.length ? nextComments : existing,
@@ -1181,6 +1307,8 @@ const ITSMDashboard = () => {
           entity: payload.entity || row.entity,
           source: payload.source || row.source,
           location: payload.location || row.location,
+          solution: nextSolution || row.solution || '',
+          itAgentSolution: nextSolution || row.itAgentSolution || row.solution || '',
         };
       });
       ticketsCache.tickets = next;
@@ -1188,6 +1316,8 @@ const ITSMDashboard = () => {
       return next;
     });
   };
+  const applyCommentThreadRef = React.useRef(applyCommentThread);
+  applyCommentThreadRef.current = applyCommentThread;
 
   const toggleExpanded = (ticketId) => {
     if (!ticketId) return;
@@ -1198,6 +1328,48 @@ const ITSMDashboard = () => {
       return next;
     });
   };
+
+  useEffect(() => {
+    if (!entity || !expandedIds.size) return;
+    expandedIds.forEach((rowId) => {
+      const ticket = tickets.find((row) => (row.id || row.localId) === rowId);
+      if (!ticket?.id) return;
+      if (ticketAgentSolution(ticket)) return;
+      if (!isClosedTicket(ticket) && !ticketAllowsReopen(ticket)) return;
+      if (canShowTicketComments(entity, ticket)) return;
+      if (solutionHydrateRef.current.has(ticket.id)) return;
+      solutionHydrateRef.current.add(ticket.id);
+      setSolutionHydratingIds((prev) => {
+        const next = new Set(prev);
+        next.add(ticket.id);
+        return next;
+      });
+      axios
+        .get(`${ITSM_API}/itsm/reports/comments`, {
+          params: {
+            entity,
+            instance_id: ticket.id,
+            activity_instance_id: ticket.activityInstanceId || '',
+            environment: helpdeskEnv || undefined,
+            reopened: true,
+            status: ticket.status || '',
+            current_step: ticket.currentStep || '',
+            last_completed_step: ticket.lastCompletedStep || '',
+            _t: Date.now(),
+          },
+          ...getAuthHeader(),
+        })
+        .then((res) => applyCommentThreadRef.current(ticket.id, res.data || {}))
+        .catch(() => {})
+        .finally(() => {
+          setSolutionHydratingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(ticket.id);
+            return next;
+          });
+        });
+    });
+  }, [expandedIds, tickets, entity, activeEnvironment, getAuthHeader]);
   const fetchTickets = async ({ silent = false, force = false } = {}) => {
     if (!entity) {
       setLoading(false);
@@ -1296,6 +1468,15 @@ const ITSMDashboard = () => {
         && ticketsCache.activeEnvironment === incomingEnv
         && ticketsCache.kissflowBaseUrl === incomingBase;
       const previous = sameHost ? ticketsCache.tickets : [];
+      if (!incoming.length && previous.length && (sameHost || res.data.reportError)) {
+        ticketsCache.fetchedAt = Date.now();
+        persistTicketsCache();
+        return {
+          ...res.data,
+          tickets: previous,
+          keptCachedTickets: true,
+        };
+      }
       const nextTickets = incoming.map((row) => {
         const prev = previous.find((item) => item.id === row.id || item.localId === row.localId);
         const ticketKey = row.id || row.localId;
@@ -1308,12 +1489,16 @@ const ITSMDashboard = () => {
         return lockCommentsIfReopened({
           ...row,
           reopened: Boolean(row.reopened || remembered),
-          canComment: remembered || row.reopened ? false : row.canComment,
+          canComment: (
+            (remembered || row.reopened)
+              ? !isPickupStep(row.currentStep)
+              : row.canComment
+          ),
           assignedTo: formatAssignedToDisplay(row.assignedTo || prev?.assignedTo),
           agentSolutions: mergedComments,
           requesterName: row.requesterName || prev?.requesterName,
           requesterEmail: row.requesterEmail || prev?.requesterEmail,
-        });
+        }, incomingEnv, incomingBase);
       });
       const nextEnv = res.data.activeEnvironment || '';
       const nextBase = res.data.kissflowBaseUrl || '';
@@ -1334,8 +1519,8 @@ const ITSMDashboard = () => {
       setActiveEnvironment(ticketsCache.activeEnvironment);
       setKissflowBaseUrl(ticketsCache.kissflowBaseUrl);
       setLastFetchedAt(ticketsCache.fetchedAt);
-      if (data?.reportError) {
-        toast.error(`Kissflow report: ${data.reportError}`);
+      if (data?.reportError && !data?.keptCachedTickets && !data?.skippedFull) {
+        toast.error(`Kissflow report: ${getApiErrorMessage({ detail: data.reportError }, data.reportError)}`);
       }
     } catch (err) {
       if (!ticketsCache.tickets.length) {
@@ -1479,13 +1664,13 @@ const ITSMDashboard = () => {
       next.add(rowId);
       return next;
     });
-    if (canCommentTicket(ticket, entity)) setComposerTicketId(rowId);
+    if (canCommentTicket(ticket, entity, activeEnvironment, kissflowBaseUrl)) setComposerTicketId(rowId);
   };
 
   const submitCommentForTicket = async (ticket, rawNote, files = []) => {
     const note = String(rawNote || '').trim();
     const fileList = Array.isArray(files) ? files.filter(Boolean) : [];
-    if (!ticket?.id || !canCommentTicket(ticket, entity)) {
+    if (!ticket?.id || !canCommentTicket(ticket, entity, activeEnvironment, kissflowBaseUrl)) {
       throw new Error('Comments are not available on this step.');
     }
     if (!note && !fileList.length) throw new Error('Please enter a comment or add an attachment.');
@@ -1524,7 +1709,8 @@ const ITSMDashboard = () => {
         form.append('activity_instance_id', ticket.activityInstanceId || '');
         form.append('comment', note);
         if (viewerName) form.append('commenter_name', viewerName);
-        if (activeEnvironment) form.append('environment', activeEnvironment);
+        if (helpdeskEnv) form.append('environment', helpdeskEnv);
+        if (ticket.reopened) form.append('reopened', 'true');
         fileList.forEach((file) => form.append('files', file));
         res = await axios.post(`${ITSM_API}/itsm/reports/comment-with-files`, form, {
           headers: { Authorization: auth.headers?.Authorization },
@@ -1540,16 +1726,14 @@ const ITSMDashboard = () => {
             activity_instance_id: ticket.activityInstanceId || '',
             comment: note,
             commenter_name: viewerName || undefined,
-            environment: activeEnvironment || undefined,
+            environment: helpdeskEnv || undefined,
+            reopened: Boolean(ticket.reopened) || undefined,
           },
           auth
         );
       }
       toast.success(res.data.message || 'Comment sent');
-      if (Array.isArray(res.data.comments) && res.data.comments.length) {
-        applyCommentThread(ticket.id, res.data);
-      }
-      await fetchTickets({ force: true, silent: true });
+      applyCommentThread(ticket.id, res.data || {});
     } catch (err) {
       setTickets((prev) => {
         const next = prev.map((row) =>
@@ -1603,7 +1787,7 @@ const ITSMDashboard = () => {
 
   const renderTicketTable = (rows) => {
     const showSubjectColumn = !isRefexHelpdeskEntity(entity);
-    const conversationColSpan = showSubjectColumn ? 9 : 8;
+    const conversationColSpan = showSubjectColumn ? 10 : 9;
     return (
     <>
       {/* Desktop only — tablets use cards (md table was too cramped). */}
@@ -1619,7 +1803,8 @@ const ITSMDashboard = () => {
               {showSubjectColumn ? <th className="w-[280px]">Subject</th> : null}
               <th className="w-[120px]">Created On</th>
               <th className="w-[150px]">Assigned To</th>
-              <th className="w-[160px]">Status</th>
+              <th className="w-[120px]">Ticket Status</th>
+              <th className="w-[160px]">Stage</th>
               <th className="w-[140px]">Closed By</th>
               <th className="w-[120px]">Closed On</th>
               <th className="w-[130px] text-right">Action</th>
@@ -1630,22 +1815,27 @@ const ITSMDashboard = () => {
               const rowId = ticket.id || ticket.localId;
               const expanded = expandedIds.has(rowId);
               const showCommentSection = canShowTicketComments(entity, ticket);
-              const showComment =
-                canCommentTicket(ticket, entity)
-                && !showsEmployeeRating(ticket)
-                && !isReopenRelatedTicket(ticket);
+              const showComment = canCommentTicket(ticket, entity, activeEnvironment, kissflowBaseUrl);
               const requestId = ticket.requestId || '—';
               const subject = ticketSubject(ticket) || '—';
               const hasDescription = Boolean(String(ticket.description || '').trim());
-              const showExpand = showCommentSection || hasDescription;
+              const hasSolution = Boolean(ticketAgentSolution(ticket));
+              const showSolution = isClosedTicket(ticket) || ticketAllowsReopen(ticket) || hasSolution;
+              const showExpand = showCommentSection || hasDescription || showSolution;
               return (
                 <React.Fragment key={rowId}>
-                  <tr>
+                  <tr
+                    className={showExpand ? 'cursor-pointer' : undefined}
+                    onClick={showExpand ? () => toggleExpanded(rowId) : undefined}
+                  >
                     <td className="!px-2">
                       {showExpand ? (
                         <button
                           type="button"
-                          onClick={() => toggleExpanded(rowId)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleExpanded(rowId);
+                          }}
                           className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800"
                           aria-expanded={expanded}
                           aria-label={expanded ? 'Collapse conversation' : 'Expand conversation'}
@@ -1670,11 +1860,14 @@ const ITSMDashboard = () => {
                     <td className="!whitespace-normal">
                       <TicketStatusTags ticket={ticket} />
                     </td>
+                    <td className="text-slate-700" title={ticketStageLabel(ticket)}>
+                      {ticketStageLabel(ticket)}
+                    </td>
                     <td className="text-slate-700" title={ticket.closedBy || ''}>
                       {ticket.closedBy || '—'}
                     </td>
                     <td className="text-slate-600 whitespace-nowrap">{formatTicketDate(ticket.closedOn)}</td>
-                    <td className="text-right">
+                    <td className="text-right" onClick={(event) => event.stopPropagation()}>
                       <div className="flex flex-col items-end gap-2">
                         {showComment ? (
                           <button
@@ -1688,7 +1881,7 @@ const ITSMDashboard = () => {
                             {isRefexHelpdeskEntity(entity) ? 'Reply' : 'Reply / Attach'}
                           </button>
                         ) : null}
-                        {ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1 ? (
+                        {!ticketIsReopened(ticket) && (ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1) ? (
                           <>
                             <EmployeeRatingStars ticket={ticket} ratingBusyId={ratingBusyId} onRate={submitRating} />
                             {ticketAllowsReopen(ticket) ? (
@@ -1711,11 +1904,19 @@ const ITSMDashboard = () => {
                   {expanded && showExpand ? (
                     <tr className="bg-slate-50/80">
                       <td colSpan={conversationColSpan} className="itsm-conversation-cell !p-3 sm:!p-4 border-t border-slate-100">
-                        {showCommentSection ? (
+                        <div className="space-y-3">
+                          {showSolution ? (
+                            <AgentSolutionBlock
+                              ticket={ticket}
+                              loading={solutionHydratingIds.has(ticket.id)}
+                            />
+                          ) : null}
+                          {showCommentSection ? (
                         <TicketConversation
                           ticket={ticket}
                           entity={entity}
-                          environment={activeEnvironment}
+                          environment={helpdeskEnv}
+                          kissflowBaseUrl={kissflowBaseUrl}
                           getAuthHeader={getAuthHeader}
                           viewerName={viewerName}
                           viewerEmail={viewerEmail}
@@ -1726,12 +1927,13 @@ const ITSMDashboard = () => {
                           onHydrated={applyCommentThread}
                           allowAttachments={!isRefexHelpdeskEntity(entity)}
                         />
-                        ) : (
+                          ) : hasDescription ? (
                           <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
                             <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Description</p>
                             <p className="mt-1 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{ticket.description}</p>
                           </div>
-                        )}
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   ) : null}
@@ -1747,14 +1949,17 @@ const ITSMDashboard = () => {
           const rowId = ticket.id || ticket.localId;
           const expanded = expandedIds.has(rowId);
           const showCommentSection = canShowTicketComments(entity, ticket);
-          const showComment =
-            canCommentTicket(ticket, entity)
-            && !showsEmployeeRating(ticket)
-            && !isReopenRelatedTicket(ticket);
+          const showComment = canCommentTicket(ticket, entity, activeEnvironment, kissflowBaseUrl);
           const hasDescription = Boolean(String(ticket.description || '').trim());
-          const showExpand = showCommentSection || hasDescription;
+          const hasSolution = Boolean(ticketAgentSolution(ticket));
+          const showSolution = isClosedTicket(ticket) || ticketAllowsReopen(ticket) || hasSolution;
+          const showExpand = showCommentSection || hasDescription || showSolution;
           return (
-            <div key={rowId} className="rounded-xl border border-slate-200 bg-white p-4">
+            <div
+              key={rowId}
+              className={`rounded-xl border border-slate-200 bg-white p-4 ${showExpand ? 'cursor-pointer' : ''}`}
+              onClick={showExpand ? () => toggleExpanded(rowId) : undefined}
+            >
               <div className="flex items-start justify-between gap-3 mb-2">
                 <p className="font-semibold text-slate-900 text-sm break-all">{ticket.requestId || '—'}</p>
                 <TicketStatusTags ticket={ticket} size="sm" />
@@ -1768,6 +1973,7 @@ const ITSMDashboard = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1 mb-3">
                 <p className="text-xs text-slate-500">Created On: {formatTicketDate(ticket.createdOn)}</p>
                 <p className="text-xs text-slate-500">Assigned To: {formatAssignedToDisplay(ticket.assignedTo)}</p>
+                <p className="text-xs text-slate-500">Stage: {ticketStageLabel(ticket)}</p>
                 <p className="text-xs text-slate-500">Closed By: {ticket.closedBy || '—'}</p>
                 <p className="text-xs text-slate-500">Closed On: {formatTicketDate(ticket.closedOn)}</p>
                 {ticket.currentStep ? (
@@ -1798,7 +2004,7 @@ const ITSMDashboard = () => {
                     {isRefexHelpdeskEntity(entity) ? 'Reply' : 'Reply / Attach'}
                   </button>
                 ) : null}
-                {ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1 ? (
+                {!ticketIsReopened(ticket) && (ticketAllowsReopen(ticket) || Number(ticket.employeeRating) >= 1) ? (
                   <div className="space-y-2 w-full">
                     <EmployeeRatingStars ticket={ticket} ratingBusyId={ratingBusyId} onRate={submitRating} />
                     {ticketAllowsReopen(ticket) ? (
@@ -1817,12 +2023,19 @@ const ITSMDashboard = () => {
                 ) : null}
               </div>
               {expanded && showExpand ? (
-                <div className="mt-3 border-t border-slate-100 pt-3">
+                <div className="mt-3 border-t border-slate-100 pt-3 space-y-3">
+                  {showSolution ? (
+                    <AgentSolutionBlock
+                      ticket={ticket}
+                      loading={solutionHydratingIds.has(ticket.id)}
+                    />
+                  ) : null}
                   {showCommentSection ? (
                   <TicketConversation
                     ticket={ticket}
                     entity={entity}
-                    environment={activeEnvironment}
+                    environment={helpdeskEnv}
+                    kissflowBaseUrl={kissflowBaseUrl}
                     getAuthHeader={getAuthHeader}
                     viewerName={viewerName}
                     viewerEmail={viewerEmail}
@@ -1833,12 +2046,12 @@ const ITSMDashboard = () => {
                     onHydrated={applyCommentThread}
                     allowAttachments={!isRefexHelpdeskEntity(entity)}
                   />
-                  ) : (
+                  ) : hasDescription ? (
                     <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
                       <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Description</p>
                       <p className="mt-1 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{ticket.description}</p>
                     </div>
-                  )}
+                  ) : null}
                 </div>
               ) : null}
             </div>

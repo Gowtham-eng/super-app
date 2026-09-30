@@ -1,19 +1,34 @@
 """Non-Refex Help Desk comment channel + attachment parsing (no live Kissflow)."""
 from routes.itsm import (
+    _admin_process_item_path,
+    _admin_process_item_url,
+    _comment_write_accepted,
+    _kissflow_response_text,
+    _looks_like_html,
     _attachment_key_is_image,
     _build_kissflow_upload_object_path,
     _collect_multipart_files,
     _employee_visible_comments,
+    _can_comment_on_step,
     _is_comment_nested_table_step,
+    _is_pickup_step,
     _is_gcs_signed_url,
+    _it_agent_solution_text,
     _kissflow_headers,
     _merge_comment_lists,
+    _merge_solution_rows_for_put,
     _normalize_comment_channel,
     _parse_agent_solutions,
     _parse_comment_attachments,
     _parse_report_ticket,
+    _canonicalize_ticket_stage,
+    _collect_reopen_notes_from_progress,
+    _needs_reopen_progress_fetch,
+    _display_ticket_status,
     _thread_from_instance_payload,
     _ticket_webhook_body,
+    _uses_admin_comment_put,
+    _uses_dev_admin_comment_put,
     _uses_extrovis_flow,
     REPORT_FIELD_IDS,
 )
@@ -27,12 +42,12 @@ def test_extrovis_flow_gate():
 
 def test_comment_channel_aliases():
     assert _normalize_comment_channel("External") == "External"
-    assert _normalize_comment_channel("internal") == "External"
+    assert _normalize_comment_channel("internal") == "Internal"
     assert _normalize_comment_channel("User Comments") == "User"
     assert _normalize_comment_channel("") == ""
 
 
-def test_help_desk_shows_user_comments_only():
+def test_help_desk_hides_internal_keeps_thread():
     rows = [
         {"comment": "agent note", "commentsType": "External"},
         {"comment": "employee note", "commentsType": "User"},
@@ -43,15 +58,100 @@ def test_help_desk_shows_user_comments_only():
     ]
     visible = _employee_visible_comments(rows, "Extrovis")
     texts = [row["comment"] for row in visible]
-    assert texts == ["employee note", "user comments alias", "employee alias"]
-    assert [row["comment"] for row in _employee_visible_comments(rows, "Refex")] == [
-        "agent note",
-        "employee note",
-        "user comments alias",
-        "employee alias",
-        "old note",
-        "internal note",
+    assert "internal note" not in texts
+    assert "agent note" in texts
+    assert "employee note" in texts
+    assert "old note" in texts
+
+
+def test_dev_reopened_extrovis_can_comment():
+    ext_ids = REPORT_FIELD_IDS["extrovis"]
+    columns = [
+        {"Id": ext_ids["current_step"][0], "Name": "Current_Step"},
     ]
+    row = {
+        ext_ids["instance_id"][0]: "PkEDIEvs2nrj",
+        ext_ids["item_status"][0]: "Open",
+        ext_ids["reopened"][0]: "Yes",
+        ext_ids["current_step"][0]: "IT Agent Solution",
+    }
+    parsed = _parse_report_ticket(row, columns, 0, "Extrovis", environment="development")
+    assert parsed["canComment"] is True
+    live = _parse_report_ticket(row, columns, 0, "Extrovis", environment="live")
+    assert live["reopened"] is True
+    assert live["canComment"] is True
+    pickup = dict(row)
+    pickup[ext_ids["current_step"][0]] = "IT Agent PickUp"
+    assert _parse_report_ticket(pickup, columns, 0, "Extrovis", environment="live")["canComment"] is False
+
+
+def test_admin_put_keeps_existing_comment_rows():
+    existing = [
+        {"_id": "IT__Agent_Solution_old1", "Name_1": "asik", "Resolution": "yes please", "Comments_2": "External"},
+        {"_id": "IT__Agent_Solution_old2", "Name_1": "Aasik", "Resolution": "still its not working", "Comments_2": "User"},
+    ]
+    new_row = {
+        "_id": "IT__Agent_Solution_new3",
+        "Name_1": "Aasik",
+        "Resolution": "please check again",
+        "Comments_2": "User",
+        "Stages_1": "InProgress",
+    }
+    merged = _merge_solution_rows_for_put(existing, new_row)
+    assert [row["_id"] for row in merged] == [
+        "IT__Agent_Solution_old1",
+        "IT__Agent_Solution_old2",
+        "IT__Agent_Solution_new3",
+    ]
+    assert _merge_solution_rows_for_put(existing, existing[0]) == _merge_solution_rows_for_put(existing, {})
+
+
+CLOUDFLARE_HTML = (
+    "<!DOCTYPE html><html lang=\"en-US\"><head><title>Just a moment...</title>"
+    "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\">"
+)
+
+
+def test_cloudflare_html_is_never_treated_as_kissflow_success():
+    assert _looks_like_html(CLOUDFLARE_HTML) is True
+    assert "Just a moment" not in _kissflow_response_text(CLOUDFLARE_HTML, "fallback")
+    assert "temporarily blocking" in _kissflow_response_text(CLOUDFLARE_HTML, "fallback")
+    assert _comment_write_accepted(200, CLOUDFLARE_HTML, "") is False
+    assert _comment_write_accepted(200, {"challenge": True, "message": "blocked"}, "blocked") is False
+    assert _comment_write_accepted(403, CLOUDFLARE_HTML, CLOUDFLARE_HTML) is False
+
+
+def test_reopen_comments_use_setup_admin_put():
+    live_cfg = {
+        "environment": "live",
+        "kissflow_base_url": "https://refexgroup.kissflow.com",
+        "account_id": "AcCMptlq60zH",
+        "process_id": "Live_IT_Service_Request_Extrovis_A00",
+        "access_key_id": "live-key",
+    }
+    dev_cfg = {
+        "environment": "development",
+        "kissflow_base_url": "https://development-refexgroup.kissflow.com",
+        "account_id": "AcCMptp3yqcn",
+        "process_id": "Live_IT_Service_Request_Extrovis_A00",
+        "access_key_id": "dev-key",
+    }
+    assert _uses_admin_comment_put("Extrovis", live_cfg, reopened=True) is True
+    assert _uses_admin_comment_put("Extrovis", live_cfg, reopened=False) is False
+    assert _uses_admin_comment_put("Extrovis", dev_cfg, reopened=False) is True
+    assert _uses_dev_admin_comment_put("Extrovis", dev_cfg) is True
+    assert _uses_admin_comment_put("Refex", live_cfg, reopened=True) is False
+    assert _admin_process_item_url(live_cfg, "PkEDIEvs2nrj") == (
+        "https://refexgroup.kissflow.com/process/2/AcCMptlq60zH/admin/"
+        "Live_IT_Service_Request_Extrovis_A00/PkEDIEvs2nrj"
+    )
+    assert _admin_process_item_url(dev_cfg, "PkEDIEvs2nrj") == (
+        "https://development-refexgroup.kissflow.com/process/2/AcCMptp3yqcn/admin/"
+        "Live_IT_Service_Request_Extrovis_A00/PkEDIEvs2nrj"
+    )
+    assert _admin_process_item_path(live_cfg, "PkX") == (
+        "/process/2/AcCMptlq60zH/admin/Live_IT_Service_Request_Extrovis_A00/PkX"
+    )
 
 
 def test_keeps_all_user_comments_when_attachment_table_is_shorter():
@@ -404,3 +504,168 @@ def test_comment_nested_table_prefers_solution_not_pickup():
     assert _is_comment_nested_table_step("IT Tech Support") is True
     assert _is_comment_nested_table_step("IT Agent PickUp") is False
     assert _is_comment_nested_table_step("PickUp") is False
+
+
+def test_non_refex_comments_blocked_on_pickup():
+    assert _is_pickup_step("IT Agent PickUp") is True
+    assert _can_comment_on_step("IT Agent PickUp", "Extrovis") is False
+    assert _can_comment_on_step("IT Agent Solution", "Extrovis") is True
+    assert _can_comment_on_step("IT Agent Solution", "Refex") is False
+
+
+def test_refex_and_extrovis_it_agent_solution_from_column_and_native():
+    refex = _parse_report_ticket(
+        {
+            "_id": "PkRefexSol",
+            "Column_ysyWJXmwHY": "Restarted the printer spooler",
+            "It_Agent_Solution": "Restarted the printer spooler",
+            "Column_0jda6rzCc3": "REQ-R1",
+            "_status": "Completed",
+            "Statu_1": "Closed",
+        },
+        [{"Id": "Column_ysyWJXmwHY", "Name": "It_Agent_Solution"}],
+        0,
+        "Refex",
+    )
+    assert refex["solution"] == "Restarted the printer spooler"
+    assert refex["itAgentSolution"] == "Restarted the printer spooler"
+
+    extrovis = _parse_report_ticket(
+        {
+            "_id": "PkExtSol",
+            "Column_oCwk2a69nP": "Reimaged the laptop",
+            "It_Agent_Solution": "Reimaged the laptop",
+            "Column_y4srngcUo1": "REQ-E1",
+            "_status": "Completed",
+            "Statu_1": "Closed",
+        },
+        [{"Id": "Column_oCwk2a69nP", "Name": "It_Agent_Solution"}],
+        0,
+        "Extrovis",
+    )
+    assert extrovis["solution"] == "Reimaged the laptop"
+    assert extrovis["itAgentSolution"] == "Reimaged the laptop"
+
+
+def test_it_agent_solution_ignores_nested_table_and_reads_instance_payload():
+    assert _it_agent_solution_text(
+        {"Table::IT__Agent_Solution": [{"Resolution": "chat row"}]},
+        REPORT_FIELD_IDS["extrovis"],
+    ) == ""
+    thread = _thread_from_instance_payload(
+        {
+            "_id": "PkClosed",
+            "Request_ID": "REQ-9",
+            "It_Agent_Solution": "DNS cache flushed",
+            "Table::IT__Agent_Solution": [
+                {"_id": "IT__Agent_Solution_aaaaaaaaaa", "Name_1": "Aasik", "Resolution": "user comment", "Comments_2": "User"},
+            ],
+        },
+        REPORT_FIELD_IDS["extrovis"],
+    )
+    assert thread["solution"] == "DNS cache flushed"
+    assert thread["itAgentSolution"] == "DNS cache flushed"
+    nested_only = _thread_from_instance_payload(
+        {"Data": {"It_Agent_Solution": "VPN profile rebuilt", "_current_step": "IT Tech Reopen"}},
+        REPORT_FIELD_IDS["refex"],
+    )
+    assert nested_only["solution"] == "VPN profile rebuilt"
+
+
+def test_ticket_status_stays_open_unless_closed_stage_from_status():
+    assert _canonicalize_ticket_stage("On Hold") == "OnHold"
+    assert _canonicalize_ticket_stage("Pending with Vendor") == "Pending with Vendor"
+    assert _display_ticket_status("Open", "OnHold") == "Open"
+    assert _display_ticket_status("Open", "Closed") == "Closed"
+    ext_ids = REPORT_FIELD_IDS["extrovis"]
+    columns = [
+        {"Id": ext_ids["status"][0], "Name": "Status"},
+        {"Id": ext_ids["item_status"][0], "Name": "Item_Status"},
+        {"Id": ext_ids["system_status"][0], "Name": "System_Status"},
+        {"Id": ext_ids["current_step"][0], "Name": "Current_Step"},
+    ]
+    hold = _parse_report_ticket(
+        {
+            ext_ids["instance_id"][0]: "PkHold1",
+            ext_ids["status"][0]: "OnHold",
+            ext_ids["item_status"][0]: "Open",
+            ext_ids["system_status"][0]: "InProgress",
+            ext_ids["current_step"][0]: "IT Agent Solution",
+        },
+        columns,
+        0,
+        "Extrovis",
+    )
+    assert hold["status"] == "Open"
+    assert hold["stage"] == "OnHold"
+    closed = _parse_report_ticket(
+        {
+            ext_ids["instance_id"][0]: "PkClosed1",
+            ext_ids["status"][0]: "Closed",
+            ext_ids["item_status"][0]: "Closed",
+            ext_ids["system_status"][0]: "Completed",
+            ext_ids["current_step"][0]: "Completed",
+        },
+        columns,
+        0,
+        "Extrovis",
+    )
+    assert closed["status"] == "Closed"
+    assert closed["stage"] == "Closed"
+
+
+def test_reopen_notes_from_progress_are_user_comments():
+    progress = {
+        "Steps": [
+            {
+                "_id": "ActSendback1",
+                "Name": "IT Tech Reopen",
+                "_status": "SentBack",
+                "Note": "Please fix the printer again",
+                "ActedBy": {"Name": "Aasik"},
+                "ActedAt": "2026-09-24T10:00:00.000Z",
+            }
+        ]
+    }
+    notes = _collect_reopen_notes_from_progress(progress, "Aasik")
+    assert len(notes) == 1
+    assert notes[0]["role"] == "reopen"
+    assert notes[0]["commentsType"] == "User"
+    assert notes[0]["comment"] == "Please fix the printer again"
+    visible = _employee_visible_comments(
+        [
+            {"comment": "internal note", "commentsType": "Internal"},
+            notes[0],
+        ],
+        "Extrovis",
+    )
+    texts = [row["comment"] for row in visible]
+    assert "Please fix the printer again" in texts
+    assert "internal note" not in texts
+
+
+def test_live_extrovis_reopen_window_note_from_progress():
+    progress = {
+        "Steps": [
+            {
+                "Id": "Activity_7rCa3_zSic",
+                "_activity_instance_id": "PkEHItYwLZHX",
+                "Name": "ReOpen Window",
+                "_status": "SentBack",
+                "_note": "Still i am facing the issue\n\nRequester: Syed Ajju\nEmail: ajjusyed@extrovis.com",
+                "ActedAt": "2026-09-29T06:57:30Z",
+                "MoveToType": "SendBack",
+                "ActedBy": [{"Name": "ITSM BOT", "Kind": "ServiceAccount"}],
+            }
+        ]
+    }
+    notes = _collect_reopen_notes_from_progress(progress, "Syed Ajju")
+    assert len(notes) == 1
+    assert notes[0]["comment"].startswith("Still i am facing the issue")
+    assert notes[0]["dateTime"] == "2026-09-29T06:57:30Z"
+    assert notes[0]["userName"] == "Syed Ajju"
+    assert notes[0]["role"] == "reopen"
+    assert notes[0]["commentsType"] == "User"
+    assert _needs_reopen_progress_fetch(reopened=True) is True
+    assert _needs_reopen_progress_fetch(status="Closed") is True
+    assert _needs_reopen_progress_fetch(current_step="IT Agent Solution") is False

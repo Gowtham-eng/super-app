@@ -58,6 +58,7 @@ export const normalizeNonRefexLocationKey = (value = '') => {
   return token;
 };
 
+
 export const matchLocationOption = (userLocation = '', options = []) => {
   const key = normalizeNonRefexLocationKey(userLocation);
   if (!key) return '';

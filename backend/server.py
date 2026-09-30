@@ -18,7 +18,13 @@ import ipaddress
 
 from services.email_service import send_email, build_access_request_email, build_request_status_email, build_sync_report_email
 from services.adrenalin_sync import sync_employees, resolve_hr_sync_org_id, hr_test_org_ids, primary_hr_org_id
-from services.launcher_access import is_reports_app, user_can_see_reports
+from services.launcher_access import (
+    is_procure2pay_app,
+    is_reports_app,
+    is_rmc_p2p_app,
+    user_can_see_launcher_app,
+    user_can_see_reports,
+)
 from services.kissflow_scim_client import (
     sync_to_kissflow,
     push_single_user_to_kissflow,
@@ -649,12 +655,14 @@ async def check_user_app_access(user: dict, app: dict) -> bool:
     """Launcher / SSO access model.
 
     - Reports (and NE embed dashboards) → chief-position users only
+    - RMC P2P → allowlisted emails only
+    - Procure2Pay → hidden from that same email list
     - restricted=True  → org_admin / owner / admin only
     - restricted=False → all users
     approved_user_ids / group assignments are NOT consulted for launch or SSO.
     """
-    if is_reports_app(app):
-        return user_can_see_reports(user)
+    if is_reports_app(app) or is_rmc_p2p_app(app) or is_procure2pay_app(app):
+        return user_can_see_launcher_app(user, app)
     is_admin_role = user.get('role') in ('org_admin', 'owner', 'admin')
     if app.get('restricted'):
         return is_admin_role
@@ -1980,7 +1988,7 @@ async def saml_complete_sso(
     # check if they have access to any sibling app sharing the same ACS URL.
     # Kissflow (SP) only knows about one SAML connection, but we may have 
     # multiple sub-apps (Expense Mgmt, Travel Mgmt, etc.) pointing to the same SP.
-    if not has_access:
+    if not has_access and not is_rmc_p2p_app(app) and not is_procure2pay_app(app):
         acs_url = app.get('acs_url', '')
         if acs_url:
             sibling_apps = await db.saml_apps.find(
@@ -3368,8 +3376,8 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
     can_see_reports = user_can_see_reports(user)
 
     def resolve_access(app_doc):
-        if is_reports_app(app_doc):
-            return can_see_reports
+        if is_reports_app(app_doc) or is_rmc_p2p_app(app_doc) or is_procure2pay_app(app_doc):
+            return user_can_see_launcher_app(user, app_doc)
         if app_doc.get('restricted'):
             return is_admin_role  # only admins can launch restricted apps
         return True  # restricted OFF → everyone allowed
@@ -3384,6 +3392,9 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
             return False
         if is_reports_app(app_doc) and not can_see_reports:
             return False
+        if is_rmc_p2p_app(app_doc) or is_procure2pay_app(app_doc):
+            if not user_can_see_launcher_app(user, app_doc):
+                return False
         seen_ids.add(app_id)
         return True
 
@@ -3574,6 +3585,8 @@ async def get_app_catalog(user: dict = Depends(get_current_user)):
     for app in saml_apps:
         if is_reports_app(app) and not can_see_reports:
             continue
+        if (is_rmc_p2p_app(app) or is_procure2pay_app(app)) and not user_can_see_launcher_app(user, app):
+            continue
         has_access = await check_user_app_access(user, app)
         # requires_approval is always true - explicit assignment needed
         catalog.append({
@@ -3588,6 +3601,8 @@ async def get_app_catalog(user: dict = Depends(get_current_user)):
     
     for app in oidc_apps:
         if is_reports_app(app) and not can_see_reports:
+            continue
+        if (is_rmc_p2p_app(app) or is_procure2pay_app(app)) and not user_can_see_launcher_app(user, app):
             continue
         has_access = await check_user_app_access(user, app)
         catalog.append({

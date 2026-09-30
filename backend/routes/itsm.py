@@ -28,11 +28,11 @@ try:
 
     # Phone camera photos are often 6–12MB. Default Starlette/nginx 1MB spool
     # returns 413 before Kissflow upload. Desktop file-picker images stay small.
-    MultiPartParser.spool_max_size = 25 * 1024 * 1024
+    MultiPartParser.spool_max_size = 55 * 1024 * 1024
     if hasattr(MultiPartParser, "max_file_size"):
-        MultiPartParser.max_file_size = 25 * 1024 * 1024
+        MultiPartParser.max_file_size = 55 * 1024 * 1024
     if hasattr(MultiPartParser, "max_part_size"):
-        MultiPartParser.max_part_size = 25 * 1024 * 1024
+        MultiPartParser.max_part_size = 55 * 1024 * 1024
 except Exception:
     pass
 
@@ -205,27 +205,107 @@ def _read_env_runtime_file() -> Optional[Dict[str, Any]]:
     return None
 
 
-def resolve_refexions_policy_api_key(shared: Optional[Dict[str, Any]] = None) -> str:
-    """Env first (local helper), then ITSM Setup shared key (production Mongo / runtime file)."""
-    env_key = (os.environ.get("REFEXIONS_POLICY_API_KEY") or "").strip()
-    if env_key:
-        return env_key
+def _refexions_shared_value(field: str, shared: Optional[Dict[str, Any]] = None) -> str:
+    """ITSM Setup / runtime first so production does not need a local .env copy."""
     if isinstance(shared, dict):
-        saved = str(shared.get("refexions_policy_api_key") or "").strip()
+        saved = str(shared.get(field) or "").strip()
         if saved:
             return saved
+        nested = shared.get("shared")
+        if isinstance(nested, dict):
+            saved = str(nested.get(field) or "").strip()
+            if saved:
+                return saved
     runtime = _ENV_RUNTIME if isinstance(_ENV_RUNTIME, dict) else None
     stored = runtime or _read_env_runtime_file() or {}
     shared_doc = stored.get("shared") if isinstance(stored.get("shared"), dict) else {}
-    return str(shared_doc.get("refexions_policy_api_key") or "").strip()
+    return str(shared_doc.get(field) or "").strip()
+
+
+DEFAULT_REFEXIONS_ML_URL = (
+    "https://keyword-matching-api-645830234926.asia-south1.run.app/api/v1/keyword-match"
+)
+DEFAULT_REFEXIONS_POLICY_SERVICE_URL = (
+    "https://policy-sender-645830234926.asia-south1.run.app"
+)
+
+
+def resolve_refexions_policy_api_key(shared: Optional[Dict[str, Any]] = None) -> str:
+    """Explicit shared, then Refexions Setup, leftover ITSM shared, then .env."""
+    from services.refexions_store import cached_setting
+
+    if isinstance(shared, dict):
+        for key in ("policy_api_key", "refexions_policy_api_key"):
+            saved = str(shared.get(key) or "").strip()
+            if saved:
+                return saved
+        nested = shared.get("shared")
+        if isinstance(nested, dict):
+            saved = str(nested.get("refexions_policy_api_key") or nested.get("policy_api_key") or "").strip()
+            if saved:
+                return saved
+    saved = cached_setting("policy_api_key")
+    if saved:
+        return saved
+    saved = _refexions_shared_value("refexions_policy_api_key", None)
+    if saved:
+        return saved
+    return (os.environ.get("REFEXIONS_POLICY_API_KEY") or "").strip()
+
+
+def resolve_refexions_ml_url(shared: Optional[Dict[str, Any]] = None) -> str:
+    """Keyword-match Cloud Run URL. Refexions Setup / ITSM leftover / env / default."""
+    from services.refexions_store import cached_setting
+
+    if isinstance(shared, dict):
+        saved = str(shared.get("ml_url") or shared.get("refexions_ml_url") or "").strip()
+        if saved:
+            return saved
+        nested = shared.get("shared")
+        if isinstance(nested, dict):
+            saved = str(nested.get("refexions_ml_url") or nested.get("ml_url") or "").strip()
+            if saved:
+                return saved
+    saved = cached_setting("ml_url")
+    if saved:
+        return saved
+    saved = _refexions_shared_value("refexions_ml_url", None)
+    if saved:
+        return saved
+    env_url = (os.environ.get("REFEXIONS_ML_URL") or "").strip()
+    return env_url or DEFAULT_REFEXIONS_ML_URL
+
+
+def resolve_refexions_policy_service_url(shared: Optional[Dict[str, Any]] = None) -> str:
+    from services.refexions_store import cached_setting
+
+    if isinstance(shared, dict):
+        saved = str(shared.get("policy_service_url") or shared.get("refexions_policy_service_url") or "").strip()
+        if saved:
+            return saved.rstrip("/")
+        nested = shared.get("shared")
+        if isinstance(nested, dict):
+            saved = str(nested.get("refexions_policy_service_url") or nested.get("policy_service_url") or "").strip()
+            if saved:
+                return saved.rstrip("/")
+    saved = cached_setting("policy_service_url")
+    if saved:
+        return saved.rstrip("/")
+    saved = _refexions_shared_value("refexions_policy_service_url", None)
+    if saved:
+        return saved.rstrip("/")
+    env_url = (os.environ.get("REFEXIONS_POLICY_SERVICE_URL") or "").strip()
+    return (env_url or DEFAULT_REFEXIONS_POLICY_SERVICE_URL).rstrip("/")
 
 
 def hydrate_shared_policy_api_key(shared: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Copy env / runtime policy key onto Setup shared so live send does not depend on process .env alone."""
+    """Copy Setup / env Refexions fields onto shared so live does not depend on process .env."""
     out = dict(shared or {})
     key = resolve_refexions_policy_api_key(out)
     if key:
         out["refexions_policy_api_key"] = key
+    out["refexions_ml_url"] = resolve_refexions_ml_url(out)
+    out["refexions_policy_service_url"] = resolve_refexions_policy_service_url(out)
     return out
 
 
@@ -358,6 +438,7 @@ class TicketSubmitRequest(BaseModel):
     criticality: str = Field(..., min_length=1)
     description: str = Field(..., min_length=1)
     subject: str = ""
+    attachments: List[str] = Field(default_factory=list)
 
 
 class EntityConfigUpsert(BaseModel):
@@ -368,7 +449,7 @@ class EntityConfigUpsert(BaseModel):
     application_id: str = Field(..., min_length=1)
     process_id: str = Field(..., min_length=1)
     approval_matrix_id: str = Field(..., min_length=1)
-    webhook_path: str = Field(..., min_length=1)
+    webhook_path: str = ""
     access_key_id: str = Field(..., min_length=1)
     access_key_secret: Optional[str] = None  # omit / blank = keep existing on update
     enabled: bool = True
@@ -421,12 +502,47 @@ def _kissflow_headers(
         )
     headers = {
         "Accept": "application/json" if json_body else "*/*",
+        "User-Agent": "RefexOne-ITSM/1.0",
         "X-Access-Key-Id": key_id,
         "X-Access-Key-Secret": key_secret,
     }
     if json_body:
         headers["Content-Type"] = "application/json"
     return headers
+
+
+def _looks_like_html(value: Any) -> bool:
+    text = value if isinstance(value, str) else ""
+    if not text:
+        return False
+    head = text.lstrip()[:500].lower()
+    return (
+        head.startswith("<!doctype html")
+        or head.startswith("<html")
+        or "just a moment" in head
+        or "cf-browser-verification" in head
+        or "challenge-platform" in head
+    )
+
+
+def _kissflow_challenge_message(host: str = "") -> str:
+    where = f" ({host})" if host else ""
+    return (
+        f"Kissflow is temporarily blocking the request{where}. "
+        "Wait a few seconds and try again — this is not a ticket data error."
+    )
+
+
+def _response_is_kissflow_challenge(response: Any) -> bool:
+    if response is None:
+        return False
+    text = getattr(response, "text", "") or ""
+    if _looks_like_html(text):
+        return True
+    ctype = str((getattr(response, "headers", None) or {}).get("content-type") or "").lower()
+    if "text/html" in ctype and "json" not in ctype:
+        return True
+    return False
 
 
 def _as_string(value: Any) -> str:
@@ -620,10 +736,11 @@ def _ticket_webhook_body(
     criticality: str,
     description: str,
     subject: str = "",
+    attachments: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Kissflow create webhook JSON. Non-Refex includes mandatory Subject after Location_user."""
     if _uses_extrovis_flow(entity):
-        return {
+        body = {
             "process_id": process_id,
             "Source": SOURCE_VALUE,
             "Name": name,
@@ -635,17 +752,60 @@ def _ticket_webhook_body(
             "Criticality": criticality,
             "Description": description,
         }
-    return {
-        "process_id": process_id,
-        "Source": SOURCE_VALUE,
-        "Name": name,
-        "Email": email,
-        "Entity": entity,
-        "Location_user": location,
-        "Sub_Type": sub_type,
-        "Criticality": criticality,
-        "Description": description,
-    }
+    else:
+        body = {
+            "process_id": process_id,
+            "Source": SOURCE_VALUE,
+            "Name": name,
+            "Email": email,
+            "Entity": entity,
+            "Location_user": location,
+            "Sub_Type": sub_type,
+            "Criticality": criticality,
+            "Description": description,
+        }
+    urls = [str(item).strip() for item in (attachments or []) if str(item).strip()]
+    if urls:
+        body["Attachment"] = urls
+    return body
+
+
+def _pin_development_submit_config(cfg: Dict[str, Any], entity: Optional[str]) -> Dict[str, Any]:
+    """Force create-ticket onto builtin development Integration webhooks.
+
+    ITSM Setup often stores the live webhook token. Swapping only the account
+    id to AcCMptp3yqcn keeps that live token, Kissflow returns 401/404, and
+    Refex One falls back to a locally created ticket.
+    """
+    out = dict(cfg or {})
+    builtin = _builtin_environments()
+    dev = builtin.get("development") if isinstance(builtin.get("development"), dict) else {}
+    out["environment"] = "development"
+    out["kissflow_base_url"] = (
+        (dev.get("kissflow_base_url") or KISSFLOW_BASE_URL or "").strip().rstrip("/")
+    )
+    out["account_id"] = (dev.get("account_id") or KISSFLOW_ACCOUNT_ID or "").strip()
+    mapped = "extrovis" if _uses_extrovis_flow(entity) else "refex"
+    profile = ENTITY_REPORTS.get(mapped) or {}
+    out["process_id"] = profile.get("process_id") or _process_id_for_entity(entity)
+    if profile.get("report_id"):
+        out["report_id"] = profile["report_id"]
+    out["webhook_path"] = _webhook_path_for_entity(entity)
+    if dev.get("access_key_id"):
+        out["access_key_id"] = dev["access_key_id"]
+    if dev.get("access_key_secret"):
+        out["access_key_secret"] = dev["access_key_secret"]
+    if dev.get("bot_access_key_id"):
+        out["bot_access_key_id"] = dev["bot_access_key_id"]
+    if dev.get("bot_access_key_secret"):
+        out["bot_access_key_secret"] = dev["bot_access_key_secret"]
+    return out
+
+
+def _development_submit_webhook_url(entity: Optional[str]) -> str:
+    """Full development Integration URL used by POST /itsm/tickets."""
+    pinned = _pin_development_submit_config({}, entity)
+    return f"{pinned['kissflow_base_url']}{pinned['webhook_path']}"
 
 
 def _non_refex_force_development() -> bool:
@@ -755,7 +915,7 @@ def _report_entity_key(entity: Optional[str]) -> str:
 
 
 def _builtin_environments() -> Dict[str, Any]:
-    """Dev vs live differ only by URL, account id, and access keys. Process/report/webhooks are shared."""
+    """Dev vs live differ by URL, account id, access keys, and Integration webhooks."""
     ext_webhook = ENTITY_WEBHOOK_PATHS.get("Extrovis") or ""
     dev_id = KISSFLOW_ACCESS_KEY_ID
     dev_secret = KISSFLOW_ACCESS_KEY_SECRET
@@ -767,6 +927,10 @@ def _builtin_environments() -> Dict[str, Any]:
             "application_id": KISSFLOW_APPLICATION_ID,
             "approval_matrix_id": KISSFLOW_APPROVAL_MATRIX_ID,
             "refexions_policy_api_key": os.environ.get("REFEXIONS_POLICY_API_KEY", ""),
+            "refexions_ml_url": os.environ.get("REFEXIONS_ML_URL", "") or DEFAULT_REFEXIONS_ML_URL,
+            "refexions_policy_service_url": (
+                os.environ.get("REFEXIONS_POLICY_SERVICE_URL", "") or DEFAULT_REFEXIONS_POLICY_SERVICE_URL
+            ),
             "refex": {
                 "process_id": KISSFLOW_PROCESS_ID,
                 "report_id": "Service_Items_Refex_A00",
@@ -785,6 +949,8 @@ def _builtin_environments() -> Dict[str, Any]:
             "access_key_secret": dev_secret,
             "bot_access_key_id": os.environ.get("ITSM_BOT_ACCESS_KEY_ID", "") or dev_id,
             "bot_access_key_secret": os.environ.get("ITSM_BOT_ACCESS_KEY_SECRET", "") or dev_secret,
+            "webhook_path_refex": KISSFLOW_WEBHOOK_PATH,
+            "webhook_path_extrovis": ext_webhook,
         },
         "live": {
             "kissflow_base_url": os.environ.get(
@@ -795,6 +961,8 @@ def _builtin_environments() -> Dict[str, Any]:
             "access_key_secret": live_secret,
             "bot_access_key_id": os.environ.get("ITSM_LIVE_BOT_ACCESS_KEY_ID", "") or live_id,
             "bot_access_key_secret": os.environ.get("ITSM_LIVE_BOT_ACCESS_KEY_SECRET", "") or live_secret,
+            "webhook_path_refex": os.environ.get("ITSM_LIVE_WEBHOOK_PATH", "").strip(),
+            "webhook_path_extrovis": os.environ.get("ITSM_LIVE_EXTROVIS_WEBHOOK_PATH", "").strip(),
         },
     }
 
@@ -810,6 +978,10 @@ def _shared_from_legacy_block(block: Dict[str, Any]) -> Dict[str, Any]:
         out["approval_matrix_id"] = block["approval_matrix_id"]
     if block.get("refexions_policy_api_key"):
         out["refexions_policy_api_key"] = str(block.get("refexions_policy_api_key") or "").strip()
+    if block.get("refexions_ml_url"):
+        out["refexions_ml_url"] = str(block.get("refexions_ml_url") or "").strip()
+    if block.get("refexions_policy_service_url"):
+        out["refexions_policy_service_url"] = str(block.get("refexions_policy_service_url") or "").strip()
     for slice_key in ("refex", "extrovis"):
         cur = dict(out.get(slice_key) or {})
         nxt = block.get(slice_key) if isinstance(block.get(slice_key), dict) else {}
@@ -820,13 +992,101 @@ def _shared_from_legacy_block(block: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _normalize_webhook_path(value: str) -> str:
+    """Accept a full Kissflow webhook URL or path; store path only."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("http://") or text.startswith("https://"):
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(text)
+            text = parsed.path or ""
+            if parsed.query:
+                text = f"{text}?{parsed.query}"
+        except Exception:
+            return text
+    if text and not text.startswith("/"):
+        text = f"/{text}"
+    return text
+
+
+def _webhook_path_account_id(path: str) -> str:
+    match = re.search(r"/integration/2/([^/]+)/", path or "")
+    return (match.group(1) if match else "").strip()
+
+
+def _webhook_belongs_to_account(path: str, account_id: str) -> bool:
+    acc = (account_id or "").strip()
+    token = _webhook_path_account_id(path)
+    return bool(acc and token and acc == token)
+
+
+def _default_env_webhook_path(name: str, slice_key: str) -> str:
+    """Builtin Integration token for this environment. Never reuse the other env's token."""
+    env = "live" if name == "live" else "development"
+    if env == "development":
+        if slice_key == "extrovis":
+            return (ENTITY_WEBHOOK_PATHS.get("Extrovis") or KISSFLOW_WEBHOOK_PATH or "").strip()
+        return (KISSFLOW_WEBHOOK_PATH or "").strip()
+    if slice_key == "extrovis":
+        return os.environ.get("ITSM_LIVE_EXTROVIS_WEBHOOK_PATH", "").strip()
+    return os.environ.get("ITSM_LIVE_WEBHOOK_PATH", "").strip()
+
+
 def _webhook_path_with_account(path: str, account_id: str) -> str:
-    """Keep the same webhook token; swap only the account id segment for live vs development."""
-    text = (path or "").strip()
+    """Rewrite only the account segment. Token stays as stored for that environment."""
+    text = _normalize_webhook_path(path)
     acc = (account_id or "").strip()
     if not text or not acc:
         return text
     return re.sub(r"/integration/2/[^/]+/", f"/integration/2/{acc}/", text)
+
+
+def _hydrate_env_webhooks(
+    name: str,
+    conn: Dict[str, Any],
+    shared: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Fill missing per-env webhooks. Shared webhook is used only when its account matches."""
+    out = dict(conn or {})
+    account = (out.get("account_id") or "").strip()
+    shared_doc = shared if isinstance(shared, dict) else {}
+    for slice_key, field in (("refex", "webhook_path_refex"), ("extrovis", "webhook_path_extrovis")):
+        path = _normalize_webhook_path(out.get(field) or "")
+        if not path:
+            shared_path = _normalize_webhook_path(
+                ((shared_doc.get(slice_key) or {}) if isinstance(shared_doc.get(slice_key), dict) else {}).get(
+                    "webhook_path"
+                )
+                or ""
+            )
+            if _webhook_belongs_to_account(shared_path, account):
+                path = shared_path
+        if not path:
+            path = _normalize_webhook_path(_default_env_webhook_path(name, slice_key))
+        if path and account:
+            path = _webhook_path_with_account(path, account)
+        out[field] = path
+    return out
+
+
+def _resolve_webhook_path(
+    name: str,
+    entity: Optional[str],
+    conn: Dict[str, Any],
+    shared: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Webhook for the active environment. Development and Live use different tokens."""
+    slice_key = "extrovis" if _uses_extrovis_flow(entity) else "refex"
+    field = "webhook_path_extrovis" if slice_key == "extrovis" else "webhook_path_refex"
+    hydrated = _hydrate_env_webhooks(name, conn, shared)
+    path = (hydrated.get(field) or "").strip()
+    account = (hydrated.get("account_id") or conn.get("account_id") or "").strip()
+    if path and account:
+        return _webhook_path_with_account(path, account)
+    return path
 
 
 def _entity_api_slice(shared: Dict[str, Any], entity: Optional[str]) -> Dict[str, str]:
@@ -853,6 +1113,8 @@ def _public_connection(block: Dict[str, Any]) -> Dict[str, Any]:
         "bot_access_key_id": block.get("bot_access_key_id") or "",
         "bot_access_key_secret": bot_secret,
         "has_bot_secret": bool(bot_secret),
+        "webhook_path_refex": block.get("webhook_path_refex") or "",
+        "webhook_path_extrovis": block.get("webhook_path_extrovis") or "",
     }
 
 
@@ -867,6 +1129,10 @@ def _public_shared(shared: Dict[str, Any]) -> Dict[str, Any]:
         "approval_matrix_id": merged.get("approval_matrix_id") or "",
         "refexions_policy_api_key": policy_key,
         "has_refexions_policy_api_key": bool(policy_key),
+        "refexions_ml_url": (merged.get("refexions_ml_url") or DEFAULT_REFEXIONS_ML_URL),
+        "refexions_policy_service_url": (
+            merged.get("refexions_policy_service_url") or DEFAULT_REFEXIONS_POLICY_SERVICE_URL
+        ),
         "refex": {
             "process_id": refex.get("process_id") or "",
             "report_id": refex.get("report_id") or "",
@@ -888,6 +1154,8 @@ def _merge_connection(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[st
         "access_key_secret": base.get("access_key_secret") or "",
         "bot_access_key_id": base.get("bot_access_key_id") or "",
         "bot_access_key_secret": base.get("bot_access_key_secret") or "",
+        "webhook_path_refex": _normalize_webhook_path(base.get("webhook_path_refex") or ""),
+        "webhook_path_extrovis": _normalize_webhook_path(base.get("webhook_path_extrovis") or ""),
     }
     for key in ("kissflow_base_url", "account_id", "access_key_id", "bot_access_key_id"):
         value = str(incoming.get(key) or "").strip()
@@ -903,6 +1171,12 @@ def _merge_connection(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[st
         out["bot_access_key_id"] = out.get("access_key_id") or ""
     if not out.get("bot_access_key_secret"):
         out["bot_access_key_secret"] = out.get("access_key_secret") or ""
+    for key in ("webhook_path_refex", "webhook_path_extrovis"):
+        value = _normalize_webhook_path(incoming.get(key) or "")
+        if value:
+            out[key] = value
+        elif out.get(key):
+            out[key] = _normalize_webhook_path(out.get(key) or "")
     return out
 
 
@@ -915,6 +1189,12 @@ def _merge_shared(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, A
     policy_key = str(incoming.get("refexions_policy_api_key") or "").strip()
     if policy_key:
         out["refexions_policy_api_key"] = policy_key
+    ml_url = str(incoming.get("refexions_ml_url") or "").strip()
+    if ml_url:
+        out["refexions_ml_url"] = ml_url
+    policy_url = str(incoming.get("refexions_policy_service_url") or "").strip()
+    if policy_url:
+        out["refexions_policy_service_url"] = policy_url
     for slice_key in ("refex", "extrovis"):
         cur = dict(out.get(slice_key) or {})
         nxt = incoming.get(slice_key) if isinstance(incoming.get(slice_key), dict) else {}
@@ -1109,6 +1389,27 @@ def _is_tech_completed_step(item: Dict[str, Any]) -> bool:
     return True
 
 
+def _parse_kissflow_write_response(response: Any, host: str = "") -> tuple:
+    if _response_is_kissflow_challenge(response):
+        message = _kissflow_challenge_message(host)
+        return 502, {"challenge": True, "message": message}, message
+    raw: Any = None
+    try:
+        raw = response.json()
+    except Exception:
+        text = getattr(response, "text", "") or ""
+        if _looks_like_html(text):
+            message = _kissflow_challenge_message(host)
+            return 502, {"challenge": True, "message": message}, message
+        raw = text
+    success_text = ""
+    if isinstance(raw, dict):
+        success_text = _as_string(
+            raw.get("Success") or raw.get("success") or raw.get("message") or raw.get("en_message")
+        ).strip()
+    return int(getattr(response, "status_code", 502) or 502), raw, success_text
+
+
 async def _kf_get_json(
     cfg: Dict[str, Any],
     path: str,
@@ -1117,30 +1418,50 @@ async def _kf_get_json(
     for_write: bool = False,
 ) -> Any:
     url = path if path.startswith("http") else f"{cfg['kissflow_base_url']}{path}"
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.get(
-            url,
-            headers=_kissflow_headers(cfg, for_write=for_write),
-            params=params or {},
-        )
-    if response.status_code >= 400:
-        logger.warning("Kissflow GET %s -> %s %s", path, response.status_code, (response.text or "")[:200])
-        return None
-    try:
-        return response.json()
-    except Exception:
-        return None
+    host = cfg.get("kissflow_base_url") or ""
+    for attempt in range(2):
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(
+                url,
+                headers=_kissflow_headers(cfg, for_write=for_write),
+                params=params or {},
+            )
+        if _response_is_kissflow_challenge(response) or _looks_like_html(getattr(response, "text", "") or ""):
+            logger.warning(
+                "Kissflow GET challenge %s -> %s",
+                path,
+                getattr(response, "status_code", "?"),
+            )
+            if attempt == 0:
+                await asyncio.sleep(1.2)
+                continue
+            raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+        if response.status_code >= 400:
+            logger.warning("Kissflow GET %s -> %s %s", path, response.status_code, (response.text or "")[:200])
+            return None
+        try:
+            return response.json()
+        except Exception:
+            if _looks_like_html(response.text or ""):
+                raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+            return None
+    raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
 
 
 def _kissflow_response_text(raw: Any, fallback: str = "") -> str:
+    if _looks_like_html(raw):
+        return _kissflow_challenge_message()
     if isinstance(raw, dict):
+        if raw.get("challenge"):
+            return _as_string(raw.get("message")).strip() or _kissflow_challenge_message()
         for key in ("message", "error", "Error", "en_message", "Success", "success"):
             text = _as_string(raw.get(key)).strip()
             if text:
-                return text
+                return text if not _looks_like_html(text) else _kissflow_challenge_message()
         return fallback
     if raw:
-        return str(raw)[:240]
+        text = str(raw)
+        return _kissflow_challenge_message() if _looks_like_html(text) else text[:240]
     return fallback
 
 
@@ -1151,24 +1472,21 @@ async def _kf_post_json(
     params: Optional[Dict[str, Any]] = None,
 ) -> tuple:
     url = path if path.startswith("http") else f"{cfg['kissflow_base_url']}{path}"
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            url,
-            headers=_kissflow_headers(cfg, for_write=True),
-            params=params or {},
-            json=payload,
-        )
-    raw: Any = None
-    try:
-        raw = response.json()
-    except Exception:
-        raw = response.text
-    success_text = ""
-    if isinstance(raw, dict):
-        success_text = _as_string(
-            raw.get("Success") or raw.get("success") or raw.get("message") or raw.get("en_message")
-        ).strip()
-    return response.status_code, raw, success_text
+    host = cfg.get("kissflow_base_url") or ""
+    response = None
+    for attempt in range(2):
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                url,
+                headers=_kissflow_headers(cfg, for_write=True),
+                params=params or {},
+                json=payload,
+            )
+        if _response_is_kissflow_challenge(response) and attempt == 0:
+            await asyncio.sleep(1.2)
+            continue
+        break
+    return _parse_kissflow_write_response(response, host)
 
 
 async def _kf_put_json(
@@ -1176,26 +1494,25 @@ async def _kf_put_json(
     path: str,
     payload: Dict[str, Any],
     params: Optional[Dict[str, Any]] = None,
+    *,
+    for_write: bool = True,
 ) -> tuple:
     url = path if path.startswith("http") else f"{cfg['kissflow_base_url']}{path}"
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.put(
-            url,
-            headers=_kissflow_headers(cfg, for_write=True),
-            params=params or {},
-            json=payload,
-        )
-    raw: Any = None
-    try:
-        raw = response.json()
-    except Exception:
-        raw = response.text
-    success_text = ""
-    if isinstance(raw, dict):
-        success_text = _as_string(
-            raw.get("Success") or raw.get("success") or raw.get("message") or raw.get("en_message")
-        ).strip()
-    return response.status_code, raw, success_text
+    host = cfg.get("kissflow_base_url") or ""
+    response = None
+    for attempt in range(2):
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.put(
+                url,
+                headers=_kissflow_headers(cfg, for_write=for_write),
+                params=params or {},
+                json=payload,
+            )
+        if _response_is_kissflow_challenge(response) and attempt == 0:
+            await asyncio.sleep(1.2)
+            continue
+        break
+    return _parse_kissflow_write_response(response, host)
 
 
 async def _kf_put_bytes(url: str, content: bytes, content_type: str) -> None:
@@ -1335,8 +1652,15 @@ async def _upload_comment_attachments(
 def _comment_write_accepted(status_code: int, raw: Any, success_text: str) -> bool:
     if not (200 <= status_code < 300):
         return False
-    if success_text and re.search(
-        r"fail|error|permission|queue|moved out|not found|anymore", success_text, re.I
+    if _looks_like_html(raw) or (isinstance(raw, dict) and raw.get("challenge")):
+        return False
+    if success_text and (
+        _looks_like_html(success_text)
+        or re.search(
+            r"fail|error|permission|queue|moved out|not found|anymore|just a moment",
+            success_text,
+            re.I,
+        )
     ):
         return False
     saved = raw.get("Table::IT__Agent_Solution") if isinstance(raw, dict) else None
@@ -1739,12 +2063,22 @@ async def _fetch_kissflow_report_count(
             except Exception as exc:
                 last_detail = str(exc)
                 continue
+            if _response_is_kissflow_challenge(response) or _looks_like_html(getattr(response, "text", "") or ""):
+                raise HTTPException(
+                    status_code=502,
+                    detail=_kissflow_challenge_message(cfg.get("kissflow_base_url") or ""),
+                )
             if response.status_code >= 400:
                 last_detail = f"Kissflow count HTTP {response.status_code}"
                 continue
             try:
                 payload = response.json()
             except Exception:
+                if _looks_like_html(getattr(response, "text", "") or ""):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=_kissflow_challenge_message(cfg.get("kissflow_base_url") or ""),
+                    )
                 payload = {}
             raw = None
             if isinstance(payload, dict):
@@ -1930,17 +2264,63 @@ def _comment_step_for_entity(entity: Optional[str]) -> str:
     """Open-ticket comment is only allowed on the active work step(s)."""
     if _report_entity_key(entity) == "refex":
         return "IT Tech / IT Tech Support"
-    return "IT Agent PickUp / IT Agent Solution"
+    return "IT Agent Solution"
+
+
+def _is_development_env(value: Optional[str] = None, cfg: Optional[Dict[str, Any]] = None) -> bool:
+    token = _client_env_name(value) or _client_env_name((cfg or {}).get("environment"))
+    return token == "development"
+
+
+def _uses_admin_comment_put(
+    entity: Optional[str],
+    cfg: Optional[Dict[str, Any]] = None,
+    *,
+    reopened: bool = False,
+) -> bool:
+    """Extrovis admin PUT uses ITSM Setup host/account/keys.
+
+    Reopened tickets always use PUT. Development also uses PUT for normal comments.
+    Live non-reopened comments stay on the activity POST + BOT key.
+    """
+    if not _uses_extrovis_flow(entity):
+        return False
+    if reopened:
+        return True
+    return _is_development_env(cfg=cfg)
+
+
+def _uses_dev_admin_comment_put(entity: Optional[str], cfg: Optional[Dict[str, Any]] = None) -> bool:
+    return _uses_admin_comment_put(entity, cfg, reopened=False)
+
+
+def _admin_process_item_path(cfg: Dict[str, Any], instance_id: str) -> str:
+    account = (cfg.get("account_id") or "").strip()
+    process_id = (cfg.get("process_id") or "").strip()
+    ticket_id = (instance_id or "").strip()
+    return f"/process/2/{account}/admin/{process_id}/{ticket_id}"
+
+
+def _admin_process_item_url(cfg: Dict[str, Any], instance_id: str) -> str:
+    """Full admin PUT URL for the active ITSM Setup environment."""
+    base = (cfg.get("kissflow_base_url") or "").rstrip("/")
+    return f"{base}{_admin_process_item_path(cfg, instance_id)}"
+
+
+def _is_pickup_step(step: str) -> bool:
+    token = re.sub(r"[\s_-]+", "", _as_string(step).strip().lower())
+    return "pickup" in token or token in {"pick", "itagentpickup", "ittechpickup"}
 
 
 def _can_comment_on_step(current_step: str, entity: Optional[str]) -> bool:
     # Refex Help Desk does not expose comments — Extrovis-family only.
     if _report_entity_key(entity) == "refex":
         return False
-    step = re.sub(r"[\s_-]+", " ", _as_string(current_step).strip().lower()).strip()
-    if not step:
+    if not _as_string(current_step).strip():
         return False
-    # Extrovis: PickUp and Solution (same live-work gate as aasik_ITSM).
+    # Non-Refex: IT Agent Solution / Dependency only — never PickUp.
+    if _is_pickup_step(current_step):
+        return False
     return _is_live_work_step(current_step)
 
 
@@ -2072,6 +2452,87 @@ def _all_agent_solution_table_rows(
     return groups
 
 
+def _solution_row_for_put(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep only nested-table fields Kissflow accepts on admin PUT."""
+    if not isinstance(row, dict):
+        return {}
+    keep = {
+        "_id",
+        "Name_1",
+        "Name",
+        "Resolution",
+        "Stages_1",
+        "Stages",
+        "Comments_2",
+        "Attachments",
+        "ITAgentDate_Time",
+    }
+    out: Dict[str, Any] = {}
+    for key, value in row.items():
+        token = str(key)
+        if token in keep or token.startswith("Column_"):
+            if value not in (None, ""):
+                out[token] = value
+    rid = _as_string(row.get("_id") or row.get("Id") or row.get("id")).strip()
+    if rid:
+        out["_id"] = rid
+    return out
+
+
+def _merge_solution_rows_for_put(
+    existing: List[Dict[str, Any]],
+    new_row: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Admin PUT replaces the nested table — always send prior rows + the new one."""
+    rows = [_solution_row_for_put(row) for row in (existing or []) if isinstance(row, dict)]
+    rows = [row for row in rows if row]
+    new_id = _as_string((new_row or {}).get("_id")).strip()
+    if new_id and any(_as_string(row.get("_id")).strip() == new_id for row in rows):
+        return rows
+    if new_row:
+        rows.append(dict(new_row))
+    return rows
+
+
+async def _fetch_existing_solution_rows_for_put(
+    cfg: Dict[str, Any],
+    process_id: str,
+    instance_id: str,
+    activity_id: str = "",
+    entity: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], bool]:
+    params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
+    account = (cfg.get("account_id") or "").strip()
+    paths = [
+        f"/process/2/{account}/admin/{process_id}/{instance_id}",
+    ]
+    if activity_id:
+        paths.insert(0, f"/process/2/{account}/{process_id}/{instance_id}/{activity_id}")
+    field_ids = REPORT_FIELD_IDS.get(_report_entity_key(entity), REPORT_FIELD_IDS["extrovis"])
+    best: List[Dict[str, Any]] = []
+    saw_instance = False
+    for path in paths:
+        payload = await _kf_get_json(cfg, path, params)
+        if payload is None:
+            payload = await _kf_get_json(cfg, path, params, for_write=True)
+        if not payload:
+            continue
+        saw_instance = True
+        item = _unwrap_process_item(payload)
+        if not isinstance(item, dict):
+            item = payload if isinstance(payload, dict) else {}
+        groups = _all_agent_solution_table_rows(item, field_ids)
+        if isinstance(payload, dict) and payload is not item:
+            groups.extend(_all_agent_solution_table_rows(payload, field_ids))
+        for group in groups:
+            if len(group) > len(best):
+                best = group
+    return (
+        [_solution_row_for_put(row) for row in best if isinstance(row, dict) and _solution_row_for_put(row)],
+        saw_instance,
+    )
+
+
 def _pick_row_field(row: Dict[str, Any], *candidates: str) -> Any:
     for key in candidates:
         if not key:
@@ -2152,6 +2613,7 @@ def _unwrap_process_item(payload: Any) -> Optional[Dict[str, Any]]:
                 "Description",
                 "Table::IT__Agent_Solution",
                 "IT__Agent_Solution",
+                "It_Agent_Solution",
             }
             or any(key.startswith("Table::") for key in keys)
             or "table::it__agent_solution" in lowered
@@ -2201,7 +2663,9 @@ def _normalize_comment_channel(value: Any) -> str:
         return ""
     if token in {"user", "usercomments", "employee"}:
         return "User"
-    if token in {"external", "internal"}:
+    if token == "internal":
+        return "Internal"
+    if token == "external":
         return "External"
     return ""
 
@@ -2312,13 +2776,89 @@ def _employee_visible_comments(
         return rows
     visible: List[Dict[str, Any]] = []
     for entry in rows:
+        role = _as_string(entry.get("role")).strip().lower()
+        if role == "reopen":
+            visible.append(entry)
+            continue
         channel = _normalize_comment_channel(
             entry.get("commentsType") or entry.get("Comments_2") or entry.get("commentChannel")
         )
-        if channel != "User":
+        if channel == "Internal":
             continue
         visible.append(entry)
     return visible
+
+
+def _progress_step_is_reopen_sendback(step: Dict[str, Any]) -> bool:
+    token = _status_token(str(step.get("_status") or step.get("Status") or step.get("status") or ""))
+    move = _status_token(str(step.get("MoveToType") or step.get("moveToType") or ""))
+    name = _as_string(step.get("Name") or step.get("ActivityName") or step.get("name"))
+    return (
+        token == "sentback"
+        or (move == "sendback" and token != "completed")
+        or (_is_reopen_hold_step(name) and token == "sentback")
+    )
+
+
+def _needs_reopen_progress_fetch(
+    *,
+    reopened: bool = False,
+    status: str = "",
+    current_step: str = "",
+    last_completed_step: str = "",
+) -> bool:
+    """Progress GET is only for reopen notes — not every Help Desk expand."""
+    if reopened:
+        return True
+    if _is_reopen_hold_step(current_step) or _is_reopen_hold_step(last_completed_step):
+        return True
+    blob = f"{current_step} {last_completed_step}".lower()
+    if "reopen" in blob and "reopened" not in blob.replace("can be reopened", ""):
+        return True
+    status_token = _status_token(status)
+    # Closed tickets that already went through ReOpen Window still have the sendback note.
+    if status_token in ("closed", "close", "completed", "complete"):
+        return True
+    return False
+
+
+def _collect_reopen_notes_from_progress(
+    progress: Any,
+    requester_name: str = "",
+) -> List[Dict[str, Any]]:
+    """Sendback `_note` on ReOpen Window / IT Tech Reopen — same as aasik collectReopenNotesFromProgress."""
+    entries: List[Dict[str, Any]] = []
+    for index, step in enumerate(_iter_progress_steps(progress)):
+        if not isinstance(step, dict):
+            continue
+        if not _progress_step_is_reopen_sendback(step):
+            continue
+        note = _as_string(
+            step.get("_note") or step.get("Note") or step.get("note") or step.get("_Note")
+        ).strip()
+        if not note:
+            continue
+        acted = _person_label(step.get("ActedBy") or step.get("actedBy"))
+        if not acted or _is_system_actor(acted):
+            acted = requester_name or "Employee"
+        date_time = step.get("ActedAt") or step.get("actedAt")
+        record_id = _as_string(
+            step.get("_id")
+            or step.get("_activity_instance_id")
+            or f"reopen-note-{index}"
+        ).strip()
+        entries.append({
+            "id": record_id or f"reopen-note-{index}",
+            "recordId": record_id or f"reopen-note-{index}",
+            "userName": acted,
+            "comment": note,
+            "resolution": note,
+            "dateTime": date_time,
+            "commentsType": "User",
+            "role": "reopen",
+            "attachments": [],
+        })
+    return entries
 
 
 def _parse_agent_solution_rows(
@@ -2426,11 +2966,16 @@ def _thread_from_instance_payload(
             ),
         )
     assigned = _format_person(item.get("_current_assigned_to"))
+    solution = _it_agent_solution_text(item, field_ids)
+    if isinstance(payload, dict) and payload is not item:
+        solution = solution or _it_agent_solution_text(payload, field_ids)
     return {
         "comments": comments,
         "activityInstanceId": activity_id or _as_string(item.get("_activity_instance_id")),
         "requestId": _as_string(item.get("Request_ID")),
         "description": _as_string(item.get("Description")),
+        "solution": solution,
+        "itAgentSolution": solution,
         "entity": _as_string(item.get("Entity")),
         "status": _as_string(item.get("Statu_1") or item.get("_status") or item.get("Stages")),
         "currentStep": _as_string(item.get("_current_step")),
@@ -2556,40 +3101,40 @@ async def _load_instance_comment_thread(
     instance_id: str,
     hinted_activity: str = "",
     viewer_email: str = "",
+    need_reopen_progress: bool = False,
 ) -> Dict[str, Any]:
-    """Same sequence as aasik IT Head Comments: progress → GET instance/activity (never bare instance)."""
+    """Load IT__Agent_Solution comments. Progress GET only when the ticket was reopened."""
     process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
     field_ids = REPORT_FIELD_IDS.get(_report_entity_key(entity), REPORT_FIELD_IDS["refex"])
     params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
-    activity_id = await _resolve_open_work_activity_id(cfg, instance_id, hinted_activity, entity=entity)
+    activity_id = _usable_activity_id(hinted_activity, instance_id)
     base = f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}"
 
     paths: List[str] = []
-    for aid in (activity_id, hinted_activity):
-        usable = _usable_activity_id(aid, instance_id)
-        if usable:
-            path = f"{base}/{usable}"
+    if activity_id:
+        paths.append(f"{base}/{activity_id}")
+
+    progress: Any = None
+    if need_reopen_progress:
+        # ITSM Setup read keys — never a hardcoded secret or .env key dump.
+        progress = await _kf_get_json(cfg, f"{base}/progress", params)
+        preferred: List[str] = []
+        others: List[str] = []
+        for step in _iter_progress_steps(progress):
+            if not isinstance(step, dict):
+                continue
+            name = _as_string(step.get("Name") or step.get("name") or step.get("StepName") or "")
+            for aid in _step_activity_ids(step, instance_id):
+                path = f"{base}/{aid}"
+                if path in paths:
+                    continue
+                if _is_comment_nested_table_step(name):
+                    preferred.append(path)
+                else:
+                    others.append(path)
+        for path in preferred + others[:4]:
             if path not in paths:
                 paths.append(path)
-
-    progress = await _kf_get_json(cfg, f"{base}/progress", params)
-    preferred: List[str] = []
-    others: List[str] = []
-    for step in _iter_progress_steps(progress):
-        if not isinstance(step, dict):
-            continue
-        name = _as_string(step.get("Name") or step.get("name") or step.get("StepName") or "")
-        for aid in _step_activity_ids(step, instance_id):
-            path = f"{base}/{aid}"
-            if path in paths:
-                continue
-            if _is_comment_nested_table_step(name):
-                preferred.append(path)
-            else:
-                others.append(path)
-    for path in preferred + others[:4]:
-        if path not in paths:
-            paths.append(path)
     # aasik: bare GET /{instanceId} is 404 and has no nested table — do not call it.
 
     best: Dict[str, Any] = {"comments": [], "activityInstanceId": activity_id or hinted_activity or ""}
@@ -2638,6 +3183,13 @@ async def _load_instance_comment_thread(
                 )
         except Exception as exc:
             logger.warning("ITSM comments report fallback failed instance=%s: %s", instance_id, exc)
+    if need_reopen_progress and progress is not None:
+        reopen_notes = _collect_reopen_notes_from_progress(
+            progress,
+            best.get("requesterName") or "",
+        )
+        if reopen_notes:
+            best["comments"] = _merge_comment_lists(best.get("comments") or [], reopen_notes)
     env_name = cfg.get("environment") or "development"
     best["comments"] = _attach_ledger_comments(best.get("comments"), env_name, instance_id)
     best["messageCount"] = len(best.get("comments") or [])
@@ -2754,6 +3306,73 @@ def _raw_field(data: Dict[str, Any], *candidates: str) -> Any:
     return None
 
 
+def _item_field_layers(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    layers: List[Dict[str, Any]] = []
+    if isinstance(data, dict):
+        layers.append(data)
+        for key in ("Data", "data"):
+            nested = data.get(key)
+            if isinstance(nested, dict) and nested not in layers:
+                layers.append(nested)
+    return layers
+
+
+def _looks_like_nested_table_value(value: Any) -> bool:
+    if isinstance(value, list):
+        return True
+    if not isinstance(value, dict):
+        return False
+    if any(key in value for key in ("Values", "values", "Rows", "rows")):
+        return True
+    nested = value.get("Data") if value.get("Data") is not None else value.get("data")
+    if isinstance(nested, (list, dict)):
+        return True
+    keys = [str(key) for key in value.keys()]
+    return bool(keys) and all(key.startswith("IT__Agent_Solution") or key.isdigit() for key in keys)
+
+
+def _scalar_it_agent_solution_text(value: Any) -> str:
+    """Textarea It_Agent_Solution only — never nested IT__Agent_Solution table rows."""
+    if value is None or _looks_like_nested_table_value(value):
+        return ""
+    if isinstance(value, dict):
+        keys = {str(key).lower() for key in value.keys()}
+        if keys & {"slabreached", "actedby", "actedat", "expectedat", "stepname"}:
+            return ""
+        for key in ("Description", "description", "Text", "text", "Value", "value", "Content", "content"):
+            text = _field_text(value.get(key)).strip()
+            if text and text != "—" and not _looks_like_kissflow_id(text):
+                return text
+        return ""
+    text = _field_text(value).strip()
+    if not text or text == "—" or _looks_like_kissflow_id(text):
+        return ""
+    if text.lower() in {"it agent solution", "it_agent_solution", "solution"}:
+        return ""
+    return text
+
+
+def _it_agent_solution_text(
+    data: Dict[str, Any],
+    field_ids: Optional[Dict[str, List[str]]] = None,
+) -> str:
+    """Same sources as aasik_ITSM: report column + native It_Agent_Solution (Refex + Non-Refex)."""
+    names: List[str] = []
+    for name in (field_ids or {}).get("solution") or []:
+        if name and name not in names:
+            names.append(name)
+    for name in ("It_Agent_Solution", "IT_Agent_Solution", "itAgentSolution"):
+        if name not in names:
+            names.append(name)
+    best = ""
+    for layer in _item_field_layers(data or {}):
+        raw = _raw_field(layer, *names)
+        text = _scalar_it_agent_solution_text(raw)
+        if len(text) > len(best):
+            best = text
+    return best
+
+
 def _is_closed_status(status: str) -> bool:
     token = (status or "").strip().lower()
     return "closed" in token or "completed" in token or "reject" in token
@@ -2770,6 +3389,50 @@ def _looks_like_instance_id(token: str, instance_id: str) -> bool:
 
 def _status_token(value: str) -> str:
     return re.sub(r"[\s_-]+", "", (value or "").strip().lower())
+
+
+MIS_TICKET_STAGE_VALUES = (
+    "Open",
+    "InProgress",
+    "OnHold",
+    "Pending with Vendor",
+    "Pending with Employee",
+    "Closed",
+)
+
+_STAGE_TOKEN_TO_LABEL = {
+    "open": "Open",
+    "inprogress": "InProgress",
+    "onhold": "OnHold",
+    "hold": "OnHold",
+    "pendingwithvendor": "Pending with Vendor",
+    "pendingvendor": "Pending with Vendor",
+    "pendingwithemployee": "Pending with Employee",
+    "pendingemployee": "Pending with Employee",
+    "closed": "Closed",
+    "close": "Closed",
+}
+
+
+def _canonicalize_ticket_stage(value: Any) -> str:
+    raw = _as_string(value).strip()
+    if not raw:
+        return ""
+    token = _status_token(raw)
+    if token in _STAGE_TOKEN_TO_LABEL:
+        return _STAGE_TOKEN_TO_LABEL[token]
+    for label in MIS_TICKET_STAGE_VALUES:
+        if _status_token(label) == token:
+            return label
+    return raw
+
+
+def _display_ticket_status(status: str, stage: str) -> str:
+    """Ticket Status is Open unless Closed. Stage keeps the exact Status field."""
+    token = _status_token(status)
+    if token in ("closed", "close", "completed", "rejected", "failed") or stage == "Closed":
+        return "Closed"
+    return "Open"
 
 
 def _is_reopen_hold_step(step: str) -> bool:
@@ -2812,7 +3475,7 @@ def _progress_has_completed_reopen(progress: Any) -> bool:
         if not _is_reopen_hold_step(name):
             continue
         token = _status_token(str(step.get("_status") or step.get("Status") or step.get("status") or ""))
-        if token in ("completed", "complete", "submitted", "done", "closed"):
+        if token in ("completed", "complete", "submitted", "done", "closed", "sentback"):
             return True
     return False
 
@@ -2959,6 +3622,18 @@ def _pick_latest_completed_activity_id(value: Any) -> str:
         elif not fallback:
             fallback = aid
     return best or fallback
+
+
+def _has_reopen_step_history(value: Any) -> bool:
+    """ReOpen Window StepField already acted (Completed / SentBack) — ticket was reopened."""
+    for entry in _activity_entries(value):
+        token = _status_token(str(entry.get("Status") or entry.get("status") or entry.get("_status") or ""))
+        if token in ("completed", "complete", "sentback"):
+            return True
+        move = _status_token(str(entry.get("MoveToType") or entry.get("moveToType") or ""))
+        if move == "sendback":
+            return True
+    return False
 
 
 def _sendback_id_from_report(
@@ -3493,6 +4168,7 @@ def _parse_report_ticket(
     columns: List[Any],
     index: int,
     entity: Optional[str] = None,
+    environment: Optional[str] = None,
 ) -> Dict[str, Any]:
     data = _row_dict(row, columns)
     field_ids = REPORT_FIELD_IDS.get(_report_entity_key(entity), REPORT_FIELD_IDS["refex"])
@@ -3535,22 +4211,19 @@ def _parse_report_ticket(
         "Ticket_Status",
         "Ticket Status",
     )
-    solution = _field_text(
-        _raw_field(
-            data,
-            *field_ids.get("solution", []),
-            "It_Agent_Solution",
-            "IT_Agent_Solution",
-        )
+    ticket_stage_raw = _lookup_field(
+        data,
+        *field_ids["status"],
+        "Status",
     )
+    solution = _it_agent_solution_text(data, field_ids)
     employee_rating = _parse_rating(
         _raw_field(data, *field_ids.get("employee_rating", []), "Ratings_emp")
     )
     workflow_status = _lookup_field(
         data,
-        *field_ids["status"],
         *field_ids["system_status"],
-        "Status",
+        "_status",
         "Statu",
         "Current_Status",
         "Flow_Status",
@@ -3577,10 +4250,12 @@ def _parse_report_ticket(
         last_completed_step,
         reopen_hold=False,
     )
+    reopen_activity_raw = _raw_field(data, *field_ids["it_tech_reopen_activity"])
     reopen_activity_id = _pick_open_reopen_activity_id(
-        _raw_field(data, *field_ids["it_tech_reopen_activity"]),
+        reopen_activity_raw,
         instance_id,
     )
+    had_reopen_history = _has_reopen_step_history(reopen_activity_raw)
     activity_instance_id = reopen_activity_id or _usable_activity_id(
         _lookup_field(
             data,
@@ -3593,6 +4268,12 @@ def _parse_report_ticket(
     reopen_hold = bool(reopen_activity_id) or _is_reopen_hold_step(current_step)
     if reopen_hold and status != "Reopened":
         status = "Closed"
+    stage = _canonicalize_ticket_stage(ticket_stage_raw)
+    display_status = _display_ticket_status(status, stage)
+    if display_status == "Closed":
+        stage = "Closed"
+    elif not stage:
+        stage = "Open"
     sendback_id = _sendback_id_from_report(
         data, field_ids, instance_id, reopen_activity_id or activity_instance_id
     )
@@ -3656,8 +4337,10 @@ def _parse_report_ticket(
         "requestId": request_id or "—",
         "subject": subject,
         "description": description,
-        "status": status,
+        "status": display_status,
+        "stage": stage,
         "solution": solution,
+        "itAgentSolution": solution,
         "agentSolutions": agent_solutions,
         "assignedTo": assigned_to or "—",
         "closedBy": closed_by or "—",
@@ -3665,6 +4348,7 @@ def _parse_report_ticket(
         "closedOn": closed_on,
         "employeeRating": employee_rating,
         "reopened": _is_reopened_flag(reopened_raw)
+        or had_reopen_history
         or (
             status not in ("Closed", "Failed", "Rejected")
             and _is_reopen_hold_step(last_completed_step)
@@ -3676,10 +4360,30 @@ def _parse_report_ticket(
         "canReopen": _can_reopen_ticket(current_step, workflow_status, data, field_ids),
         "canComment": (
             status not in ("Closed", "Failed", "Rejected")
-            and not _comments_blocked_for_reopen(
-                reopened_raw, reopen_hold, current_step, last_completed_step
+            and not _is_pickup_step(current_step)
+            and (
+                (
+                    _uses_extrovis_flow(entity)
+                    and (
+                        _is_reopened_flag(reopened_raw)
+                        or _comments_blocked_for_reopen(
+                            reopened_raw, reopen_hold, current_step, last_completed_step
+                        )
+                    )
+                )
+                or (
+                    _can_comment_on_step(current_step, entity)
+                    and (
+                        (
+                            _uses_extrovis_flow(entity)
+                            and _is_development_env(environment)
+                        )
+                        or not _comments_blocked_for_reopen(
+                            reopened_raw, reopen_hold, current_step, last_completed_step
+                        )
+                    )
+                )
             )
-            and _can_comment_on_step(current_step, entity)
         ),
         "commentStep": _comment_step_for_entity(entity),
         "slaBreached": _open_sla_breached(data, field_ids, status),
@@ -3749,6 +4453,7 @@ def _public_local_ticket(doc: Dict[str, Any]) -> Dict[str, Any]:
         "status": status,
         "localStatus": local_status,
         "solution": doc.get("solution") or "",
+        "itAgentSolution": doc.get("solution") or "",
         "assignedTo": doc.get("assigned_to") or "—",
         "closedBy": doc.get("closed_by") or "—",
         "createdOn": doc.get("created_on") or doc.get("created_at"),
@@ -3808,11 +4513,21 @@ async def _load_kissflow_report_tickets(
                 )
             except Exception:
                 continue
+            if _response_is_kissflow_challenge(response) or _looks_like_html(getattr(response, "text", "") or ""):
+                raise HTTPException(
+                    status_code=502,
+                    detail=_kissflow_challenge_message(cfg.get("kissflow_base_url") or ""),
+                )
             if response.status_code >= 400:
                 continue
             try:
                 payload = response.json()
             except Exception:
+                if _looks_like_html(getattr(response, "text", "") or ""):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=_kissflow_challenge_message(cfg.get("kissflow_base_url") or ""),
+                    )
                 payload = {}
             columns, page_rows = _extract_report_rows(payload)
             if page_rows:
@@ -3830,11 +4545,21 @@ async def _load_kissflow_report_tickets(
                 )
             except Exception:
                 break
+            if _response_is_kissflow_challenge(response) or _looks_like_html(getattr(response, "text", "") or ""):
+                raise HTTPException(
+                    status_code=502,
+                    detail=_kissflow_challenge_message(cfg.get("kissflow_base_url") or ""),
+                )
             if response.status_code >= 400:
                 break
             try:
                 payload = response.json()
             except Exception:
+                if _looks_like_html(getattr(response, "text", "") or ""):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=_kissflow_challenge_message(cfg.get("kissflow_base_url") or ""),
+                    )
                 payload = {}
             next_columns, page_rows = _extract_report_rows(payload)
             if next_columns:
@@ -3852,7 +4577,16 @@ async def _load_kissflow_report_tickets(
         working_param or "$requestor_email",
         len(collected),
     )
-    parsed = [_parse_report_ticket(row, columns, i, entity) for i, row in enumerate(collected)]
+    parsed = [
+        _parse_report_ticket(
+            row,
+            columns,
+            i,
+            entity,
+            environment=cfg.get("environment"),
+        )
+        for i, row in enumerate(collected)
+    ]
     parsed = _scrub_cross_ticket_comment_leaks(parsed)
     want = _normalize_email(email)
     if not want:
@@ -3914,6 +4648,7 @@ class TicketCommentRequest(BaseModel):
     solution_row_id: Optional[str] = None
     commenter_name: Optional[str] = None
     environment: Optional[str] = None
+    reopened: Optional[bool] = None
 
 
 class KissflowEntityApis(BaseModel):
@@ -3929,12 +4664,16 @@ class KissflowConnectionBlock(BaseModel):
     access_key_secret: Optional[str] = None
     bot_access_key_id: str = ""
     bot_access_key_secret: Optional[str] = None
+    webhook_path_refex: str = ""
+    webhook_path_extrovis: str = ""
 
 
 class KissflowSharedApis(BaseModel):
     application_id: str = ""
     approval_matrix_id: str = ""
     refexions_policy_api_key: Optional[str] = None
+    refexions_ml_url: Optional[str] = None
+    refexions_policy_service_url: Optional[str] = None
     refex: KissflowEntityApis = Field(default_factory=KissflowEntityApis)
     extrovis: KissflowEntityApis = Field(default_factory=KissflowEntityApis)
 
@@ -4070,6 +4809,12 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                         _trip_itsm_db_circuit(exc)
                         logger.warning("ITSM env seed skipped (DB unavailable): %s", exc)
                 await _ensure_policy_key_persisted(builtin.get("shared") or {}, {})
+                builtin["development"] = _hydrate_env_webhooks(
+                    "development", builtin.get("development") or {}, builtin.get("shared") or {}
+                )
+                builtin["live"] = _hydrate_env_webhooks(
+                    "live", builtin.get("live") or {}, builtin.get("shared") or {}
+                )
                 return builtin
             shared_src = doc.get("shared") if isinstance(doc.get("shared"), dict) else {}
             if not shared_src:
@@ -4078,11 +4823,21 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 _merge_shared(builtin["shared"], shared_src),
                 shared_src,
             )
+            development = _hydrate_env_webhooks(
+                "development",
+                _merge_connection(builtin["development"], doc.get("development") or {}),
+                shared,
+            )
+            live = _hydrate_env_webhooks(
+                "live",
+                _merge_connection(builtin["live"], doc.get("live") or {}),
+                shared,
+            )
             return {
                 "active": (doc.get("active") or "development").strip().lower(),
                 "shared": shared,
-                "development": _merge_connection(builtin["development"], doc.get("development") or {}),
-                "live": _merge_connection(builtin["live"], doc.get("live") or {}),
+                "development": development,
+                "live": live,
             }
         except Exception as exc:
             _trip_itsm_db_circuit(exc)
@@ -4106,12 +4861,9 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         allow_live_lock: bool = False,
     ) -> Dict[str, Any]:
         """
-        Resolve Kissflow connection.
-        - Default: ITSM Setup active (development | live)
-        - force_env='live'|'development': override for a specific call
-          (approval-matrix always uses live; create/reports follow Setup)
-        - Local checking: ITSM_NON_REFEX_FORCE_DEVELOPMENT sends Non-Refex
-          APIs to development except approval-matrix (allow_live_lock=True).
+        Resolve Kissflow connection for the active ITSM Setup environment.
+        Host, account, keys, and webhooks all come from that environment.
+        force_env='live'|'development' overrides only when a caller asks.
         """
         envs = await _load_environments(org_id)
         setup_active = (
@@ -4187,6 +4939,42 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             bot_access_key_id = access_key_id
         if not bot_access_key_secret:
             bot_access_key_secret = access_key_secret
+        if name == "live":
+            live_base = (
+                os.environ.get("ITSM_LIVE_BASE_URL", "https://refexgroup.kissflow.com")
+                .strip()
+                .rstrip("/")
+            )
+            live_account = os.environ.get("ITSM_LIVE_ACCOUNT_ID", "AcCMptlq60zH").strip()
+            live_id = os.environ.get("ITSM_LIVE_ACCESS_KEY_ID", "").strip()
+            live_secret = os.environ.get("ITSM_LIVE_ACCESS_KEY_SECRET", "").strip()
+            live_bot_id = os.environ.get("ITSM_LIVE_BOT_ACCESS_KEY_ID", "").strip() or live_id
+            live_bot_secret = os.environ.get("ITSM_LIVE_BOT_ACCESS_KEY_SECRET", "").strip() or live_secret
+            if "development-refexgroup" in (base_url or "").lower():
+                logger.warning("ITSM live resolve used development host; forcing live base URL")
+                base_url = live_base
+            if account_id and account_id == (KISSFLOW_ACCOUNT_ID or "").strip() and live_account and account_id != live_account:
+                logger.warning("ITSM live resolve used development account; forcing live account")
+                account_id = live_account
+            if live_id and access_key_id == (KISSFLOW_ACCESS_KEY_ID or "").strip() and access_key_id != live_id:
+                logger.warning("ITSM live resolve used development access key; forcing live keys")
+                access_key_id = live_id
+                if live_secret:
+                    access_key_secret = live_secret
+            if live_bot_id and bot_access_key_id == (os.environ.get("ITSM_BOT_ACCESS_KEY_ID") or KISSFLOW_ACCESS_KEY_ID or "").strip() and bot_access_key_id != live_bot_id:
+                bot_access_key_id = live_bot_id
+                if live_bot_secret:
+                    bot_access_key_secret = live_bot_secret
+        else:
+            dev_base = (same_builtin.get("kissflow_base_url") or KISSFLOW_BASE_URL or "").strip().rstrip("/")
+            dev_account = (same_builtin.get("account_id") or KISSFLOW_ACCOUNT_ID or "").strip()
+            live_account = os.environ.get("ITSM_LIVE_ACCOUNT_ID", "AcCMptlq60zH").strip()
+            if (base_url or "").lower().startswith("https://refexgroup.kissflow.com"):
+                logger.warning("ITSM development resolve used live host; forcing development base URL")
+                base_url = dev_base
+            if account_id and live_account and account_id == live_account and dev_account:
+                logger.warning("ITSM development resolve used live account; forcing development account")
+                account_id = dev_account
         if not base_url or not account_id or not access_key_id or not access_key_secret:
             label = "Live" if name == "live" else "Development"
             raise HTTPException(
@@ -4199,7 +4987,18 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             )
         shared = envs.get("shared") or {}
         sl = _entity_api_slice(shared, entity)
-        webhook = sl["webhook_path"] or _webhook_path_for_entity(entity)
+        env_conn = {
+            **(conn if isinstance(conn, dict) else {}),
+            "kissflow_base_url": base_url,
+            "account_id": account_id,
+            "webhook_path_refex": (conn.get("webhook_path_refex") if isinstance(conn, dict) else "")
+            or same_builtin.get("webhook_path_refex")
+            or "",
+            "webhook_path_extrovis": (conn.get("webhook_path_extrovis") if isinstance(conn, dict) else "")
+            or same_builtin.get("webhook_path_extrovis")
+            or "",
+        }
+        webhook = _resolve_webhook_path(name, entity, env_conn, shared)
         resolved = {
             "environment": name,
             "setup_environment": setup_active,
@@ -4209,12 +5008,14 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             "process_id": sl["process_id"] or _process_id_for_entity(entity),
             "report_id": sl["report_id"],
             "approval_matrix_id": shared.get("approval_matrix_id") or KISSFLOW_APPROVAL_MATRIX_ID,
-            "webhook_path": _webhook_path_with_account(webhook, account_id),
+            "webhook_path": webhook,
             "access_key_id": access_key_id,
             "access_key_secret": access_key_secret,
             "bot_access_key_id": bot_access_key_id,
             "bot_access_key_secret": bot_access_key_secret,
             "refexions_policy_api_key": resolve_refexions_policy_api_key(shared),
+            "refexions_ml_url": resolve_refexions_ml_url(shared),
+            "refexions_policy_service_url": resolve_refexions_policy_service_url(shared),
             "source": "environment",
         }
         if entity and _itsm_db_usable(db):
@@ -4224,20 +5025,23 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 key = _normalize_entity_key(d.get("entity_key") or "")
                 display = _normalize_entity_key(d.get("display_name") or "")
                 if want and (want == key or want == display):
-                    if d.get("webhook_path"):
+                    entity_webhook = _normalize_webhook_path(d.get("webhook_path") or "")
+                    # Only honor a per-entity webhook that already belongs to this env.
+                    if entity_webhook and _webhook_belongs_to_account(entity_webhook, account_id):
                         resolved["webhook_path"] = _webhook_path_with_account(
-                            d.get("webhook_path"), account_id
+                            entity_webhook, account_id
                         )
                     resolved["entity_key"] = d.get("entity_key")
                     resolved["source"] = "environment+entity"
                     break
         logger.info(
-            "ITSM resolve env=%s setup=%s base=%s account=%s entity=%s",
+            "ITSM resolve env=%s setup=%s base=%s account=%s entity=%s webhook=%s",
             name,
             setup_active,
             base_url,
             account_id,
             entity or "",
+            (resolved.get("webhook_path") or "")[:80],
         )
         return resolved
 
@@ -4402,6 +5206,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             live["access_key_id"] = live.get("bot_access_key_id") or ""
         if not live.get("access_key_secret"):
             live["access_key_secret"] = live.get("bot_access_key_secret") or ""
+        development = _hydrate_env_webhooks("development", development, shared)
+        live = _hydrate_env_webhooks("live", live, shared)
         if active == "live" and (
             not live.get("kissflow_base_url")
             or not live.get("account_id")
@@ -4601,11 +5407,16 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
     @api_router.get("/itsm/non-refex-locations")
     async def get_non_refex_locations(
         entity: Optional[str] = Query(None),
+        environment: Optional[str] = Query(None),
         user: dict = Depends(get_current_user),
     ):
         """Non-Refex locations from Kissflow (development when local Non-Refex override is on)."""
         org_id = user.get("org_id") or ""
-        cfg = await _resolve_config(org_id, entity)
+        cfg = await _resolve_config(
+            org_id,
+            entity,
+            force_env=_client_env_name(environment),
+        )
         rows = await _fetch_non_refex_locations(cfg)
         filtered = locations_for_entity(rows, entity or "")
         return {
@@ -4620,18 +5431,44 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         entity: Optional[str] = Query(None),
         user: dict = Depends(get_current_user),
     ):
-        """Catalog always from Live Kissflow; create/submit still follow ITSM Setup active env."""
+        """Approval matrix follows the active ITSM Setup environment (host, account, keys)."""
         org_id = user.get("org_id") or ""
         entities = await _entity_options(org_id)
-        cfg = await _resolve_config(org_id, entity, force_env="live", allow_live_lock=True)
+        cfg = await _resolve_config(org_id, entity)
         result = await _fetch_matrix(cfg)
         result["entityOptions"] = entities
         result["resolved_entity"] = entity
-        # Badge / ops env = ITSM Setup toggle; matrix host is always Live.
-        result["activeEnvironment"] = cfg.get("setup_environment") or "development"
-        result["matrixEnvironment"] = "live"
+        active_env = cfg.get("environment") or cfg.get("setup_environment") or "development"
+        result["activeEnvironment"] = active_env
+        result["matrixEnvironment"] = active_env
         result["kissflowBaseUrl"] = cfg.get("kissflow_base_url") or ""
         return result
+
+    @api_router.post("/itsm/ticket-attachments")
+    async def upload_ticket_attachments(
+        request: Request,
+        user: dict = Depends(get_current_user),
+    ):
+        """Upload Refex create-ticket files to GCS and return public URLs."""
+        _ = user
+        content_type = (request.headers.get("content-type") or "").lower()
+        if "multipart/form-data" not in content_type:
+            raise HTTPException(status_code=400, detail="Send files as multipart form-data.")
+        form = await request.form()
+        uploads = _collect_multipart_files(form)
+        if not uploads:
+            raise HTTPException(status_code=400, detail="Choose at least one file.")
+        from services.itsm_ticket_attachments import (
+            TICKET_ATTACHMENT_HINT,
+            upload_ticket_attachment_files,
+        )
+
+        urls = await upload_ticket_attachment_files(uploads)
+        return {
+            "success": True,
+            "urls": urls,
+            "hint": TICKET_ATTACHMENT_HINT,
+        }
 
     @api_router.post("/itsm/tickets")
     async def submit_ticket(
@@ -4657,6 +5494,9 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
             raise HTTPException(status_code=400, detail="Invalid email")
 
+        from services.itsm_ticket_attachments import normalize_attachment_urls
+
+        attachment_urls = normalize_attachment_urls(body.attachments)
         cfg = await _resolve_config(user.get("org_id") or "", entity)
         if not cfg.get("webhook_path") or not cfg.get("access_key_secret"):
             raise HTTPException(
@@ -4678,6 +5518,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             criticality=criticality,
             description=description,
             subject=subject,
+            attachments=attachment_urls,
         )
 
         now = datetime.now(timezone.utc).isoformat()
@@ -4718,18 +5559,34 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         await _persist_local()
 
         url = f"{cfg['kissflow_base_url']}{cfg['webhook_path']}"
+        logger.info(
+            "ITSM submit webhook env=%s entity=%s url=%s",
+            active_env,
+            entity,
+            url,
+        )
         raw = None
         webhook_ok = False
+        webhook_status = 0
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
                 response = await client.post(
                     url, headers=_kissflow_headers(cfg), json=webhook_body
                 )
+            webhook_status = int(response.status_code)
             try:
                 raw = response.json()
             except Exception:
                 raw = response.text
-            webhook_ok = 200 <= response.status_code < 300
+            webhook_ok = 200 <= webhook_status < 300
+            if not webhook_ok:
+                logger.warning(
+                    "ITSM webhook HTTP %s env=%s entity=%s body=%s",
+                    webhook_status,
+                    active_env,
+                    entity,
+                    str(raw)[:300],
+                )
         except Exception as exc:
             logger.exception("ITSM webhook submit failed for entity=%s", entity)
             local_doc["local_status"] = "failed"
@@ -4745,6 +5602,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "status": "failed",
                 "message": "Unable to submit ticket to Kissflow.",
                 "entity": entity,
+                "environment": active_env,
+                "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
                 "ticket": _public_local_ticket(local_doc),
             }
 
@@ -4816,6 +5675,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "status": "created",
                 "message": "Ticket created in Kissflow.",
                 "entity": entity,
+                "environment": active_env,
+                "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
                 "ticket": _public_local_ticket(local_doc),
             }
 
@@ -4829,6 +5690,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "status": "created",
                 "message": "Ticket submitted to Kissflow.",
                 "entity": entity,
+                "environment": active_env,
+                "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
                 "ticket": _public_local_ticket(local_doc),
             }
 
@@ -4851,12 +5714,19 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "status": "created",
                 "message": "Ticket submitted to Kissflow (report confirmation pending).",
                 "entity": entity,
+                "environment": active_env,
+                "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
                 "ticket": _public_local_ticket(local_doc),
             }
 
+        fail_message = (
+            f"Kissflow webhook rejected the ticket (HTTP {webhook_status})."
+            if not webhook_ok
+            else "Kissflow did not create the ticket. It is marked as failed."
+        )
         local_doc["local_status"] = "failed"
         local_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
-        local_doc["error"] = "Not found in Kissflow report after submit"
+        local_doc["error"] = fail_message
         await _persist_local({
             "local_status": "failed",
             "updated_at": local_doc["updated_at"],
@@ -4867,8 +5737,10 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         return {
             "success": False,
             "status": "failed",
-            "message": "Kissflow did not create the ticket. It is marked as failed.",
+            "message": fail_message,
             "entity": entity,
+            "environment": active_env,
+            "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
             "ticket": _public_local_ticket(local_doc),
         }
 
@@ -5196,6 +6068,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             report_tickets = await _load_kissflow_report_tickets(
                 cfg, report_profile, email, entity
             )
+        except HTTPException:
+            raise
         except Exception as exc:
             report_error = str(exc)
             logger.warning(
@@ -5534,6 +6408,10 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         instance_id: str = Query(...),
         activity_instance_id: Optional[str] = Query(None),
         environment: Optional[str] = Query(None),
+        reopened: Optional[bool] = Query(None),
+        status: Optional[str] = Query(None),
+        current_step: Optional[str] = Query(None),
+        last_completed_step: Optional[str] = Query(None),
         _t: Optional[str] = Query(None),
         user: dict = Depends(get_current_user),
     ):
@@ -5548,12 +6426,14 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         )
         process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
         cfg = {**cfg, "process_id": process_id}
+        need_reopen_progress = True
         thread = await _load_instance_comment_thread(
             cfg,
             entity,
             instance_id,
             (activity_instance_id or "").strip(),
             viewer_email=(user.get("email") or "").strip(),
+            need_reopen_progress=need_reopen_progress,
         )
         env_name = cfg.get("environment") or "development"
         merged = _merge_comment_lists(thread.get("comments") or [], _ledger_comments(env_name, instance_id))
@@ -5561,6 +6441,10 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         thread["comments"] = visible
         thread["messageCount"] = len(visible)
         thread["commentParser"] = "nested-merge-v3"
+        thread["kissflowBaseUrl"] = cfg.get("kissflow_base_url") or ""
+        thread["activeEnvironment"] = env_name
+        thread["accountId"] = cfg.get("account_id") or ""
+        thread["adminItemUrl"] = _admin_process_item_url(cfg, instance_id)
         return {"success": True, **thread}
 
     @api_router.get("/itsm/reports/attachment-preview")
@@ -5612,6 +6496,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             comment=comment,
             commenter_name=body.commenter_name,
             solution_row_id=(body.solution_row_id or "").strip(),
+            reopened=bool(body.reopened),
             files=[],
         )
 
@@ -5625,6 +6510,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         comment: str,
         commenter_name: Optional[str],
         solution_row_id: str = "",
+        reopened: bool = False,
         files: Optional[List[UploadFile]] = None,
     ) -> Dict[str, Any]:
         uploads = [item for item in (files or []) if item is not None]
@@ -5649,14 +6535,6 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             entity=entity,
         )
         activity_instance_id = activity_candidates[0] if activity_candidates else ""
-        if not activity_instance_id:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Could not find an open work step for this ticket. "
-                    "Comments are only allowed while IT is working on it."
-                ),
-            )
 
         progress = await _kf_get_json(
             cfg,
@@ -5667,7 +6545,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         live_assignee = ""
         for step in _current_branch_steps(progress) or _iter_progress_steps(progress):
             ids = _step_activity_ids(step, instance_id)
-            if activity_instance_id in ids:
+            if activity_instance_id and activity_instance_id in ids:
                 live_step = _as_string(step.get("Name") or step.get("ActivityName")).strip()
                 live_assignee = _step_assignee_detail(step) or _step_assignee_name(step)
                 break
@@ -5677,10 +6555,23 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 if token == "inprogress":
                     live_step = _as_string(step.get("Name") or step.get("ActivityName")).strip()
                     live_assignee = _step_assignee_detail(step) or _step_assignee_name(step)
-        if (
-            not _can_comment_on_step(live_step, entity)
-            or _is_reopen_hold_step(live_step)
-            or _progress_has_completed_reopen(progress)
+        ticket_reopened = bool(reopened) or _is_reopen_hold_step(live_step) or _progress_has_completed_reopen(progress)
+        use_admin_put = _uses_admin_comment_put(entity, cfg, reopened=ticket_reopened)
+        if not activity_instance_id and not use_admin_put:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Could not find an open work step for this ticket. "
+                    "Comments are only allowed while IT is working on it."
+                ),
+            )
+        if _is_pickup_step(live_step) or (
+            not use_admin_put
+            and (
+                not _can_comment_on_step(live_step, entity)
+                or _is_reopen_hold_step(live_step)
+                or _progress_has_completed_reopen(progress)
+            )
         ):
             blocked_reopen = _is_reopen_hold_step(live_step) or _progress_has_completed_reopen(progress)
             want = _comment_step_for_entity(entity)
@@ -5698,7 +6589,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
 
         row_id = solution_row_id or f"IT__Agent_Solution_{uuid.uuid4().hex[:10]}"
         attachments: List[Dict[str, Any]] = []
-        if uploads:
+        if uploads and activity_instance_id:
             attachments = await _upload_comment_attachments(
                 cfg,
                 instance_id=instance_id,
@@ -5721,15 +6612,33 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
 
         save_ids = list(activity_candidates)
         params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
+        table_rows = [row]
+        if use_admin_put:
+            existing_rows, saw_instance = await _fetch_existing_solution_rows_for_put(
+                cfg,
+                process_id,
+                instance_id,
+                activity_instance_id,
+                entity,
+            )
+            if not saw_instance:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Could not read this ticket from the Kissflow admin API before saving. "
+                        "The comment was not written, so the existing thread stays intact. Try again."
+                    ),
+                )
+            table_rows = _merge_solution_rows_for_put(existing_rows, row)
         payload = {
             "_id": instance_id,
-            "Table::IT__Agent_Solution": [row],
+            "Table::IT__Agent_Solution": table_rows,
         }
         env_name = cfg.get("environment") or "development"
         last_detail = "Unable to save comment."
         last_status = 502
 
-        def _comment_ok(message: str, activity_id: str) -> Dict[str, Any]:
+        async def _comment_ok(message: str, activity_id: str) -> Dict[str, Any]:
             local_entry = {
                 "id": row_id,
                 "recordId": row_id,
@@ -5743,7 +6652,21 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "role": "employee",
             }
             _append_ledger_comment(env_name, instance_id, local_entry)
+            thread_comments: List[Dict[str, Any]] = []
+            try:
+                thread = await _load_instance_comment_thread(
+                    cfg,
+                    entity,
+                    instance_id,
+                    activity_id,
+                    viewer_email=(user.get("email") or "").strip(),
+                    need_reopen_progress=bool(reopened),
+                )
+                thread_comments = thread.get("comments") or []
+            except Exception as exc:
+                logger.warning("ITSM comment reload after save failed instance=%s: %s", instance_id, exc)
             merged = _merge_comment_lists(
+                thread_comments,
                 [local_entry],
                 _ledger_comments(env_name, instance_id),
             )
@@ -5757,41 +6680,73 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 "kissflowSynced": True,
                 "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
                 "activeEnvironment": env_name,
+                "accountId": cfg.get("account_id") or "",
+                "commentWrite": "admin-put" if use_admin_put else "activity-post",
+                "adminPutUrl": _admin_process_item_url(cfg, instance_id) if use_admin_put else None,
                 "comments": visible,
             }
 
-        for save_activity in save_ids:
-            path = f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}/{save_activity}"
+        if use_admin_put:
+            path = _admin_process_item_path(cfg, instance_id)
             logger.info(
-                "ITSM comment Kissflow POST %s env=%s account=%s key=%s activity=%s table_row=%s",
-                path,
+                "ITSM comment Kissflow PUT %s env=%s setup=%s account=%s key=%s table_row=%s",
+                _admin_process_item_url(cfg, instance_id),
                 env_name,
+                cfg.get("setup_environment") or env_name,
                 cfg.get("account_id") or "",
                 (cfg.get("access_key_id") or "")[:12],
-                save_activity,
                 row_id,
             )
             try:
-                status_code, raw, success_text = await _kf_post_json(cfg, path, payload, params)
+                status_code, raw, success_text = await _kf_put_json(
+                    cfg,
+                    path,
+                    payload,
+                    params,
+                    for_write=False,
+                )
             except Exception as exc:
-                logger.exception("ITSM ticket comment Kissflow failed instance=%s path=%s", instance_id, path)
+                logger.exception("ITSM ticket comment admin PUT failed instance=%s path=%s", instance_id, path)
                 last_detail = f"Unable to save comment: {exc}"
                 last_status = 502
-                continue
-            if _comment_write_accepted(status_code, raw, success_text):
-                return _comment_ok(success_text or "Comment saved", save_activity)
-            last_detail = _kissflow_response_text(raw, last_detail)
-            last_status = status_code
-            if _is_kissflow_queue_error(last_detail, status_code):
-                who = live_assignee or "the assigned IT agent"
-                last_detail = (
-                    f"Kissflow still has this ticket with {who} on '{live_step or 'the live step'}'. "
-                    "RefexOne posts as the ITSM BOT user key. Adding the ITSM Bot role does not put "
-                    "the work item in that user's queue while a person (for example Vishnu) remains "
-                    "a User assignee. Assign the BOT user account (Kind: User), or remove the human "
-                    "assignee and leave the step only on a role the BOT user belongs to."
+            else:
+                if _comment_write_accepted(status_code, raw, success_text):
+                    return await _comment_ok(success_text or "Comment saved", activity_instance_id or instance_id)
+                last_detail = _kissflow_response_text(raw, last_detail)
+                last_status = status_code
+        else:
+            for save_activity in save_ids:
+                path = f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}/{save_activity}"
+                logger.info(
+                    "ITSM comment Kissflow POST %s env=%s account=%s key=%s activity=%s table_row=%s",
+                    path,
+                    env_name,
+                    cfg.get("account_id") or "",
+                    (cfg.get("access_key_id") or "")[:12],
+                    save_activity,
+                    row_id,
                 )
-                continue
+                try:
+                    status_code, raw, success_text = await _kf_post_json(cfg, path, payload, params)
+                except Exception as exc:
+                    logger.exception("ITSM ticket comment Kissflow failed instance=%s path=%s", instance_id, path)
+                    last_detail = f"Unable to save comment: {exc}"
+                    last_status = 502
+                    continue
+                if _comment_write_accepted(status_code, raw, success_text):
+                    return await _comment_ok(success_text or "Comment saved", save_activity)
+                last_detail = _kissflow_response_text(raw, last_detail)
+                last_status = status_code
+                if _is_kissflow_queue_error(last_detail, status_code):
+                    who = live_assignee or "the assigned IT agent"
+                    last_detail = (
+                        f"Kissflow still has this ticket with {who} on '{live_step or 'the live step'}'. "
+                        "RefexOne posts as the ITSM BOT user key. Adding the ITSM Bot role does not put "
+                        "the work item in that user's queue while a person (for example Vishnu) remains "
+                        "a User assignee. Assign the BOT user account (Kind: User), or remove the human "
+                        "assignee and leave the step only on a role the BOT user belongs to."
+                    )
+                    continue
 
         if last_status == 404 or re.search(
             r"not found|could not be located|IdNotFound|DocumentNotFound",
@@ -5824,6 +6779,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         uploads = _collect_multipart_files(form)
         commenter = form.get("commenter_name")
         environment = form.get("environment")
+        reopened_raw = str(form.get("reopened") or "").strip().lower()
         return await _save_employee_comment(
             user=user,
             entity=entity,
@@ -5832,8 +6788,9 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             environment=str(environment) if environment not in (None, "") else None,
             comment=str(form.get("comment") or ""),
             commenter_name=str(commenter) if commenter not in (None, "") else None,
+            reopened=reopened_raw in ("1", "true", "yes"),
             files=uploads,
         )
 
     from routes.refexions import register_refexions_routes
-    register_refexions_routes(api_router, get_current_user, _resolve_config)
+    register_refexions_routes(api_router, get_current_user, _resolve_config, db)
