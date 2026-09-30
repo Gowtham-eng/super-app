@@ -26,6 +26,17 @@ Copy this block to the **top** of the log (newest first):
 
 # Log
 
+### 2026-09-30 — Kissflow module launch without homepage flash
+- **Problem:** Travel / Expense opened Kissflow home first, then a timed/poll redirect to `home_url` (visible homepage flash).
+- **Cause:** IdP SAML complete → Kissflow root → RefexOne second navigation to the module.
+- **Change / solution (local, not pushed):** Open the Kissflow `home_url` first. Kissflow stores `localStorage.redirectURL`, then SAML. Android/iOS auto-open `saml/redirectTo` when `/view/login` is reached. Desktop with no Kissflow session still shows Kissflow's SSO button once. Backend SAML unsigned. Port of architect handoff onto `itsmbackuplatest` (patch on `main` @ `5a317cce` would not apply).
+- **Files:** `AppLauncher.js`, `MainActivity.java`, `WebViewController.swift`.
+- **Flows:** F03 launcher Kissflow modules, F05 SAML launch path. Adrenalin, OIDC, Reports, Help Desk in-app unchanged.
+- **Verify:** Chrome with/without Kissflow session; Travel + Expense; Android/iOS auto-SSO; Back / Refresh / Return to RefexOne.
+- **Git / deploy:** Local only. Do not push until acceptance matrix passes. Native rebuild required for Android/iOS.
+
+---
+
 ### 2026-09-28 — Microsoft sign-in company selection
 - **Problem:** Public login hid the email field; Microsoft provider selection defaulted to the Refex-labeled tenant, sending Extrovis users to Venwind Refex.
 - **Change / solution:** When multiple Microsoft providers exist, clicking Microsoft sign-in reveals company buttons using the active provider configuration. The selected company determines the tenant without asking for an email on public login. Developer login retains exact-domain routing when its existing email field matches. Preserve direct single-provider sign-in.
