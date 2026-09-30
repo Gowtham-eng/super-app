@@ -1265,28 +1265,69 @@ def _walk_progress_nodes(payload: Any) -> List[Dict[str, Any]]:
     return found
 
 
+def _normalize_progress_payload(progress: Any) -> Any:
+    """Kissflow sometimes wraps Steps in Data / Progress / a raw list."""
+    if isinstance(progress, list):
+        return {"Steps": [step for step in progress if isinstance(step, dict)]}
+    if not isinstance(progress, dict):
+        return {}
+    node = progress
+    for _ in range(4):
+        if any(
+            node.get(key)
+            for key in ("Steps", "steps", "Process", "process", "History", "history")
+        ):
+            return node
+        nested = None
+        for key in ("Data", "data", "Progress", "progress", "Item", "item", "Body", "body"):
+            cand = node.get(key)
+            if isinstance(cand, dict):
+                nested = cand
+                break
+            if isinstance(cand, list) and cand:
+                return {"Steps": [step for step in cand if isinstance(step, dict)]}
+        if not nested:
+            break
+        node = nested
+    return node
+
+
 def _iter_progress_steps(progress: Any) -> List[Dict[str, Any]]:
     """Raw workflow steps, including nested Process[].Steps branches (aasik_ITSM)."""
+    progress = _normalize_progress_payload(progress)
     if not isinstance(progress, dict):
         return []
     steps: List[Dict[str, Any]] = []
+    seen: Set[int] = set()
+
+    def add_step(step: Any) -> None:
+        if not isinstance(step, dict):
+            return
+        marker = id(step)
+        if marker in seen:
+            return
+        seen.add(marker)
+        steps.append(step)
+        for nested in step.get("Process") or step.get("process") or []:
+            from_branch(nested)
 
     def from_branch(branch: Any) -> None:
         if not isinstance(branch, dict):
             return
         for step in branch.get("Steps") or branch.get("steps") or []:
-            if isinstance(step, dict):
-                steps.append(step)
-                for nested in step.get("Process") or step.get("process") or []:
-                    from_branch(nested)
+            add_step(step)
+        for nested in branch.get("Process") or branch.get("process") or []:
+            from_branch(nested)
+        for hist in branch.get("History") or branch.get("history") or []:
+            add_step(hist)
 
+    from_branch(progress)
     for step in progress.get("Steps") or progress.get("steps") or []:
-        if isinstance(step, dict):
-            steps.append(step)
-            for nested in step.get("Process") or step.get("process") or []:
-                from_branch(nested)
+        add_step(step)
     for nested in progress.get("Process") or progress.get("process") or []:
         from_branch(nested)
+    for hist in progress.get("History") or progress.get("history") or []:
+        add_step(hist)
     return steps
 
 
@@ -2793,6 +2834,11 @@ def _progress_step_is_reopen_sendback(step: Dict[str, Any]) -> bool:
     token = _status_token(str(step.get("_status") or step.get("Status") or step.get("status") or ""))
     move = _status_token(str(step.get("MoveToType") or step.get("moveToType") or ""))
     name = _as_string(step.get("Name") or step.get("ActivityName") or step.get("name"))
+    note = _as_string(
+        step.get("_note") or step.get("Note") or step.get("note") or step.get("_Note")
+    ).strip()
+    if _is_reopen_hold_step(name) and note:
+        return True
     return (
         token == "sentback"
         or (move == "sendback" and token != "completed")
@@ -3118,6 +3164,9 @@ async def _load_instance_comment_thread(
     if need_reopen_progress:
         # ITSM Setup read keys — never a hardcoded secret or .env key dump.
         progress = await _kf_get_json(cfg, f"{base}/progress", params)
+        if progress is None:
+            await asyncio.sleep(0.4)
+            progress = await _kf_get_json(cfg, f"{base}/progress", params)
         preferred: List[str] = []
         others: List[str] = []
         for step in _iter_progress_steps(progress):

@@ -396,7 +396,7 @@ const prepareCommentFiles = async (files) => {
   return out;
 };
 
-/** Comments UI is Extrovis-family only — Refex Help Desk never shows a thread. */
+/** Chat thread is Extrovis-family only. Refex Help Desk stays description / solution. */
 const canShowTicketComments = (entity, ticket) =>
   !isRefexHelpdeskEntity(entity)
   && !isRefexHelpdeskEntity(ticket?.entity);
@@ -533,6 +533,8 @@ const isEmployeeVisibleComment = (entry, entity = '') => {
 const commentsBelongToTicket = (rows, ticket) => {
   const createdMs = ticket?.createdOn ? new Date(ticket.createdOn).getTime() : 0;
   return (Array.isArray(rows) ? rows : []).filter((entry) => {
+    // Progress sendback notes must survive createdOn format changes between expands.
+    if (String(entry?.role || '').trim().toLowerCase() === 'reopen') return true;
     if (!createdMs || Number.isNaN(createdMs)) return true;
     const stamped = entry?.dateTime ? new Date(entry.dateTime).getTime() : 0;
     if (!stamped || Number.isNaN(stamped)) return true;
@@ -568,6 +570,9 @@ const mergeCommentRows = (...groups) => {
       const prev = (stableId && byId.get(stableId)) || (text && byText.get(text)) || null;
       if (prev) {
         if (commentAttachmentCount(row) > commentAttachmentCount(prev)) replace(prev, row);
+        else if (String(row?.role || '').toLowerCase() === 'reopen' && String(prev?.role || '').toLowerCase() !== 'reopen') {
+          replace(prev, row);
+        }
         return;
       }
       if (stableId) byId.set(stableId, row);
@@ -720,7 +725,13 @@ const TicketConversation = ({
   authRef.current = getAuthHeader;
   hydrateRef.current = onHydrated;
   ticketRef.current = ticket;
-  const entries = revisionEntriesFromTicket(ticket, entity);
+  const entries = revisionEntriesFromTicket({
+    ...ticket,
+    agentSolutions: mergeCommentRows(
+      ticket?.agentSolutions,
+      commentsFromStore(ticket?.id || ticket?.localId, entity),
+    ),
+  }, entity);
   const resolvedEnv = isDevHelpdesk(environment, kissflowBaseUrl) ? 'development' : environment;
   const allowCompose = Boolean(canComment);
 
@@ -732,7 +743,7 @@ const TicketConversation = ({
     const localHasFiles = [...stored, ...localEntries].some(
       (entry) => Array.isArray(entry?.attachments) && entry.attachments.length,
     );
-    if (!force && stored.length && localHasFiles && typeof hydrateRef.current === 'function') {
+    if (!force && stored.length && typeof hydrateRef.current === 'function') {
       hydrateRef.current(live.id, { comments: stored });
     }
     if (force || !localHasFiles) setHydrating(true);
@@ -754,10 +765,16 @@ const TicketConversation = ({
       });
       const payload = res.data || {};
       const nextComments = Array.isArray(payload.comments) ? realCommentRows(payload.comments) : [];
+      const keptReopen = [...stored, ...localEntries].filter(
+        (entry) => String(entry?.role || '').toLowerCase() === 'reopen',
+      );
       if (typeof hydrateRef.current === 'function') {
         hydrateRef.current(live.id, {
           ...payload,
-          comments: commentsBelongToTicket(nextComments, live),
+          comments: commentsBelongToTicket(
+            mergeCommentRows(nextComments, stored, keptReopen),
+            live,
+          ),
         });
       }
     } catch (err) {
@@ -1291,11 +1308,12 @@ const ITSMDashboard = () => {
           mergeCommentRows(realCommentRows(row.agentSolutions), commentsFromStore(row.id, entity)),
           row,
         );
+        const existingReopen = existing.filter((entry) => String(entry?.role || '').toLowerCase() === 'reopen');
         // Empty Kissflow GET is not proof the thread is empty (nested table is often
-        // missing on instance GET). Never replace a real thread with [].
+        // missing on instance GET). Never drop reopen notes if a later GET missed progress.
         const nextComments = incoming.length
-          ? rememberComments(row.id, mergeCommentRows(incoming, existing), entity)
-          : rememberComments(row.id, existing, entity);
+          ? rememberComments(row.id, mergeCommentRows(incoming, existing, existingReopen), entity)
+          : rememberComments(row.id, mergeCommentRows(existing, existingReopen), entity);
         const nextSolution = String(payload.itAgentSolution || payload.solution || '').trim();
         return {
           ...row,

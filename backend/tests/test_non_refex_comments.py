@@ -23,6 +23,7 @@ from routes.itsm import (
     _parse_report_ticket,
     _canonicalize_ticket_stage,
     _collect_reopen_notes_from_progress,
+    _iter_progress_steps,
     _needs_reopen_progress_fetch,
     _display_ticket_status,
     _thread_from_instance_payload,
@@ -669,3 +670,28 @@ def test_live_extrovis_reopen_window_note_from_progress():
     assert _needs_reopen_progress_fetch(reopened=True) is True
     assert _needs_reopen_progress_fetch(status="Closed") is True
     assert _needs_reopen_progress_fetch(current_step="IT Agent Solution") is False
+
+
+def test_reopen_notes_survive_wrapped_progress_and_completed_step():
+    wrapped = {
+        "Data": {
+            "Process": [
+                {
+                    "Steps": [
+                        {
+                            "Name": "ReOpen Window",
+                            "_status": "Completed",
+                            "_note": "Still i am facing the issue",
+                            "ActedBy": {"Name": "Syed Ajju"},
+                            "ActedAt": "2026-09-29T06:57:30Z",
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    assert len(_iter_progress_steps(wrapped)) == 1
+    notes = _collect_reopen_notes_from_progress(wrapped, "Syed Ajju")
+    assert len(notes) == 1
+    assert notes[0]["comment"] == "Still i am facing the issue"
+    assert notes[0]["role"] == "reopen"
