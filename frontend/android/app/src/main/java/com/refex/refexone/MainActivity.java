@@ -58,8 +58,6 @@ public class MainActivity extends BridgeActivity {
     private static final String LAUNCHER_URL = "https://refexone.com/launcher";
     private static final String SAML_ACS_PATH = "/signin/";
     private static final String SAML_LOGIN_PATH = "/view/login";
-    private static final String KISSFLOW_SAML_REDIRECT_URL =
-        "https://refexgroup.kissflow.com/signin/2/AcCMptlq60zH/saml/redirectTo";
     // Debug builds use adb reverse to local API; release uses production.
     private static final String APP_UPDATE_CHECK_URL_PROD =
         "https://refexone.com/api/app-update/check";
@@ -86,7 +84,6 @@ public class MainActivity extends BridgeActivity {
     private String pendingModuleUrl;
     private boolean pendingHistoryClear;
     private boolean moduleRedirectScheduled;
-    private boolean kissflowAutoSsoAttempted;
     private boolean pageRefreshPending;
     private Runnable hidePageLoaderRunnable;
     private View contentRoot;
@@ -339,6 +336,9 @@ public class MainActivity extends BridgeActivity {
                     // /login?sso_app=... while the user is still logged into RefexOne.
                     // Wiping localStorage forced a real login screen until logout.
                     bounceAuthenticatedUserOffLogin(view, url);
+                } else if (isKissflowLoginUrl(url)) {
+                    // Kissflow SSO failed (landed on KF login) → back to RefexOne home
+                    returnToLauncher(view);
                 }
                 updateCloseBar(view, url);
             }
@@ -348,10 +348,7 @@ public class MainActivity extends BridgeActivity {
                 if (isRefexOneLoginUrl(url)) {
                     bounceAuthenticatedUserOffLogin(view, url);
                 } else if (isKissflowLoginUrl(url)) {
-                    // routes.js writes localStorage.redirectURL immediately before its
-                    // SPA history transition to /view/login. This callback is therefore
-                    // the deterministic native readiness boundary for starting SAML.
-                    maybeAutoStartKissflowSso(view);
+                    returnToLauncher(view);
                 }
                 updateCloseBar(view, url);
             }
@@ -380,11 +377,6 @@ public class MainActivity extends BridgeActivity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 scheduleHidePageLoader(view);
-                // Fallback for full-document /view/login navigations. Duplicate signals
-                // are harmless because maybeAutoStartKissflowSso is one-shot per launch.
-                if (isKissflowLoginUrl(view.getUrl())) {
-                    maybeAutoStartKissflowSso(view);
-                }
                 captureModuleFromUrl(url);
                 injectAdrenalinClickHook(view, url);
                 clearWebHistoryIfNeeded(view, url);
@@ -577,7 +569,6 @@ public class MainActivity extends BridgeActivity {
     private void returnToLauncher(WebView webView) {
         pendingModuleUrl = null;
         moduleRedirectScheduled = false;
-        kissflowAutoSsoAttempted = false;
         pendingHistoryClear = true;
         hidePageLoader();
         // Only clear Kissflow when leaving Kissflow. Feast/QR OIDC back must NOT
@@ -641,13 +632,6 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
-    private void maybeAutoStartKissflowSso(WebView webView) {
-        if (webView == null || kissflowAutoSsoAttempted) return;
-        kissflowAutoSsoAttempted = true;
-        Log.i("RefexOne", "Kissflow deep link ready; starting SP-initiated SAML");
-        webView.loadUrl(KISSFLOW_SAML_REDIRECT_URL);
-    }
-
     private boolean isSamlCompleteUrl(String url) {
         return url != null && url.contains("/api/saml/") && url.contains("/complete");
     }
@@ -671,7 +655,6 @@ public class MainActivity extends BridgeActivity {
     private void clearKissflowSession(WebView webView) {
         pendingModuleUrl = null;
         moduleRedirectScheduled = false;
-        kissflowAutoSsoAttempted = false;
         clearKissflowCookiesOnly(webView);
         if (webView != null) {
             webView.evaluateJavascript(
@@ -681,7 +664,6 @@ public class MainActivity extends BridgeActivity {
 
     private void clearAppSession(WebView webView) {
         pendingModuleUrl = null;
-        kissflowAutoSsoAttempted = false;
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.removeAllCookies(null);
         cookieManager.flush();

@@ -21,7 +21,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
     private let updateCheckURL = "https://refexone.com/api/app-update/check"
     private let samlAcsPath = "/signin/"
     private let samlLoginPath = "/view/login"
-    private let kissflowSamlRedirectURL = "https://refexgroup.kissflow.com/signin/2/AcCMptlq60zH/saml/redirectTo"
     private let moduleRedirectDelayMs: TimeInterval = 2.0
     private let bridgeName = "RefexOneBridge"
 
@@ -40,7 +39,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
     private var pendingModuleUrl: String?
     private var pendingHistoryClear = false
     private var moduleRedirectScheduled = false
-    private var kissflowAutoSsoAttempted = false
     private var pageRefreshPending = false
     private var forceUpdateBlocking = false
     private var isReturningToLauncher = false
@@ -152,33 +150,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
             clearKissflowSession: function() { post('clearKissflowSession'); },
             clearAppSession: function() { post('clearAppSession'); }
           };
-
-          // Kissflow stores the originally requested module in localStorage.redirectURL,
-          // then performs an SPA history transition to /view/login. WKNavigationDelegate
-          // is not guaranteed to observe pushState, so notify native code explicitly.
-          try {
-            if ((location.hostname || '').indexOf('kissflow.com') !== -1) {
-              var notifyKissflowLoginReady = function() {
-                try {
-                  var path = location.pathname || '';
-                  if (path === '/view/login' || path === '/login' || path.endsWith('/login')) {
-                    post('kissflowLoginReady', location.href);
-                  }
-                } catch (e) {}
-              };
-              ['pushState', 'replaceState'].forEach(function(name) {
-                var original = history[name];
-                if (typeof original !== 'function') return;
-                history[name] = function() {
-                  var result = original.apply(this, arguments);
-                  setTimeout(notifyKissflowLoginReady, 0);
-                  return result;
-                };
-              });
-              window.addEventListener('popstate', notifyKissflowLoginReady);
-              window.addEventListener('DOMContentLoaded', notifyKissflowLoginReady);
-            }
-          } catch (e) {}
         })();
         """
     }
@@ -819,9 +790,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         scheduleHidePageLoader()
         captureModuleFromUrl(url)
         injectAdrenalinClickHook(url)
-        if isKissflowLoginUrl(url) {
-            maybeAutoStartKissflowSso()
-        }
 
         clearWebHistoryIfNeeded(url: url)
         checkSessionStorageModule(url: url) { [weak self] in
@@ -949,7 +917,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         } else if isRefexOneLoginUrl(url) {
             bounceAuthenticatedUserOffLogin(url: url)
         } else if isKissflowLoginUrl(url) {
-            maybeAutoStartKissflowSso()
+            returnToLauncher()
         }
         updateCloseBar(url: url)
     }
@@ -1037,13 +1005,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
 
     // MARK: - Session / launcher
 
-    private func maybeAutoStartKissflowSso() {
-        guard !kissflowAutoSsoAttempted else { return }
-        kissflowAutoSsoAttempted = true
-        guard let url = URL(string: kissflowSamlRedirectURL) else { return }
-        webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
-    }
-
     private func returnToLauncher() {
         guard !isReturningToLauncher else { return }
         isReturningToLauncher = true
@@ -1051,7 +1012,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         let current = webView.url?.absoluteString
         pendingModuleUrl = nil
         moduleRedirectScheduled = false
-        kissflowAutoSsoAttempted = false
         pendingHistoryClear = true
         moduleRedirectWorkItem?.cancel()
         moduleRedirectWorkItem = nil
@@ -1146,7 +1106,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
     private func clearKissflowSession() {
         pendingModuleUrl = nil
         moduleRedirectScheduled = false
-        kissflowAutoSsoAttempted = false
         clearKissflowCookiesOnly()
         webView.evaluateJavaScript(
             "try{sessionStorage.removeItem('refexone_pending_module');}catch(e){}",
@@ -1156,7 +1115,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
 
     private func clearAppSession() {
         pendingModuleUrl = nil
-        kissflowAutoSsoAttempted = false
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         WKWebsiteDataStore.default().removeData(ofTypes: types, modifiedSince: .distantPast) { [weak self] in
             self?.webView.evaluateJavaScript(
@@ -1406,8 +1364,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
                 if let url = body["url"] as? String, !url.isEmpty {
                     self.pendingModuleUrl = url
                 }
-            case "kissflowLoginReady":
-                self.maybeAutoStartKissflowSso()
             case "openAdrenalinApp":
                 self.openAdrenalinNativeApp()
             case "clearKissflowSession":
