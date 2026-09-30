@@ -3,6 +3,7 @@ import {
   isItsmNamedApp,
   shouldHijackItsmLaunch,
   resolveKissflowLaunchApp,
+  resolveItsmLaunchFromKissflowStatus,
   isKissflowApiOk,
   itsmKissflowFallbackReason,
   userCanSeeReports,
@@ -81,6 +82,14 @@ describe('launcher ITSM vs Reports vs EMS', () => {
     const hit = resolveKissflowLaunchApp([EMS, ITSM_SAML], ITSM_SAML);
     expect(hit).toBe(ITSM_SAML);
     expect(hit.home_url).toContain('IT_Service_Management_A00');
+  });
+
+  it('Refexions My Tickets uses the same Kissflow probe as Help Desk', () => {
+    const up = { status: 200, data: { ok: true, status_code: 200, user_in_kissflow: true } };
+    const kissflow = resolveItsmLaunchFromKissflowStatus(up, [EMS, ITSM_SAML], VIRTUAL);
+    expect(kissflow).toEqual({ mode: 'kissflow', app: ITSM_SAML });
+    const down = { status: 200, data: { ok: false, status_code: 502, user_in_kissflow: true } };
+    expect(resolveItsmLaunchFromKissflowStatus(down, [ITSM_SAML]).mode).toBe('itsm');
   });
 
   it('virtual ITSM tile prefers the ITSM Kissflow app over EMS', () => {

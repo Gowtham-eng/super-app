@@ -174,6 +174,20 @@ export function filterReportsForUser(apps, user) {
  * Prefer the tapped app, then an ITSM-named Kissflow SAML row — never the first
  * Kissflow module in the list (that was sending ITSM clicks to EMS_001_A00).
  */
+/**
+ * Same probe as the Help Desk KPI tile: Kissflow up + user in Kissflow → SAML app;
+ * otherwise the in-app /itsm dashboard.
+ */
+export function resolveItsmLaunchFromKissflowStatus(res, apps = [], tappedApp = null) {
+  const userInKissflow = res?.data?.user_in_kissflow === true;
+  if (isKissflowApiOk(res) && userInKissflow) {
+    const target = resolveKissflowLaunchApp(apps, tappedApp);
+    if (target) return { mode: 'kissflow', app: target };
+    return { mode: 'itsm', reason: 'no_sso_target' };
+  }
+  return { mode: 'itsm', reason: itsmKissflowFallbackReason(res, userInKissflow) };
+}
+
 export function resolveKissflowLaunchApp(list, tappedApp) {
   const rows = Array.isArray(list) ? list : [];
   if (tappedApp && usableLauncherApp(tappedApp) && tappedApp.type === 'saml' && isKissflowApp(tappedApp)) {

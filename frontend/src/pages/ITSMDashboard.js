@@ -407,11 +407,24 @@ const isItsmBotAssignedPart = (value) => {
   return compact.includes('itsmbot') || compact === 'bot' || compact.endsWith('bot');
 };
 
+const ITSM_PERSON_ALIASES = {
+  'it manager': 'Sakthivel',
+  'it manager refex': 'Sakthivel',
+  'it head': 'Mugesh',
+  'it head refex': 'Mugesh',
+};
+
+const displayItsmPersonName = (value) => {
+  const text = String(value || '').trim();
+  const key = text.toLowerCase().replace(/\./g, ' ').replace(/\s+/g, ' ').trim();
+  return ITSM_PERSON_ALIASES[key] || text;
+};
+
 /** Hide ITSM BOT / AppRole from Assigned To — keep the human name. */
 const formatAssignedToDisplay = (value) => {
   const parts = String(value || '')
     .split(',')
-    .map((part) => part.trim())
+    .map((part) => displayItsmPersonName(part.trim()))
     .filter((part) => part && part !== '—' && !isItsmBotAssignedPart(part));
   const seen = new Set();
   const unique = [];
@@ -731,7 +744,7 @@ const TicketConversation = ({
           instance_id: live.id,
           activity_instance_id: live.activityInstanceId || '',
           environment: resolvedEnv || environment || undefined,
-          reopened: ticketIsReopened(live) || isReopenRelatedTicket(live) || isClosedTicket(live),
+          reopened: true,
           status: live.status || '',
           current_step: live.currentStep || '',
           last_completed_step: live.lastCompletedStep || '',
@@ -1338,7 +1351,7 @@ const ITSMDashboard = () => {
             instance_id: ticket.id,
             activity_instance_id: ticket.activityInstanceId || '',
             environment: helpdeskEnv || undefined,
-            reopened: ticketIsReopened(ticket) || isReopenRelatedTicket(ticket) || isClosedTicket(ticket),
+            reopened: true,
             status: ticket.status || '',
             current_step: ticket.currentStep || '',
             last_completed_step: ticket.lastCompletedStep || '',
@@ -1811,12 +1824,18 @@ const ITSMDashboard = () => {
               const showExpand = showCommentSection || hasDescription || showSolution;
               return (
                 <React.Fragment key={rowId}>
-                  <tr>
+                  <tr
+                    className={showExpand ? 'cursor-pointer' : undefined}
+                    onClick={showExpand ? () => toggleExpanded(rowId) : undefined}
+                  >
                     <td className="!px-2">
                       {showExpand ? (
                         <button
                           type="button"
-                          onClick={() => toggleExpanded(rowId)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleExpanded(rowId);
+                          }}
                           className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800"
                           aria-expanded={expanded}
                           aria-label={expanded ? 'Collapse conversation' : 'Expand conversation'}
@@ -1848,7 +1867,7 @@ const ITSMDashboard = () => {
                       {ticket.closedBy || '—'}
                     </td>
                     <td className="text-slate-600 whitespace-nowrap">{formatTicketDate(ticket.closedOn)}</td>
-                    <td className="text-right">
+                    <td className="text-right" onClick={(event) => event.stopPropagation()}>
                       <div className="flex flex-col items-end gap-2">
                         {showComment ? (
                           <button
@@ -1936,7 +1955,11 @@ const ITSMDashboard = () => {
           const showSolution = isClosedTicket(ticket) || ticketAllowsReopen(ticket) || hasSolution;
           const showExpand = showCommentSection || hasDescription || showSolution;
           return (
-            <div key={rowId} className="rounded-xl border border-slate-200 bg-white p-4">
+            <div
+              key={rowId}
+              className={`rounded-xl border border-slate-200 bg-white p-4 ${showExpand ? 'cursor-pointer' : ''}`}
+              onClick={showExpand ? () => toggleExpanded(rowId) : undefined}
+            >
               <div className="flex items-start justify-between gap-3 mb-2">
                 <p className="font-semibold text-slate-900 text-sm break-all">{ticket.requestId || '—'}</p>
                 <TicketStatusTags ticket={ticket} size="sm" />

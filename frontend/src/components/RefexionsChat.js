@@ -3,7 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { Loader2, MessageCircle, Paperclip, Send, Upload, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { API, ITSM_API } from '../config/api';
+import { API, BACKEND_ORIGIN, ITSM_API } from '../config/api';
+import {
+  isItsmNamedApp,
+  resolveItsmLaunchFromKissflowStatus,
+} from '../utils/launcherApps';
 import {
   isRefexEntity,
   locationFromUser,
@@ -474,7 +478,37 @@ const RefexionsChat = () => {
     }
     if (/view my tickets|my tickets/i.test(value)) {
       setOpen(false);
-      navigate('/itsm');
+      try {
+        const statusRes = await axios.get(`${ITSM_API}/itsm/kissflow-status`, getAuthHeader());
+        let apps = [];
+        try {
+          const appsRes = await axios.get(`${API}/launcher/apps`, getAuthHeader());
+          apps = Array.isArray(appsRes.data) ? appsRes.data : [];
+        } catch {
+          apps = [];
+        }
+        const tapped = apps.find((app) => isItsmNamedApp(app)) || null;
+        const launch = resolveItsmLaunchFromKissflowStatus(statusRes, apps, tapped);
+        if (launch.mode === 'kissflow' && launch.app) {
+          const token = localStorage.getItem('iam_token');
+          const app = launch.app;
+          if (app.type === 'saml' && token) {
+            const completeUrl = `${BACKEND_ORIGIN}/api/saml/${app.id}/complete?token=${encodeURIComponent(token)}`;
+            const targetUrl = app.home_url
+              ? `${completeUrl}&module_url=${encodeURIComponent(app.home_url)}`
+              : completeUrl;
+            window.open(targetUrl, '_blank', 'noopener,noreferrer');
+            return;
+          }
+          if (app.home_url) {
+            window.open(app.home_url, '_blank', 'noopener,noreferrer');
+            return;
+          }
+        }
+        navigate('/itsm', { state: { kissflowFallback: true, reason: launch.reason || 'no_sso_target' } });
+      } catch {
+        navigate('/itsm', { state: { kissflowFallback: true, reason: 'check_failed' } });
+      }
       return;
     }
 

@@ -6426,12 +6426,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         )
         process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
         cfg = {**cfg, "process_id": process_id}
-        need_reopen_progress = _needs_reopen_progress_fetch(
-            reopened=bool(reopened),
-            status=status or "",
-            current_step=current_step or "",
-            last_completed_step=last_completed_step or "",
-        )
+        need_reopen_progress = True
         thread = await _load_instance_comment_thread(
             cfg,
             entity,
