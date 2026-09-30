@@ -43,6 +43,8 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
     private var currentCloseBarMode: CloseBarMode = .hidden
     private var hideLoaderWorkItem: DispatchWorkItem?
     private var moduleRedirectWorkItem: DispatchWorkItem?
+    private var loadWatchdog: DispatchWorkItem?
+    private var loadErrorView: UIView?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -52,15 +54,19 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         setupCloseBar()
         setupPageLoader()
         setupKeyboardHandling()
-
-        checkForAppUpdate { [weak self] in
-            self?.loadMainApp()
-        }
+        showPageLoader()
+        // Load the site immediately. Waiting on the update API used to leave a white
+        // screen if the request was slow or hung (Android already loads first).
+        loadMainApp()
+        checkForAppUpdate()
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: bridgeName)
+        loadWatchdog?.cancel()
+        hideLoaderWorkItem?.cancel()
+        moduleRedirectWorkItem?.cancel()
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle { .darkContent }
@@ -100,8 +106,13 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         webView.scrollView.delegate = self
         webView.scrollView.minimumZoomScale = 1.0
         webView.scrollView.maximumZoomScale = 1.0
-        webView.isOpaque = false
+        webView.isOpaque = true
         webView.backgroundColor = .white
+        if #available(iOS 16.4, *) {
+            #if DEBUG
+            webView.isInspectable = true
+            #endif
+        }
 
         view.addSubview(webView)
         webViewBottomConstraint = webView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
@@ -420,9 +431,26 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
     }
 
     private func loadMainApp() {
-        if let url = URL(string: appURL) {
-            webView.load(URLRequest(url: url))
+        loadErrorView?.removeFromSuperview()
+        loadErrorView = nil
+        showPageLoader()
+        guard let url = URL(string: appURL) else { return }
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        webView.load(request)
+        startLoadWatchdog()
+    }
+
+    private func startLoadWatchdog() {
+        loadWatchdog?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            let href = self.webView.url?.absoluteString ?? ""
+            if href.isEmpty || href.hasPrefix("about:") {
+                self.showLoadError("RefexOne is taking too long to load. Check your network and try again.")
+            }
         }
+        loadWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
     }
 
     // MARK: - Actions
@@ -440,30 +468,25 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
 
     // MARK: - App update (same card UX as Android)
 
-    private func checkForAppUpdate(completion: @escaping () -> Void) {
+    private func checkForAppUpdate() {
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
-        guard let url = URL(string: "\(updateCheckURL)?platform=ios&build=\(build)") else {
-            completion()
-            return
-        }
+        guard let url = URL(string: "\(updateCheckURL)?platform=ios&build=\(build)") else { return }
 
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
             DispatchQueue.main.async {
                 guard let self = self,
                       error == nil,
                       let data = data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       (json["enabled"] as? Bool) == true else {
-                    completion()
                     return
                 }
 
                 let force = (json["force_update"] as? Bool) == true
                 let available = (json["update_available"] as? Bool) == true || force
-                guard available else {
-                    completion()
-                    return
-                }
+                guard available else { return }
 
                 let title = (json["title"] as? String) ?? (force ? "Update required" : "Update available")
                 let message = (json["message"] as? String) ?? "A new version of RefexOne is available."
@@ -471,9 +494,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
                 let current = json["current_build"] as? Int
                 let latest = json["latest_build"] as? Int
 
-                if !force {
-                    completion()
-                } else {
+                if force {
                     self.forceUpdateBlocking = true
                 }
 
@@ -483,8 +504,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
                     storeURL: storeURL,
                     force: force,
                     currentBuild: current,
-                    latestBuild: latest,
-                    completion: completion
+                    latestBuild: latest
                 )
             }
         }.resume()
@@ -496,8 +516,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         storeURL: String,
         force: Bool,
         currentBuild: Int?,
-        latestBuild: Int?,
-        completion: @escaping () -> Void
+        latestBuild: Int?
     ) {
         view.subviews.filter { $0.tag == 99113 }.forEach { $0.removeFromSuperview() }
 
@@ -665,7 +684,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
                 self.forceUpdateBlocking = true
                 overlay.removeFromSuperview()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    self.checkForAppUpdate(completion: completion)
+                    self.checkForAppUpdate()
                 }
             } else {
                 UIView.animate(withDuration: 0.2, animations: { overlay.alpha = 0 }) { _ in
@@ -687,7 +706,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         if forceUpdateBlocking {
-            checkForAppUpdate { }
+            checkForAppUpdate()
         }
     }
 
@@ -754,6 +773,9 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        loadWatchdog?.cancel()
+        loadErrorView?.removeFromSuperview()
+        loadErrorView = nil
         let url = webView.url?.absoluteString
         if isReturningToLauncher, isRefexOneLauncherUrl(url) {
             isReturningToLauncher = false
@@ -767,6 +789,91 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
             self.maybeRedirectToPendingModule(url: url)
             self.updateCloseBar(url: url)
         }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        handleWebViewLoadFailure(error)
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        handleWebViewLoadFailure(error)
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if let http = navigationResponse.response as? HTTPURLResponse,
+           navigationResponse.isForMainFrame,
+           http.statusCode >= 400 {
+            decisionHandler(.cancel)
+            showLoadError("Couldn't load RefexOne (HTTP \(http.statusCode)).")
+            return
+        }
+        decisionHandler(.allow)
+    }
+
+    private func handleWebViewLoadFailure(_ error: Error) {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled { return }
+        if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 { return } // Frame load interrupted
+        showLoadError(nsError.localizedDescription)
+    }
+
+    private func showLoadError(_ message: String) {
+        loadWatchdog?.cancel()
+        hidePageLoader()
+        loadErrorView?.removeFromSuperview()
+
+        let overlay = UIView()
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        overlay.backgroundColor = .white
+
+        let title = UILabel()
+        title.translatesAutoresizingMaskIntoConstraints = false
+        title.text = "Couldn't open RefexOne"
+        title.font = .systemFont(ofSize: 20, weight: .bold)
+        title.textAlignment = .center
+        title.textColor = UIColor(red: 0.09, green: 0.14, blue: 0.22, alpha: 1)
+
+        let body = UILabel()
+        body.translatesAutoresizingMaskIntoConstraints = false
+        body.text = message
+        body.font = .systemFont(ofSize: 15, weight: .regular)
+        body.textColor = UIColor(red: 0.39, green: 0.45, blue: 0.55, alpha: 1)
+        body.textAlignment = .center
+        body.numberOfLines = 0
+
+        let retry = UIButton(type: .system)
+        retry.translatesAutoresizingMaskIntoConstraints = false
+        retry.setTitle("Try again", for: .normal)
+        retry.setTitleColor(.white, for: .normal)
+        retry.titleLabel?.font = .systemFont(ofSize: 16, weight: .bold)
+        retry.backgroundColor = UIColor(red: 0.02, green: 0.59, blue: 0.41, alpha: 1)
+        retry.layer.cornerRadius = 14
+        retry.addAction(UIAction { [weak self] _ in
+            self?.loadMainApp()
+        }, for: .touchUpInside)
+
+        overlay.addSubview(title)
+        overlay.addSubview(body)
+        overlay.addSubview(retry)
+        view.addSubview(overlay)
+        loadErrorView = overlay
+
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: view.topAnchor),
+            overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            title.centerYAnchor.constraint(equalTo: overlay.centerYAnchor, constant: -40),
+            title.leadingAnchor.constraint(equalTo: overlay.leadingAnchor, constant: 28),
+            title.trailingAnchor.constraint(equalTo: overlay.trailingAnchor, constant: -28),
+            body.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 12),
+            body.leadingAnchor.constraint(equalTo: overlay.leadingAnchor, constant: 28),
+            body.trailingAnchor.constraint(equalTo: overlay.trailingAnchor, constant: -28),
+            retry.topAnchor.constraint(equalTo: body.bottomAnchor, constant: 24),
+            retry.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+            retry.widthAnchor.constraint(equalToConstant: 180),
+            retry.heightAnchor.constraint(equalToConstant: 48),
+        ])
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
