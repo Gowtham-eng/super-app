@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
@@ -19,8 +19,9 @@ import {
   isReportsLauncherApp,
   userCanSeeReports,
 } from '../utils/launcherApps';
+import { recordRecentApp, resolveRecentApps } from '../utils/recentApps';
 import { toast } from 'sonner';
-import { Search, Lock, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight, Headphones, Loader2, BarChart3 } from 'lucide-react';
+import { Search, Lock, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight, Headphones, Loader2, BarChart3, Clock } from 'lucide-react';
 
 const ITSM_VIRTUAL_APP = {
   id: 'itsm-inapp',
@@ -193,7 +194,12 @@ const AppLauncher = () => {
   const [now, setNow] = useState(new Date());
   const [activeFilter, setActiveFilter] = useState('All');
   const [itsmChecking, setItsmChecking] = useState(false);
+  const [recentVersion, setRecentVersion] = useState(0);
   const visibleApps = filterReportsForUser(apps, user);
+  const recentApps = useMemo(
+    () => resolveRecentApps(visibleApps, user?.id),
+    [visibleApps, user?.id, recentVersion]
+  );
   const canSeeReports = userCanSeeReports(user);
   const hasReports = canSeeReports && visibleApps.some((a) => a.category === 'Reports' || isNeEmbedApp(a));
 
@@ -475,8 +481,15 @@ const AppLauncher = () => {
     }
   };
 
+  const rememberLaunch = (app) => {
+    if (!app?.id || app.is_placeholder) return;
+    recordRecentApp(user?.id, app.id);
+    setRecentVersion((n) => n + 1);
+  };
+
   const launchApp = (app) => {
     if (isNeEmbedApp(app)) {
+      rememberLaunch(app);
       const targetUrl = appendNeEmbedIdentity(app.home_url, user);
       const mobileFlow = isCapacitor || (isPWA && isMobile);
       if (mobileFlow) window.location.href = targetUrl;
@@ -485,6 +498,7 @@ const AppLauncher = () => {
     }
 
     if (shouldHijackItsmLaunch(app)) {
+      rememberLaunch(app);
       handleItsmClick(app);
       return;
     }
@@ -501,6 +515,8 @@ const AppLauncher = () => {
       toast.error(app.policy_reason || 'Access blocked by policy');
       return;
     }
+
+    rememberLaunch(app);
 
     const mobileFlow = isCapacitor || (isPWA && isMobile);
     if (mobileFlow && isAdrenalinApp(app) && openAdrenalinNativeApp()) {
@@ -726,6 +742,84 @@ const AppLauncher = () => {
           );
         })}
       </div>
+
+      {!search.trim() && recentApps.length > 0 && (
+        <div className="mb-8" data-testid="recent-apps">
+          <div className="flex items-center gap-2.5 mb-4 sm:mb-5">
+            <div className="hidden sm:flex w-7 h-7 rounded-lg bg-slate-100 items-center justify-center">
+              <Clock size={14} className="text-slate-600" strokeWidth={2.25} />
+            </div>
+            <Clock size={14} className="sm:hidden text-slate-500" strokeWidth={2} />
+            <h2 className="font-heading text-base sm:text-lg font-semibold text-slate-900 tracking-tight">Recent</h2>
+            <span className="text-xs text-slate-400 font-medium tabular-nums">
+              {recentApps.length} app{recentApps.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+
+          <div className="sm:hidden flex gap-3 overflow-x-auto pb-1 -mx-1 px-1">
+            {recentApps.map((app) => {
+              const c = APP_COLORS[hashString(app.id || app.name) % APP_COLORS.length];
+              return (
+                <button
+                  key={`recent-m-${app.id}`}
+                  onClick={() => launchApp(app)}
+                  data-testid={`recent-app-${app.id}`}
+                  className="min-w-[76px] max-w-[76px] flex flex-col items-center p-2 rounded-xl border border-slate-200 bg-white hover:border-blue-300 hover:shadow-md active:scale-95 transition-all"
+                >
+                  <div className={`w-12 h-12 rounded-xl ${c.bg} ${c.border} border flex items-center justify-center mb-1.5`}>
+                    {app.logo_url ? (
+                      <img src={app.logo_url} alt={app.name} className="w-7 h-7 object-contain" />
+                    ) : (
+                      <span className={`font-heading font-bold text-base ${c.text}`}>
+                        {app.name.charAt(0).toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[10px] font-medium text-center leading-tight line-clamp-2 break-words w-full text-slate-700">
+                    {app.name}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="hidden sm:grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 3xl:grid-cols-7 gap-4">
+            {recentApps.map((app) => {
+              const pal = getTilePalette(app);
+              const AppIcon = pickAppIcon(app.name);
+              return (
+                <button
+                  key={`recent-d-${app.id}`}
+                  onClick={() => launchApp(app)}
+                  data-testid={`recent-app-desktop-${app.id}`}
+                  className="group relative overflow-hidden rounded-2xl border border-slate-200/60 bg-white text-left flex flex-col hover:border-transparent hover:shadow-[0_14px_40px_-12px_rgba(15,23,42,0.18)] hover:-translate-y-1 cursor-pointer transition-all duration-300"
+                >
+                  <div className="relative h-[88px] flex items-center justify-center bg-slate-50">
+                    <div className="relative w-12 h-12 rounded-2xl flex items-center justify-center bg-white shadow-sm border border-slate-200 group-hover:scale-110 transition-transform duration-300">
+                      {app.logo_url ? (
+                        <img src={app.logo_url} alt={app.name} className="w-7 h-7 object-contain" />
+                      ) : (
+                        <AppIcon size={22} strokeWidth={2} className="text-slate-600" />
+                      )}
+                    </div>
+                  </div>
+                  <div className="px-4 py-3 flex flex-col items-center gap-1.5">
+                    <h3 className="text-sm font-semibold text-center leading-snug line-clamp-2 tracking-tight text-slate-900">
+                      {app.name}
+                    </h3>
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wide"
+                      style={{ backgroundColor: pal.tagBg, color: pal.tagText }}
+                    >
+                      Recently used
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Grouped Apps */}
       {Object.keys(grouped).length === 0 ? (

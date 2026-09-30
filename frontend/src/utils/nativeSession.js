@@ -38,7 +38,9 @@ export const clearNativeAppSession = () => {
 export const ADRENALIN_ANDROID_PACKAGE = 'com.myadrenalin.max2';
 export const ADRENALIN_SCHEME = 'adrmax2scheme://';
 export const ADRENALIN_PLAY_STORE =
-  'https://play.google.com/store/apps/details?id=com.myadrenalin.max2';
+  'https://play.google.com/store/apps/details?id=com.myadrenalin.max2&hl=en_IN';
+export const ADRENALIN_APP_STORE =
+  'https://apps.apple.com/in/app/adrenalin-max-2-0/id6458739027';
 
 /** Open native Adrenalin MAX 2. Returns true when a native/intent launch was started. */
 export const openAdrenalinNativeApp = () => {
@@ -48,7 +50,7 @@ export const openAdrenalinNativeApp = () => {
       return true;
     }
   } catch (e) {
-    // fall through to scheme / intent
+    // fall through to scheme / store
   }
 
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
@@ -63,7 +65,14 @@ export const openAdrenalinNativeApp = () => {
       return true;
     }
     if (isIOS) {
+      const started = Date.now();
       window.location.href = ADRENALIN_SCHEME;
+      setTimeout(() => {
+        if (document.hidden) return;
+        if (Date.now() - started < 2500) {
+          window.location.href = ADRENALIN_APP_STORE;
+        }
+      }, 900);
       return true;
     }
   } catch (e) {

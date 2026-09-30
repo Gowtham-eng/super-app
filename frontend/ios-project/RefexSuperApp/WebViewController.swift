@@ -14,6 +14,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
     private let appHost = "refexone.com"
     private let kissflowDomain = "kissflow.com"
     private let adrenalinDomain = "myadrenalin.com"
+    private let adrenalinAppStoreURL = "https://apps.apple.com/in/app/adrenalin-max-2-0/id6458739027"
     private let launcherURL = "https://refexone.com/launcher"
     /// Root URL — web app routes to login or dashboard/launcher (same as Android Capacitor).
     private let appURL = "https://refexone.com/"
@@ -1192,13 +1193,20 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         ].compactMap { $0 }
         for scheme in candidates {
             if UIApplication.shared.canOpenURL(scheme) {
-                UIApplication.shared.open(scheme, options: [:], completionHandler: nil)
+                UIApplication.shared.open(scheme, options: [:]) { [weak self] success in
+                    if !success {
+                        self?.openAdrenalinAppStore()
+                    }
+                }
                 return
             }
         }
-        if let store = URL(string: "https://apps.apple.com/search?term=Adrenalin%20MAX") {
-            UIApplication.shared.open(store, options: [:], completionHandler: nil)
-        }
+        openAdrenalinAppStore()
+    }
+
+    private func openAdrenalinAppStore() {
+        guard let store = URL(string: adrenalinAppStoreURL) else { return }
+        UIApplication.shared.open(store, options: [:], completionHandler: nil)
     }
 
     private func injectAdrenalinClickHook(_ url: String?) {

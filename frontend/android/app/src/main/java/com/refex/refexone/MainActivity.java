@@ -52,8 +52,9 @@ public class MainActivity extends BridgeActivity {
         "com.aes.hrms",
         "com.myadrenalin.hrms55"
     };
-    private static final String ADRENALIN_SCHEME = "adrmax2scheme://";
     private static final String ADRENALIN_PLAY_STORE_PACKAGE = "com.myadrenalin.max2";
+    private static final String ADRENALIN_PLAY_STORE_URL =
+        "https://play.google.com/store/apps/details?id=com.myadrenalin.max2&hl=en_IN";
     private static final String LAUNCHER_URL = "https://refexone.com/launcher";
     private static final String SAML_ACS_PATH = "/signin/";
     private static final String SAML_LOGIN_PATH = "/view/login";
@@ -897,13 +898,6 @@ public class MainActivity extends BridgeActivity {
                 }
             }
         }
-        try {
-            Intent scheme = new Intent(Intent.ACTION_VIEW, Uri.parse(ADRENALIN_SCHEME));
-            scheme.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(scheme);
-            return;
-        } catch (Exception ignored) {
-        }
         openAdrenalinPlayStore();
     }
 
@@ -919,7 +913,7 @@ public class MainActivity extends BridgeActivity {
             try {
                 startActivity(new Intent(
                     Intent.ACTION_VIEW,
-                    Uri.parse("https://play.google.com/store/apps/details?id=" + ADRENALIN_PLAY_STORE_PACKAGE)
+                    Uri.parse(ADRENALIN_PLAY_STORE_URL)
                 ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             } catch (Exception ignored) {
             }
