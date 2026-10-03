@@ -482,8 +482,9 @@ def _kissflow_headers(
 ) -> Dict[str, str]:
     """Kissflow REST: X-Access-Key-Id + X-Access-Key-Secret on every call.
 
-    Reports GET use access keys; comments/upload/preview mint use the ITSM BOT
-    user key when present (same identity that wrote the nested Attachments).
+    Reports GET and comment reads use Setup access keys; comment GET still
+    tries the ITSM BOT key first for nested files, then the admin key.
+    Comment UPDATE uses the admin PUT. Other writes may still use the BOT key.
     JSON Content-Type only when we actually POST/PUT a JSON body — GET /upload/2
     must not send it or Kissflow skips the GCS 302.
     """
@@ -1511,6 +1512,8 @@ async def _kf_post_json(
     path: str,
     payload: Dict[str, Any],
     params: Optional[Dict[str, Any]] = None,
+    *,
+    for_write: bool = True,
 ) -> tuple:
     url = path if path.startswith("http") else f"{cfg['kissflow_base_url']}{path}"
     host = cfg.get("kissflow_base_url") or ""
@@ -1519,7 +1522,7 @@ async def _kf_post_json(
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 url,
-                headers=_kissflow_headers(cfg, for_write=True),
+                headers=_kissflow_headers(cfg, for_write=for_write),
                 params=params or {},
                 json=payload,
             )
@@ -2319,16 +2322,13 @@ def _uses_admin_comment_put(
     *,
     reopened: bool = False,
 ) -> bool:
-    """Extrovis admin PUT uses ITSM Setup host/account/keys.
+    """Extrovis chat writes use the same admin PUT as reopen-after-chat.
 
-    Reopened tickets always use PUT. Development also uses PUT for normal comments.
-    Live non-reopened comments stay on the activity POST + BOT key.
+    Host/account/keys come from ITSM Setup. The ITSM BOT activity POST is not used.
     """
     if not _uses_extrovis_flow(entity):
         return False
-    if reopened:
-        return True
-    return _is_development_env(cfg=cfg)
+    return True
 
 
 def _uses_dev_admin_comment_put(entity: Optional[str], cfg: Optional[Dict[str, Any]] = None) -> bool:
@@ -2363,6 +2363,43 @@ def _can_comment_on_step(current_step: str, entity: Optional[str]) -> bool:
     if _is_pickup_step(current_step):
         return False
     return _is_live_work_step(current_step)
+
+
+def _comment_write_block_reason(
+    *,
+    entity: Optional[str],
+    live_step: str,
+    use_admin_put: bool,
+    ticket_reopened: bool,
+    progress_reopened: bool = False,
+) -> Optional[str]:
+    """None means the comment UPDATE may run. Pickup is always blocked."""
+    if _is_pickup_step(live_step):
+        return "Comments are disabled while the ticket is at PickUp."
+    if _report_entity_key(entity) == "refex":
+        return "Comments are not available on Refex Help Desk."
+    if use_admin_put:
+        # Extrovis admin PUT: after reopen, or live in-progress work (Solution / Dependency).
+        if ticket_reopened or _can_comment_on_step(live_step, entity):
+            return None
+        want = _comment_step_for_entity(entity)
+        return (
+            f"Comments are only allowed when the ticket is at '{want}'. "
+            f"Current step: {live_step or 'unknown'}."
+        )
+    if (
+        not _can_comment_on_step(live_step, entity)
+        or _is_reopen_hold_step(live_step)
+        or progress_reopened
+    ):
+        if _is_reopen_hold_step(live_step) or progress_reopened:
+            return "Comments are disabled on reopened tickets."
+        want = _comment_step_for_entity(entity)
+        return (
+            f"Comments are only allowed when the ticket is at '{want}'. "
+            f"Current step: {live_step or 'unknown'}."
+        )
+    return None
 
 
 def _is_step_field_row(row: Dict[str, Any]) -> bool:
@@ -6614,27 +6651,15 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                     "Comments are only allowed while IT is working on it."
                 ),
             )
-        if _is_pickup_step(live_step) or (
-            not use_admin_put
-            and (
-                not _can_comment_on_step(live_step, entity)
-                or _is_reopen_hold_step(live_step)
-                or _progress_has_completed_reopen(progress)
-            )
-        ):
-            blocked_reopen = _is_reopen_hold_step(live_step) or _progress_has_completed_reopen(progress)
-            want = _comment_step_for_entity(entity)
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Comments are disabled on reopened tickets."
-                    if blocked_reopen
-                    else (
-                        f"Comments are only allowed when the ticket is at '{want}'. "
-                        f"Current step: {live_step or 'unknown'}."
-                    )
-                ),
-            )
+        block_reason = _comment_write_block_reason(
+            entity=entity,
+            live_step=live_step,
+            use_admin_put=use_admin_put,
+            ticket_reopened=ticket_reopened,
+            progress_reopened=_progress_has_completed_reopen(progress),
+        )
+        if block_reason:
+            raise HTTPException(status_code=400, detail=block_reason)
 
         row_id = solution_row_id or f"IT__Agent_Solution_{uuid.uuid4().hex[:10]}"
         attachments: List[Dict[str, Any]] = []

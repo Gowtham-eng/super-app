@@ -34,7 +34,11 @@ DEFAULT_POLICY_SERVICE_URL = (
     "https://policy-sender-645830234926.asia-south1.run.app"
 )
 DEFAULT_POLICY_TEMPLATE_ID = "policy_share_v1"
-DEFAULT_MAIN_OPTIONS = ["Expense", "Travel", "IT HelpDesk", "Policies"]
+DEFAULT_MAIN_OPTIONS = ["Expense", "Travel", "Tech Helpdesk", "Policies", "App Support"]
+DEFAULT_APP_SUPPORT_WEBHOOK = (
+    "https://refexgroup.kissflow.com/integration/2/AcCMptlq60zH/webhook/"
+    "a6roiXWPDPe5cYwPY5RvsQnpMuq7mil3SSoQMmgIjxK5y30ov-5J51BRoQePKMnEUueLFOedb4e4Jvbbe25D0w"
+)
 DEFAULT_EXPENSE_OPTIONS = ["Food", "Accommodation", "Local Conveyance", "Travel Ticket"]
 DEFAULT_TRAVEL_OPTIONS = ["Domestic", "International"]
 DEFAULT_MAIN_MESSAGE = "Please choose from the following"
@@ -529,6 +533,7 @@ def default_doc() -> Dict[str, Any]:
         "ml_url": DEFAULT_ML_URL,
         "policy_service_url": DEFAULT_POLICY_SERVICE_URL,
         "policy_template_id": DEFAULT_POLICY_TEMPLATE_ID,
+        "app_support_webhook_url": DEFAULT_APP_SUPPORT_WEBHOOK,
         "faqs": [dict(row) for row in DEFAULT_FAQS],
         "policies": default_policies(),
         "menus": default_menus(),
@@ -558,6 +563,10 @@ def normalize_doc(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             str(src.get("policy_template_id") or DEFAULT_POLICY_TEMPLATE_ID).strip()
             or DEFAULT_POLICY_TEMPLATE_ID
         ),
+        "app_support_webhook_url": (
+            str(src.get("app_support_webhook_url") or DEFAULT_APP_SUPPORT_WEBHOOK).strip()
+            or DEFAULT_APP_SUPPORT_WEBHOOK
+        ),
         "faqs": faqs,
         "policies": policies,
         "menus": menus,
@@ -575,6 +584,7 @@ def public_doc(doc: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "ml_url": data["ml_url"],
         "policy_service_url": data["policy_service_url"],
         "policy_template_id": data["policy_template_id"],
+        "app_support_webhook_url": data.get("app_support_webhook_url") or DEFAULT_APP_SUPPORT_WEBHOOK,
         "faqs": data["faqs"],
         "policies": data["policies"],
         "menus": data["menus"],

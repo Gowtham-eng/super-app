@@ -187,11 +187,18 @@ class FaqMatchRequest(BaseModel):
     text: str = Field(..., min_length=1)
 
 
+class AppSupportRequest(BaseModel):
+    application_name: str = Field(..., min_length=1)
+    issue_description: str = Field(..., min_length=1)
+    issue_requester_email: Optional[str] = None
+
+
 class RefexionsSetupSave(BaseModel):
     policy_api_key: Optional[str] = None
     ml_url: Optional[str] = None
     policy_service_url: Optional[str] = None
     policy_template_id: Optional[str] = None
+    app_support_webhook_url: Optional[str] = None
     faqs: Optional[List[Dict[str, Any]]] = None
     policies: Optional[List[Dict[str, Any]]] = None
     menus: Optional[Dict[str, Any]] = None
@@ -520,6 +527,44 @@ def register_refexions_routes(
         except Exception as exc:
             logger.exception("Refexions ML match failed")
             raise HTTPException(status_code=502, detail=f"Could not classify this issue: {exc}") from exc
+
+    @api_router.post("/refexions/app-support")
+    async def create_app_support(
+        body: AppSupportRequest,
+        user: dict = Depends(get_current_user),
+    ):
+        from services.refexions_store import DEFAULT_APP_SUPPORT_WEBHOOK, load_setup
+
+        email = _policy_recipient_email(body.issue_requester_email, user.get("email"))
+        if not email:
+            raise HTTPException(status_code=400, detail="Login email is required for App Support.")
+        setup = await load_setup(db, _legacy_settings())
+        url = str(setup.get("app_support_webhook_url") or DEFAULT_APP_SUPPORT_WEBHOOK).strip()
+        cfg = await _setup_cfg(user)
+        env_name = str((cfg or {}).get("environment") or (cfg or {}).get("active_environment") or "live").lower()
+        if env_name.startswith("dev"):
+            url = url.replace("https://refexgroup.kissflow.com", "https://development-refexgroup.kissflow.com")
+            url = url.replace("/AcCMptlq60zH/", "/AcCMptp3yqcn/")
+        payload = {
+            "source": "Web",
+            "issue_requester_email": email,
+            "application_name": body.application_name.strip(),
+            "issue_description": body.issue_description.strip(),
+        }
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.post(url, json=payload)
+            if response.status_code >= 400:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"App Support webhook rejected the request (HTTP {response.status_code}).",
+                )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("App Support webhook failed")
+            raise HTTPException(status_code=502, detail=f"App Support webhook failed: {exc}") from exc
+        return {"success": True, "application_name": payload["application_name"]}
 
     @api_router.post("/refexions/it/create")
     async def create_it_ticket(

@@ -442,30 +442,30 @@ const isPickupStep = (step) => {
   return token.includes('pickup') || token === 'pick' || token.includes('itagentpickup');
 };
 
+const isInProgressWorkStep = (step) => {
+  const token = String(step || '').toLowerCase().replace(/[\s_-]+/g, ' ').trim();
+  if (!token || token.includes('reopen') || isPickupStep(step) || isReopenHoldStep(step)) {
+    return false;
+  }
+  return (
+    token.includes('agent solution')
+    || token.includes('dependency')
+    || token.includes('tech support')
+    || token === 'it tech'
+  );
+};
+
 const canCommentTicket = (ticket, entity, environment = '', kissflowBaseUrl = '') => {
   if (!ticket) return false;
   if (showsEmployeeRating(ticket) && !ticketIsReopened(ticket)) return false;
   if (!canShowTicketComments(entity, ticket)) return false;
   if (!isOpenTicket(ticket)) return false;
   if (isPickupStep(ticket.currentStep)) return false;
+  if (isReopenHoldStep(ticket.currentStep)) return false;
   if (ticketIsReopened(ticket)) return true;
-  if (isReopenRelatedTicket(ticket) || ticketAllowsReopen(ticket)) return false;
-  if (ticket.canComment === false) return false;
-  if (ticket.canComment === true) {
-    const step = String(ticket.currentStep || '').trim().toLowerCase();
-    if (step.includes('reopen') || isReopenHoldStep(step)) return false;
-    return true;
-  }
-  const step = String(ticket.currentStep || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[\s_-]+/g, ' ');
-  if (!step) return false;
-  if (step.includes('reopen')) return false;
-  return (
-    step.includes('agent solution')
-    || step.includes('dependency')
-  );
+  if (isInProgressWorkStep(ticket.currentStep)) return true;
+  if (ticket.canComment === true) return true;
+  return false;
 };
 
 const formatRevisionDateTime = (value) => {
@@ -2101,7 +2101,7 @@ const ITSMDashboard = () => {
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <h1 className="font-heading text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 tracking-tight">
-                  IT Help Desk
+                  Tech Helpdesk
                 </h1>
                 {activeEnvironment && (
                   <span
