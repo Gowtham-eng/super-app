@@ -538,6 +538,8 @@ const commentsBelongToTicket = (rows, ticket) => {
     if (!createdMs || Number.isNaN(createdMs)) return true;
     const stamped = entry?.dateTime ? new Date(entry.dateTime).getTime() : 0;
     if (!stamped || Number.isNaN(stamped)) return true;
+    const files = Array.isArray(entry?.attachments) ? entry.attachments : [];
+    if (files.length) return true;
     return stamped + 120000 >= createdMs;
   });
 };
@@ -1611,7 +1613,13 @@ const ITSMDashboard = () => {
 
   const filteredTickets = useMemo(() => {
     const tab = statusTab === 'Reopened' ? 'Open' : statusTab;
-    return tickets.filter((ticket) => matchesKpiFilter(ticket, tab));
+    return tickets
+      .filter((ticket) => matchesKpiFilter(ticket, tab))
+      .sort((a, b) => {
+        const right = new Date(b?.createdOn || b?.createdAt || 0).getTime() || 0;
+        const left = new Date(a?.createdOn || a?.createdAt || 0).getTime() || 0;
+        return right - left;
+      });
   }, [tickets, statusTab]);
 
   React.useEffect(() => {

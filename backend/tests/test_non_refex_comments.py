@@ -301,6 +301,30 @@ def test_merge_keeps_files_when_refresh_returns_text_only():
     assert parsed[0]["attachments"][0]["name"] == "shot.png"
 
 
+def test_keeps_attachments_when_datetime_is_before_ticket():
+    field_ids = REPORT_FIELD_IDS["extrovis"]
+    data = {
+        "Table::IT__Agent_Solution": [
+            {
+                "_id": "IT__Agent_Solution_aaaaaaaaaa",
+                "Name_1": "Aasik",
+                "Resolution": "screenshot",
+                "Date_Time": "2026-01-01T00:00:00Z",
+                "Comments_2": "User",
+                "Attachments": [{"id": "Attach_1", "name": "shot.png", "key": "k1"}],
+            }
+        ]
+    }
+    parsed = _parse_agent_solutions(
+        data,
+        field_ids,
+        requester_name="Aasik",
+        created_at="2026-10-05T06:15:58Z",
+    )
+    assert len(parsed) == 1
+    assert parsed[0]["attachments"][0]["name"] == "shot.png"
+
+
 def test_parse_keeps_attachment_only_rows():
     field_ids = REPORT_FIELD_IDS["extrovis"]
     data = {
@@ -319,6 +343,14 @@ def test_parse_keeps_attachment_only_rows():
     assert parsed[0]["comment"] == ""
     assert parsed[0]["commentsType"] == "User"
     assert parsed[0]["attachments"][0]["name"] == "shot.png"
+
+
+def test_attachment_url_string():
+    files = _parse_comment_attachments(
+        {"Attachments": "https://files.example/shot.png"}
+    )
+    assert files[0]["name"] == "shot.png"
+    assert files[0]["Url"].endswith("shot.png")
 
 
 def test_attachment_unwrap():
@@ -668,6 +700,21 @@ def test_ticket_status_stays_open_unless_closed_stage_from_status():
     )
     assert closed["status"] == "Closed"
     assert closed["stage"] == "Closed"
+    hold_from_status = _parse_report_ticket(
+        {
+            ext_ids["instance_id"][0]: "PkHold2",
+            "Status": "On Hold",
+            ext_ids["status"][0]: "InProgress",
+            ext_ids["item_status"][0]: "Open",
+            ext_ids["system_status"][0]: "InProgress",
+            ext_ids["current_step"][0]: "IT Agent Solution",
+        },
+        columns,
+        0,
+        "Extrovis",
+    )
+    assert hold_from_status["stage"] == "OnHold"
+    assert hold_from_status["status"] == "Open"
 
 
 def test_reopen_notes_from_progress_are_user_comments():

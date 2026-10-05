@@ -2208,6 +2208,8 @@ REPORT_FIELD_IDS = {
         "solution_table_datetime": ["Column__LGAMX8kf0", "ITAgentDate_Time", "Date_Time"],
         # Refex IT__Agent_Solution has Name_1 + Resolution only (no Stages).
         "solution_table_stages": [],
+        "solution_table_attachments": ["Attachments", "attachments"],
+        "stages": ["Status", "Stages"],
     },
     "extrovis": {
         "request_id": ["Column_y4srngcUo1"],
@@ -2247,8 +2249,9 @@ REPORT_FIELD_IDS = {
         "solution_table_datetime": ["Column_R_u4Nyl5q_", "ITAgentDate_Time", "Date_Time"],
         "solution_table_stages": ["Column_EA6Nomn1w4", "Stages_1", "Stages"],
         "solution_table_comments_type": ["Column_x6WUN8QD4O", "Comments_2"],
-        "solution_table_attachments": ["Attachments", "Column_zXMX1EDrCx"],
+        "solution_table_attachments": ["Attachments", "attachments", "Column_zXMX1EDrCx"],
         "subject": ["Column_HEiwMtIBBO", "Subject"],
+        "stages": ["Status", "Column_JUGHj6d2Xj", "Stages"],
     },
 }
 
@@ -2787,7 +2790,19 @@ def _as_attachment_list(raw: Any) -> List[Dict[str, Any]]:
             return keyed
         return [raw] if _looks_like_attachment_file(raw) else []
     if isinstance(raw, list):
-        return [item for item in raw if _looks_like_attachment_file(item)]
+        found: List[Dict[str, Any]] = []
+        for item in raw:
+            if isinstance(item, str):
+                found.extend(_as_attachment_list(item))
+            elif _looks_like_attachment_file(item):
+                found.append(item)
+        return found
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("http") or text.startswith("/") or "." in text.rsplit("/", 1)[-1]:
+            name = text.rsplit("/", 1)[-1] or "file"
+            return [{"name": name, "Url": text, "url": text}]
+        return []
     return []
 
 
@@ -2977,7 +2992,9 @@ def _parse_agent_solution_rows(
         stages = _as_string(_pick_row_field(row, *stage_cols)).strip()
         comments_type = _as_string(_pick_row_field(row, *type_cols)).strip()
         date_time = _pick_row_field(row, *dt_cols) or row.get("_created_at") or row.get("_modified_at")
-        if not _comment_created_at_ok(date_time, created_at):
+        # Attachment-only / file rows often have a blank or older DateTime.
+        # Dropping them made chat files disappear after the leak filter.
+        if not attachments and not _comment_created_at_ok(date_time, created_at):
             continue
         record_id = _as_string(row.get("_id") or row.get("Id") or row.get("id") or "").strip()
         if record_id and record_id in seen_ids:
@@ -4299,8 +4316,10 @@ def _parse_report_ticket(
     )
     ticket_stage_raw = _lookup_field(
         data,
-        *field_ids["status"],
         "Status",
+        *(field_ids.get("stages") or []),
+        "Stages",
+        *field_ids["status"],
     )
     solution = _it_agent_solution_text(data, field_ids)
     employee_rating = _parse_rating(
