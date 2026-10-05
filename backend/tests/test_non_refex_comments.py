@@ -715,6 +715,35 @@ def test_ticket_status_stays_open_unless_closed_stage_from_status():
     )
     assert hold_from_status["stage"] == "OnHold"
     assert hold_from_status["status"] == "Open"
+    form_over_stages = _parse_report_ticket(
+        {
+            ext_ids["instance_id"][0]: "PkStage1",
+            ext_ids["status"][0]: "InProgress",
+            "Stages": "Open",
+            "Column_JUGHj6d2Xj": "Open",
+            ext_ids["item_status"][0]: "Open",
+            ext_ids["system_status"][0]: "InProgress",
+            ext_ids["current_step"][0]: "IT Agent Solution",
+        },
+        columns,
+        0,
+        "Extrovis",
+    )
+    assert form_over_stages["stage"] == "InProgress"
+    assert form_over_stages["status"] == "Open"
+    empty_stage = _parse_report_ticket(
+        {
+            ext_ids["instance_id"][0]: "PkStage2",
+            ext_ids["item_status"][0]: "Open",
+            ext_ids["system_status"][0]: "InProgress",
+            ext_ids["current_step"][0]: "IT Agent Solution",
+        },
+        columns,
+        0,
+        "Extrovis",
+    )
+    assert empty_stage["stage"] == ""
+    assert empty_stage["status"] == "Open"
 
 
 def test_reopen_notes_from_progress_are_user_comments():

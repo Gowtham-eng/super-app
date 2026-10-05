@@ -114,7 +114,7 @@ const ticketDisplayStatus = (ticket) => {
 
 const ticketStageLabel = (ticket) => {
   if (ticketDisplayStatus(ticket) === 'Closed') return 'Closed';
-  return canonicalizeTicketStage(ticket?.stage) || 'Open';
+  return canonicalizeTicketStage(ticket?.stage) || '';
 };
 
 const statusBadgeClass = (status = '') => {
@@ -1887,7 +1887,7 @@ const ITSMDashboard = () => {
                       <TicketStatusTags ticket={ticket} />
                     </td>
                     <td className="text-slate-700" title={ticketStageLabel(ticket)}>
-                      {ticketStageLabel(ticket)}
+                      {ticketStageLabel(ticket) || '—'}
                     </td>
                     <td className="text-slate-700" title={ticket.closedBy || ''}>
                       {ticket.closedBy || '—'}
@@ -1999,7 +1999,7 @@ const ITSMDashboard = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1 mb-3">
                 <p className="text-xs text-slate-500">Created On: {formatTicketDate(ticket.createdOn)}</p>
                 <p className="text-xs text-slate-500">Assigned To: {formatAssignedToDisplay(ticket.assignedTo)}</p>
-                <p className="text-xs text-slate-500">Stage: {ticketStageLabel(ticket)}</p>
+                <p className="text-xs text-slate-500">Stage: {ticketStageLabel(ticket) || '—'}</p>
                 <p className="text-xs text-slate-500">Closed By: {ticket.closedBy || '—'}</p>
                 <p className="text-xs text-slate-500">Closed On: {formatTicketDate(ticket.closedOn)}</p>
                 {ticket.currentStep ? (

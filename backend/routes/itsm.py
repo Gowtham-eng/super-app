@@ -3530,6 +3530,62 @@ def _canonicalize_ticket_stage(value: Any) -> str:
     return raw
 
 
+def _stage_from_raw(value: Any) -> str:
+    if isinstance(value, dict):
+        return _canonicalize_ticket_stage(
+            value.get("Name") or value.get("name") or value.get("value") or value.get("v") or ""
+        )
+    return _canonicalize_ticket_stage(value)
+
+
+def _pick_form_status_stage(data: Dict[str, Any], field_ids: Dict[str, Any]) -> str:
+    """Form Status first. Process Stages JSON is last. Never use workflow Statu/_status."""
+    form_keys = [
+        "Status",
+        *(field_ids.get("status") or []),
+        "Column_69zTtmtO92",
+        "Column_0GDnNoEuA7",
+    ]
+    skip = {str(key).strip().lower() for key in form_keys if key}
+    fallback_keys = [
+        key
+        for key in (
+            *(field_ids.get("stages") or []),
+            "Stages",
+            "Column_JUGHj6d2Xj",
+            "Column_GooYV3HuY1",
+        )
+        if key and str(key).strip().lower() not in skip
+    ]
+    fallback = ""
+    seen = set()
+    for key in form_keys:
+        token = str(key or "").strip()
+        if not token or token.lower() in seen:
+            continue
+        seen.add(token.lower())
+        label = _stage_from_raw(_raw_field(data, token))
+        if not label:
+            continue
+        if label != "Open":
+            return label
+        fallback = fallback or label
+    if fallback:
+        return fallback
+    for key in fallback_keys:
+        token = str(key or "").strip()
+        if not token or token.lower() in seen:
+            continue
+        seen.add(token.lower())
+        label = _stage_from_raw(_raw_field(data, token))
+        if not label:
+            continue
+        if label != "Open":
+            return label
+        fallback = fallback or label
+    return fallback
+
+
 def _display_ticket_status(status: str, stage: str) -> str:
     """Ticket Status is Open unless Closed. Stage keeps the exact Status field."""
     token = _status_token(status)
@@ -4314,13 +4370,7 @@ def _parse_report_ticket(
         "Ticket_Status",
         "Ticket Status",
     )
-    ticket_stage_raw = _lookup_field(
-        data,
-        "Status",
-        *(field_ids.get("stages") or []),
-        "Stages",
-        *field_ids["status"],
-    )
+    ticket_stage_raw = _pick_form_status_stage(data, field_ids)
     solution = _it_agent_solution_text(data, field_ids)
     employee_rating = _parse_rating(
         _raw_field(data, *field_ids.get("employee_rating", []), "Ratings_emp")
@@ -4377,8 +4427,6 @@ def _parse_report_ticket(
     display_status = _display_ticket_status(status, stage)
     if display_status == "Closed":
         stage = "Closed"
-    elif not stage:
-        stage = "Open"
     sendback_id = _sendback_id_from_report(
         data, field_ids, instance_id, reopen_activity_id or activity_instance_id
     )
