@@ -23,7 +23,16 @@ import {
   validateTicketAttachments,
 } from '../utils/itsmTicketAttachments';
 
-const FALLBACK_MAIN = ['Expense', 'Travel', 'IT HelpDesk', 'Policies'];
+const FALLBACK_MAIN = ['Expense', 'Travel', 'Tech Helpdesk', 'Policies', 'App Support'];
+const APP_SUPPORT_APPS = [
+  'Tech Helpdesk',
+  'Project Management Tracker',
+  'Lead Tracker',
+  'Travel Management',
+  'Procure2Pay',
+  'Solar One',
+  'F.E.A.S.T – Refex Canteen',
+];
 const BACK = 'Back';
 const ASK_QUESTION = 'Ask a question';
 const MAIN_EXTRAS = ['My tickets', ASK_QUESTION];
@@ -94,6 +103,7 @@ const RefexionsChat = () => {
     location: '',
   });
   const [nonRefexLocations, setNonRefexLocations] = useState([]);
+  const [appSupportDraft, setAppSupportDraft] = useState({ application: '', description: '' });
   const [policyDraft, setPolicyDraft] = useState(null);
   const [attachments, setAttachments] = useState([]);
   const scrollerRef = useRef(null);
@@ -528,10 +538,55 @@ const RefexionsChat = () => {
         return;
       }
       push(userMsg(choice));
-      if (/helpdesk|help desk|it help/i.test(choice)) return startItHelpdesk();
+      if (/app support/i.test(choice)) {
+        setAppSupportDraft({ application: '', description: '' });
+        setStep('app_support_app');
+        setChips([BACK, ...APP_SUPPORT_APPS]);
+        push(botMsg('Which application needs support?', APP_SUPPORT_APPS));
+        return;
+      }
+      if (/helpdesk|help desk|it help|tech help/i.test(choice)) return startItHelpdesk();
       if (/polic/i.test(choice)) return openPolicies();
       if (/expense/i.test(choice) || /travel/i.test(choice)) return openSubMenu(choice);
       push(botMsg('That option is not available yet. Pick another from the menu.', mainOptions));
+      return;
+    }
+
+    if (step === 'app_support_app') {
+      const appName = matched || value;
+      if (!APP_SUPPORT_APPS.some((name) => name.toLowerCase() === String(appName).toLowerCase())) {
+        push(userMsg(value), botMsg('Please pick an application from the list.', APP_SUPPORT_APPS));
+        return;
+      }
+      setAppSupportDraft((prev) => ({ ...prev, application: appName }));
+      setStep('app_support_desc');
+      setChips([BACK]);
+      push(userMsg(appName), botMsg('Describe the issue in a few sentences.'));
+      return;
+    }
+
+    if (step === 'app_support_desc') {
+      const description = String(value || '').trim();
+      if (!description) {
+        push(userMsg(value), botMsg('Please enter the issue description.'));
+        return;
+      }
+      push(userMsg(description));
+      setBusy(true);
+      axios.post(`${API}/refexions/app-support`, {
+        application_name: appSupportDraft.application,
+        issue_description: description,
+        issue_requester_email: profile.email || user?.email || '',
+      }, getAuthHeader())
+        .then(() => {
+          setStep('main');
+          setChips(mainChipList(mainOptions));
+          push(botMsg(`Thanks. App Support received your ${appSupportDraft.application} issue.`, mainOptions));
+        })
+        .catch((err) => {
+          push(botMsg(getApiErrorMessage(err, 'Could not submit App Support. Try again.')));
+        })
+        .finally(() => setBusy(false));
       return;
     }
 

@@ -92,6 +92,7 @@ const RefexionsSetup = () => {
     ml_url: DEFAULT_ML_URL,
     policy_service_url: DEFAULT_POLICY_URL,
     policy_template_id: 'policy_share_v1',
+    app_support_webhook_url: '',
     policy_api_key: '',
     has_policy_api_key: false,
     faqs: [],
@@ -119,6 +120,7 @@ const RefexionsSetup = () => {
         ml_url: res.data.ml_url || DEFAULT_ML_URL,
         policy_service_url: res.data.policy_service_url || DEFAULT_POLICY_URL,
         policy_template_id: res.data.policy_template_id || 'policy_share_v1',
+        app_support_webhook_url: res.data.app_support_webhook_url || '',
         policy_api_key: '',
         has_policy_api_key: Boolean(res.data.has_policy_api_key),
         faqs: Array.isArray(res.data.faqs) ? res.data.faqs : [],
@@ -149,6 +151,7 @@ const RefexionsSetup = () => {
           || DEFAULT_POLICY_URL,
         policy_template_id: (extra.policy_template_id ?? form.policy_template_id).trim()
           || 'policy_share_v1',
+        app_support_webhook_url: (extra.app_support_webhook_url ?? form.app_support_webhook_url).trim(),
         faqs: nextFaqs ?? form.faqs,
         policies: extra.policies ?? form.policies,
         menus: extra.menus ?? form.menus,
@@ -160,6 +163,7 @@ const RefexionsSetup = () => {
         ml_url: res.data.ml_url || DEFAULT_ML_URL,
         policy_service_url: res.data.policy_service_url || DEFAULT_POLICY_URL,
         policy_template_id: res.data.policy_template_id || 'policy_share_v1',
+        app_support_webhook_url: res.data.app_support_webhook_url || form.app_support_webhook_url,
         policy_api_key: '',
         has_policy_api_key: Boolean(res.data.has_policy_api_key),
         faqs: Array.isArray(res.data.faqs) ? res.data.faqs : [],
@@ -339,6 +343,17 @@ const RefexionsSetup = () => {
               className={monoClass}
               value={form.policy_template_id}
               onChange={(e) => setForm((prev) => ({ ...prev, policy_template_id: e.target.value }))}
+            />
+          </Field>
+          <Field
+            label="App Support webhook"
+            hint="Stored in Refexions Setup (Mongo). Live Kissflow URL. Development swaps host + account only."
+          >
+            <input
+              className={monoClass}
+              value={form.app_support_webhook_url}
+              onChange={(e) => setForm((prev) => ({ ...prev, app_support_webhook_url: e.target.value }))}
+              placeholder="https://refexgroup.kissflow.com/integration/2/AcCMptlq60zH/webhook/…"
             />
           </Field>
           <Field

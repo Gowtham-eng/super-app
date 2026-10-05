@@ -881,7 +881,7 @@ const CreateITRequest = () => {
               <h1 className="font-heading text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 tracking-tight">
                 Create IT Request
               </h1>
-              <p className="text-slate-500 text-sm mt-0.5 font-medium">IT Help Desk</p>
+              <p className="text-slate-500 text-sm mt-0.5 font-medium">Tech Helpdesk</p>
             </div>
           </div>
           {profile.entity && (

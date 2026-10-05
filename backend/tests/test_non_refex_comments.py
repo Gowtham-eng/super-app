@@ -10,6 +10,7 @@ from routes.itsm import (
     _collect_multipart_files,
     _employee_visible_comments,
     _can_comment_on_step,
+    _comment_write_block_reason,
     _is_comment_nested_table_step,
     _is_pickup_step,
     _is_gcs_signed_url,
@@ -138,7 +139,7 @@ def test_reopen_comments_use_setup_admin_put():
         "access_key_id": "dev-key",
     }
     assert _uses_admin_comment_put("Extrovis", live_cfg, reopened=True) is True
-    assert _uses_admin_comment_put("Extrovis", live_cfg, reopened=False) is False
+    assert _uses_admin_comment_put("Extrovis", live_cfg, reopened=False) is True
     assert _uses_admin_comment_put("Extrovis", dev_cfg, reopened=False) is True
     assert _uses_dev_admin_comment_put("Extrovis", dev_cfg) is True
     assert _uses_admin_comment_put("Refex", live_cfg, reopened=True) is False
@@ -392,6 +393,9 @@ def test_kissflow_headers_include_key_id_and_secret():
     assert get_headers["X-Access-Key-Id"] == "Ak-report"
     assert get_headers["X-Access-Key-Secret"] == "secret-report"
     assert "Content-Type" not in get_headers
+    admin_write = _kissflow_headers(cfg, for_write=False, json_body=True)
+    assert admin_write["X-Access-Key-Id"] == "Ak-report"
+    assert admin_write["X-Access-Key-Secret"] == "secret-report"
     write_headers = _kissflow_headers(cfg, for_write=True, json_body=True)
     assert write_headers["X-Access-Key-Id"] == "Ak-bot"
     assert write_headers["X-Access-Key-Secret"] == "secret-bot"
@@ -512,6 +516,57 @@ def test_non_refex_comments_blocked_on_pickup():
     assert _can_comment_on_step("IT Agent PickUp", "Extrovis") is False
     assert _can_comment_on_step("IT Agent Solution", "Extrovis") is True
     assert _can_comment_on_step("IT Agent Solution", "Refex") is False
+
+
+def test_admin_put_comment_gate_pickup_reopen_and_inprogress():
+    pickup = _comment_write_block_reason(
+        entity="Extrovis",
+        live_step="IT Agent PickUp",
+        use_admin_put=True,
+        ticket_reopened=True,
+    )
+    assert pickup and "PickUp" in pickup
+    assert (
+        _comment_write_block_reason(
+            entity="Extrovis",
+            live_step="IT Agent Solution",
+            use_admin_put=True,
+            ticket_reopened=False,
+        )
+        is None
+    )
+    assert (
+        _comment_write_block_reason(
+            entity="Extrovis",
+            live_step="Dependency",
+            use_admin_put=True,
+            ticket_reopened=False,
+        )
+        is None
+    )
+    assert (
+        _comment_write_block_reason(
+            entity="Extrovis",
+            live_step="IT Agent Solution",
+            use_admin_put=True,
+            ticket_reopened=True,
+        )
+        is None
+    )
+    pending = _comment_write_block_reason(
+        entity="Extrovis",
+        live_step="Pending Approval",
+        use_admin_put=True,
+        ticket_reopened=False,
+    )
+    assert pending and "IT Agent Solution" in pending
+    refex = _comment_write_block_reason(
+        entity="Refex",
+        live_step="IT Tech Support",
+        use_admin_put=False,
+        ticket_reopened=False,
+    )
+    assert refex and "Refex" in refex
 
 
 def test_refex_and_extrovis_it_agent_solution_from_column_and_native():
