@@ -15,6 +15,7 @@ import asyncio
 import logging
 import httpx
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 logger = logging.getLogger("kissflow_scim")
 
@@ -275,6 +276,58 @@ async def _request_with_retry(client: httpx.AsyncClient, method: str, url: str, 
         return resp
 
     return resp
+
+
+def _scim_email_filters(email: str) -> list:
+    """Kissflow userName is often an employee id, not the login email."""
+    email = (email or "").strip()
+    if not email:
+        return []
+    filters = [
+        f'userName eq "{email}"',
+        f'emails.value eq "{email}"',
+        f'emails eq "{email}"',
+    ]
+    local = email.split("@")[0].strip() if "@" in email else ""
+    if local and local.lower() != email.lower():
+        filters.append(f'userName eq "{local}"')
+    return filters
+
+
+def _scim_user_matches_email(kf_user: dict, email: str) -> bool:
+    want = (email or "").strip().lower()
+    if not want or not kf_user:
+        return False
+    if str(kf_user.get("userName") or "").strip().lower() == want:
+        return True
+    for item in kf_user.get("emails") or []:
+        val = item.get("value") if isinstance(item, dict) else item
+        if str(val or "").strip().lower() == want:
+            return True
+    return False
+
+
+async def _scim_find_user_by_email(client, base_url: str, headers: dict, email: str):
+    """Look up a Kissflow SCIM user by login email. Returns (user, last_status, last_text, any_200)."""
+    last_status = None
+    last_text = ""
+    any_200 = False
+    for filt in _scim_email_filters(email):
+        filter_url = f"{base_url}Users?filter={quote(filt)}"
+        search_resp = await _request_with_retry(client, "GET", filter_url, headers)
+        last_status = search_resp.status_code
+        last_text = (search_resp.text or "")[:300]
+        if search_resp.status_code != 200:
+            continue
+        any_200 = True
+        try:
+            resources = (search_resp.json() or {}).get("Resources") or []
+        except Exception:
+            resources = []
+        for kf_user in resources:
+            if _scim_user_matches_email(kf_user, email):
+                return kf_user, last_status, last_text, any_200
+    return None, last_status, last_text, any_200
 
 
 async def push_user_to_kissflow(
@@ -885,11 +938,13 @@ async def _assign_kissflow_apps(db, org_id: str, user_id: str) -> list:
     return assigned
 
 
-async def link_user_from_kissflow_scim(db, org_id: str, email: str, user_id: str = None) -> dict:
+async def link_user_from_kissflow_scim(
+    db, org_id: str, email: str, user_id: str = None, *, create_if_missing: bool = True
+) -> dict:
     """
-    Look up an existing Kissflow SCIM user by email and store kissflow_user_id.
-    Does not create a Kissflow account. Does not revoke on miss.
-    Also assigns Kissflow app tiles in RefexOne when the SCIM user is active.
+    Look up a RefexOne user in Kissflow SCIM and store kissflow_user_id.
+    If they are not in Kissflow and create_if_missing=True, create them via SCIM
+    (User Master Link only). Bulk push/sync still does not auto-create.
     """
     email = (email or "").strip().lower()
     if not email:
@@ -922,67 +977,97 @@ async def link_user_from_kissflow_scim(db, org_id: str, email: str, user_id: str
         "Content-Type": "application/scim+json",
     }
     lookup_email = (user.get("email") or email).strip().lower()
-    filter_url = f'{base_url}Users?filter=userName eq "{lookup_email}"'
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        search_resp = await _request_with_retry(client, "GET", filter_url, headers)
-
-    if search_resp.status_code in (401, 403):
+    async def _persist(kf_id: str, action: str):
+        now = datetime.now(timezone.utc).isoformat()
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"kissflow_user_id": kf_id, "kissflow_synced_at": now}},
+        )
+        apps_assigned = await _assign_kissflow_apps(db, org_id, user["id"])
+        logger.info("Kissflow %s %s -> %s (apps=%s)", action, lookup_email, kf_id, apps_assigned)
         return {
-            "action": "auth_error",
+            "action": action,
             "email": lookup_email,
-            "status": search_resp.status_code,
-            "detail": (search_resp.text or "")[:300],
-        }
-    if search_resp.status_code != 200:
-        return {
-            "action": "search_error",
-            "email": lookup_email,
-            "status": search_resp.status_code,
-            "detail": (search_resp.text or "")[:300],
-        }
-
-    resources = (search_resp.json() or {}).get("Resources") or []
-    if not resources:
-        return {
-            "action": "not_found",
-            "email": lookup_email,
-            "user_in_kissflow": False,
-            "detail": "User not found in Kissflow SCIM. Confirm the Kissflow login email matches RefexOne exactly.",
-        }
-
-    kf_user = resources[0]
-    kf_id = kf_user.get("id")
-    active = kf_user.get("active", True) is True
-    now = datetime.now(timezone.utc).isoformat()
-
-    if not active:
-        return {
-            "action": "inactive",
-            "email": lookup_email,
+            "user_id": user["id"],
             "user_in_kissflow": True,
             "kissflow_user_id": kf_id,
-            "kissflow_active": False,
-            "detail": "User exists in Kissflow but is disabled. Enable them in Kissflow, then link again.",
+            "kissflow_active": True,
+            "apps_assigned": apps_assigned,
+            "kissflow_synced_at": now,
         }
 
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$set": {"kissflow_user_id": kf_id, "kissflow_synced_at": now}},
-    )
-    apps_assigned = await _assign_kissflow_apps(db, org_id, user["id"])
+    async with httpx.AsyncClient(timeout=30) as client:
+        kf_user, last_status, last_text, any_200 = await _scim_find_user_by_email(
+            client, base_url, headers, lookup_email
+        )
 
-    logger.info("Linked Kissflow SCIM user %s -> %s (apps=%s)", lookup_email, kf_id, apps_assigned)
-    return {
-        "action": "linked",
-        "email": lookup_email,
-        "user_id": user["id"],
-        "user_in_kissflow": True,
-        "kissflow_user_id": kf_id,
-        "kissflow_active": True,
-        "apps_assigned": apps_assigned,
-        "kissflow_synced_at": now,
-    }
+        if last_status in (401, 403) and not kf_user:
+            return {
+                "action": "auth_error",
+                "email": lookup_email,
+                "status": last_status,
+                "detail": last_text,
+            }
+        if not any_200 and not kf_user:
+            return {
+                "action": "search_error",
+                "email": lookup_email,
+                "status": last_status,
+                "detail": last_text or "Kissflow SCIM search failed.",
+            }
+
+        if kf_user:
+            kf_id = kf_user.get("id")
+            if kf_user.get("active", True) is not True:
+                return {
+                    "action": "inactive",
+                    "email": lookup_email,
+                    "user_in_kissflow": True,
+                    "kissflow_user_id": kf_id,
+                    "kissflow_active": False,
+                    "detail": "User exists in Kissflow but is disabled. Enable them in Kissflow, then link again.",
+                }
+            return await _persist(kf_id, "linked")
+
+        if not create_if_missing:
+            return {
+                "action": "not_found",
+                "email": lookup_email,
+                "user_in_kissflow": False,
+                "detail": (
+                    "User not found in Kissflow SCIM. Confirm they exist in Kissflow and the "
+                    "Kissflow login email matches RefexOne exactly."
+                ),
+            }
+
+        if user.get("status") == "disabled":
+            return {
+                "action": "inactive",
+                "email": lookup_email,
+                "user_in_kissflow": False,
+                "detail": "Enable this user in RefexOne first, then add them to Kissflow.",
+            }
+
+        push_res = await push_user_to_kissflow(client, base_url, token, user, update_only=False)
+        kf_id = push_res.get("kf_id")
+        if push_res.get("action") in ("created", "updated") and kf_id:
+            out = await _persist(kf_id, "created" if push_res.get("action") == "created" else "linked")
+            out["provision"] = push_res.get("action")
+            return out
+        if push_res.get("action") == "already_exists":
+            kf_user, _, _, _ = await _scim_find_user_by_email(client, base_url, headers, lookup_email)
+            if kf_user and kf_user.get("id"):
+                return await _persist(kf_user["id"], "linked")
+
+        return {
+            "action": "create_error",
+            "email": lookup_email,
+            "user_in_kissflow": False,
+            "status": push_res.get("status"),
+            "detail": push_res.get("detail") or push_res.get("error") or "Kissflow did not create this user.",
+            "provision": push_res.get("action"),
+        }
 
 
 async def resolve_managers_in_kissflow(db, org_id: str) -> dict:

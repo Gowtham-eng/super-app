@@ -345,18 +345,22 @@ const UsersPage = () => {
       return;
     }
     if (!window.confirm(
-      `Link ${user.email} to Kissflow?\n\nLooks up this email in Kissflow SCIM, saves the Kissflow ID (badge), and assigns the Kissflow app if found.`
+      `Add ${user.email} to Kissflow?\n\nIf they already exist, RefexOne will link the Kissflow ID. If they do not, this creates them in Kissflow and assigns the Kissflow app.`
     )) return;
     setLinkingKf(true);
     try {
       const res = await axios.post(
         `${API}/kissflow-scim/link-user`,
-        { email: user.email, user_id: user.id },
+        { email: user.email, user_id: user.id, create_if_missing: true },
         getAuthHeader()
       );
       const data = res.data || {};
-      if (data.action === 'linked') {
-        toast.success('Kissflow linked — badge should appear');
+      if (data.action === 'linked' || data.action === 'created') {
+        toast.success(
+          data.action === 'created'
+            ? 'Added to Kissflow — badge should appear'
+            : 'Kissflow linked — badge should appear'
+        );
         const updated = {
           ...user,
           kissflow_user_id: data.kissflow_user_id,
@@ -371,6 +375,10 @@ const UsersPage = () => {
         toast.error(data.detail || 'User is disabled in Kissflow.');
       } else if (data.action === 'auth_error') {
         toast.error('Kissflow SCIM auth failed. Check SCIM Setup token.');
+      } else if (data.action === 'search_error') {
+        toast.error(data.detail || 'Kissflow SCIM search failed. Try again or check SCIM Setup.');
+      } else if (data.action === 'create_error') {
+        toast.error(data.detail || 'Kissflow did not create this user.');
       } else {
         toast.error(data.detail || data.error || `Link result: ${data.action || 'unknown'}`);
       }
@@ -877,7 +885,7 @@ const UsersPage = () => {
                       disabled={linkingKf}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-violet-50 text-violet-700 hover:bg-violet-100 border border-violet-200 transition-colors disabled:opacity-50"
                       data-testid="detail-link-kissflow-btn"
-                      title={detailUser.kissflow_user_id ? 'Refresh Kissflow ID from SCIM' : 'Look up this email in Kissflow and show the badge'}
+                      title={detailUser.kissflow_user_id ? 'Refresh Kissflow ID from SCIM' : 'Link or create this user in Kissflow'}
                     >
                       <Link2 size={13} className={linkingKf ? 'animate-pulse' : ''} />
                       {linkingKf ? 'Linking…' : (detailUser.kissflow_user_id ? 'Relink Kissflow' : 'Link Kissflow')}

@@ -4009,12 +4009,17 @@ async def push_user_to_kf(request: Request, user: dict = Depends(get_current_use
 
 @api_router.post("/kissflow-scim/link-user")
 async def link_user_from_kf(request: Request, user: dict = Depends(get_current_user)):
-    """Look up a RefexOne user in Kissflow SCIM and save kissflow_user_id (no create)."""
+    """Look up or create a Kissflow SCIM user from User Master, then save kissflow_user_id."""
     if user.get("role") != "org_admin":
         raise HTTPException(status_code=403, detail="Admin only")
     body = await request.json()
     email = (body.get("email") or "").strip().lower()
     user_id = (body.get("user_id") or "").strip() or None
+    create_if_missing = body.get("create_if_missing", True)
+    if isinstance(create_if_missing, str):
+        create_if_missing = create_if_missing.strip().lower() not in ("0", "false", "no")
+    else:
+        create_if_missing = bool(create_if_missing)
     if not email and not user_id:
         raise HTTPException(status_code=400, detail="email or user_id is required")
 
@@ -4031,7 +4036,11 @@ async def link_user_from_kf(request: Request, user: dict = Depends(get_current_u
         raise HTTPException(status_code=404, detail=f"User {email or user_id} not found in this organization")
 
     result = await link_user_from_kissflow_scim(
-        db, user["org_id"], target.get("email") or email, user_id=target["id"]
+        db,
+        user["org_id"],
+        target.get("email") or email,
+        user_id=target["id"],
+        create_if_missing=create_if_missing,
     )
     await db.kissflow_sync_logs.insert_one({
         "org_id": user["org_id"],
