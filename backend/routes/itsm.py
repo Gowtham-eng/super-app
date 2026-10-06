@@ -6649,9 +6649,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         environment: Optional[str] = Query(None),
         user: dict = Depends(get_current_user),
     ):
-        """Mint the GET-signed GCS URL for a Non-Refex comment attachment."""
-        if not _uses_extrovis_flow(entity):
-            raise HTTPException(status_code=400, detail="Attachment preview is only for Non-Refex tickets.")
+        """Mint the GET-signed GCS URL for a Help Desk comment attachment."""
         file_key = _attachment_key_from_url(key) or (key or "").strip()
         if not file_key:
             raise HTTPException(status_code=400, detail="Attachment key is required.")
@@ -6673,8 +6671,6 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         user: dict = Depends(get_current_user),
     ):
         """Same-origin file stream so Help Desk can open and download attachments."""
-        if not _uses_extrovis_flow(entity):
-            raise HTTPException(status_code=400, detail="Attachment download is only for Non-Refex tickets.")
         file_key = _attachment_key_from_url(key) or (key or "").strip()
         if not file_key:
             raise HTTPException(status_code=400, detail="Attachment key is required.")

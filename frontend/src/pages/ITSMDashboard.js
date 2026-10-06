@@ -882,7 +882,7 @@ const TicketConversation = ({
 
       <div
         ref={scrollerRef}
-        className={`itsm-thread ${entries.length ? 'max-h-80 overflow-y-auto' : ''} px-3 py-4 sm:px-5`}
+        className={`itsm-thread ${entries.length ? 'max-h-80 overflow-y-auto max-xl:max-h-none max-xl:overflow-visible' : ''} px-3 py-4 sm:px-5`}
       >
         {loadError ? <p className="relative z-[1] mb-2 text-center text-[11px] text-rose-600">{loadError}</p> : null}
         {!entries.length ? (
@@ -2010,7 +2010,10 @@ const ITSMDashboard = () => {
                 {showExpand ? (
                   <button
                     type="button"
-                    onClick={() => toggleExpanded(rowId)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleExpanded(rowId);
+                    }}
                     className="btn-secondary w-full sm:w-auto"
                     data-testid={`itsm-expand-mobile-${rowId}`}
                   >
@@ -2021,7 +2024,10 @@ const ITSMDashboard = () => {
                 {showComment ? (
                   <button
                     type="button"
-                    onClick={() => openConversation(ticket)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openConversation(ticket);
+                    }}
                     disabled={commentingId === ticket.id}
                     className="btn-secondary w-full sm:w-auto"
                     data-testid={`itsm-comment-mobile-${ticket.id}`}
@@ -2036,7 +2042,10 @@ const ITSMDashboard = () => {
                     {ticketAllowsReopen(ticket) ? (
                     <button
                       type="button"
-                      onClick={() => openReopenDialog(ticket)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openReopenDialog(ticket);
+                      }}
                       disabled={reopeningId === ticket.id}
                       className="btn-secondary w-full"
                       data-testid={`itsm-reopen-mobile-${ticket.id}`}
@@ -2049,7 +2058,10 @@ const ITSMDashboard = () => {
                 ) : null}
               </div>
               {expanded && showExpand ? (
-                <div className="mt-3 border-t border-slate-100 pt-3 space-y-3">
+                <div
+                  className="mt-3 border-t border-slate-100 pt-3 space-y-3"
+                  onClick={(event) => event.stopPropagation()}
+                >
                   {showSolution ? (
                     <AgentSolutionBlock
                       ticket={ticket}

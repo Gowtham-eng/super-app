@@ -339,7 +339,15 @@ export default function CommentAttachmentPreview({
           getAuthHeader: authRef.current,
         });
         if (!blob) {
+          const stored = asText(file?.Url || file?.url);
+          if (stored) {
+            setFullUrl(stored);
+            setOpen(true);
+            setFailed(false);
+            return;
+          }
           setFailed(true);
+          setOpen(true);
           return;
         }
         const blobUrl = URL.createObjectURL(blob);
@@ -365,7 +373,15 @@ export default function CommentAttachmentPreview({
           getAuthHeader: authRef.current,
         });
         if (!blob) {
+          const stored = asText(file?.Url || file?.url);
+          if (stored) {
+            setFullUrl(stored);
+            setOpen(true);
+            setFailed(false);
+            return;
+          }
           setFailed(true);
+          setOpen(true);
           return;
         }
         const blobUrl = URL.createObjectURL(blob);
@@ -381,8 +397,10 @@ export default function CommentAttachmentPreview({
       setOpen(true);
       setFailed(false);
     } catch {
-      if (fullUrl || thumbUrl) setOpen(true);
-      else setFailed(true);
+      const stored = fullUrl || thumbUrl || asText(file?.Url || file?.url);
+      if (stored) setFullUrl(stored);
+      setOpen(true);
+      if (!stored) setFailed(true);
     } finally {
       setLoading(false);
     }
@@ -436,7 +454,7 @@ export default function CommentAttachmentPreview({
 
   const href = fullUrl || thumbUrl;
   const lightbox =
-    open && href ? (
+    open ? (
       <div
         role="dialog"
         aria-modal="true"
@@ -471,7 +489,7 @@ export default function CommentAttachmentPreview({
             </button>
           </div>
           <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto">
-            {image ? (
+            {image && href ? (
               <img
                 src={href}
                 alt={label}
