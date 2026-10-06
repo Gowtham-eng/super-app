@@ -238,6 +238,12 @@ button:not(.btn-primary):not(.btn-secondary):not(.btn-danger):not(.btn-ghost):no
   table-layout: fixed;
 }
 
+/* Expand-row chat must span the ticket row. fixed + first-col width
+   collapsed the conversation into the chevron cell on some laptops. */
+.data-table.itsm-mis-table {
+  table-layout: auto;
+}
+
 .data-table thead {
   @apply text-xs uppercase tracking-wider text-slate-500 border-b border-slate-200;
 }
@@ -270,54 +276,67 @@ button:not(.btn-primary):not(.btn-secondary):not(.btn-danger):not(.btn-ghost):no
 
 .itsm-mis-table td.itsm-conversation-cell,
 .data-table td.itsm-conversation-cell {
-  overflow: visible;
+  overflow: hidden;
   white-space: normal;
   text-overflow: unset;
   vertical-align: top;
+  width: 100%;
+  max-width: none;
 }
 
 .itsm-conversation {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
-  max-width: 56rem;
+  width: 100%;
+  max-width: 100%;
 }
 
-/* Mobile/tablet cards only — desktop MIS table conversation stays unchanged. */
-@media (max-width: 1279px) {
-  .itsm-conversation {
-    overflow: visible;
-    max-width: 100%;
+.itsm-conversation-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  width: 100%;
+}
+
+@media (min-width: 768px) {
+  .itsm-conversation-split {
+    grid-template-columns: minmax(0, 1.35fr) minmax(15.5rem, 0.85fr);
+    align-items: stretch;
   }
-  .itsm-thread {
-    max-height: min(28rem, 60dvh);
-    overflow-x: visible;
-  }
-  .itsm-conversation [data-testid="itsm-comment-attachment"] {
-    flex-shrink: 0;
-    min-width: 4.5rem;
-    min-height: 4.5rem;
-  }
+}
+
+.itsm-conversation-chat {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.itsm-conversation-details {
+  min-width: 0;
+  max-height: min(26rem, 52dvh);
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .itsm-thread {
   position: relative;
   background: #f8fafc;
+  max-height: min(14rem, 34dvh);
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
-.itsm-thread::before {
-  content: '';
-  position: absolute;
-  top: 12px;
-  bottom: 12px;
-  left: 50%;
-  width: 1px;
-  background: #e2e8f0;
-  pointer-events: none;
-}
-
-@media (max-width: 639px) {
-  .itsm-thread::before {
-    display: none;
+@media (min-width: 768px) {
+  .itsm-thread {
+    max-height: min(16rem, 38dvh);
   }
+}
+
+.itsm-conversation [data-testid="itsm-comment-attachment"] {
+  flex-shrink: 0;
+  min-width: 4.5rem;
+  min-height: 4.5rem;
 }
 
 /* Sticky cells must layer above non-sticky neighbours */

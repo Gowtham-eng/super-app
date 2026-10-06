@@ -2,7 +2,10 @@
 from routes.itsm import (
     _admin_process_item_path,
     _admin_process_item_url,
+    _comment_author_from_row,
     _comment_write_accepted,
+    _commenter_display_name,
+    _stamp_solution_author_fields,
     _kissflow_response_text,
     _looks_like_html,
     _attachment_key_is_image,
@@ -542,6 +545,39 @@ def test_extrovis_report_ticket_includes_subject():
     assert refex.get("subject", "") == ""
 
 
+def test_report_and_instance_map_ticket_type_category():
+    ext_ids = REPORT_FIELD_IDS["extrovis"]
+    parsed = _parse_report_ticket(
+        {
+            ext_ids["ticket_type"][0]: "Incident",
+            ext_ids["category"][0]: "Hardware",
+            ext_ids["sub_category"][0]: "Laptop",
+            "Description": "screen flicker",
+            "_id": "PkCatRow",
+        },
+        [],
+        0,
+        "Extrovis",
+    )
+    assert parsed["ticketType"] == "Incident"
+    assert parsed["category"] == "Hardware"
+    assert parsed["subCategory"] == "Laptop"
+    native = _thread_from_instance_payload(
+        {
+            "Ticket_Type": "Service Request",
+            "Category": "Network",
+            "SubCategory": "VPN",
+            "Description": "vpn down",
+            "Request_ID": "SR-1",
+        },
+        REPORT_FIELD_IDS["extrovis"],
+    )
+    assert native["ticketType"] == "Service Request"
+    assert native["category"] == "Network"
+    assert native["subCategory"] == "VPN"
+    assert native["description"] == "vpn down"
+
+
 def test_comment_nested_table_prefers_solution_not_pickup():
     assert _is_comment_nested_table_step("IT Agent Solution") is True
     assert _is_comment_nested_table_step("IT Tech Support") is True
@@ -871,3 +907,69 @@ def test_reopen_notes_survive_wrapped_progress_and_completed_step():
     assert len(notes) == 1
     assert notes[0]["comment"] == "Still i am facing the issue"
     assert notes[0]["role"] == "reopen"
+
+
+def test_commenter_name_is_refexone_login_not_assignee():
+    user = {
+        "first_name": "Mohamed",
+        "last_name": "Aasik",
+        "email": "mohamed.aasik@refex.co.in",
+        "name": "Mohamed Aasik",
+    }
+    assert _commenter_display_name(user, "Vishnu") == "Mohamed Aasik"
+    assert _commenter_display_name(user, "vishnu@refex.co.in") == "Mohamed Aasik"
+    email_only = {"email": "mohamed.aasik@refex.co.in", "name": "mohamed.aasik@refex.co.in"}
+    assert _commenter_display_name(email_only, "Mohamed Aasik") == "Mohamed Aasik"
+
+
+def test_admin_put_row_stamps_login_name_on_all_name_columns():
+    row = _stamp_solution_author_fields(
+        {"_id": "IT__Agent_Solution_new1", "Resolution": "please check", "Comments_2": "User"},
+        "Extrovis",
+        "Mohamed Aasik",
+        "mohamed.aasik@refex.co.in",
+    )
+    assert row["Name_1"] == "Mohamed Aasik"
+    assert row["Name"] == "Mohamed Aasik"
+    assert row["Column_ZipK5a_k8Y"] == {
+        "Name": "Mohamed Aasik",
+        "Email": "mohamed.aasik@refex.co.in",
+    }
+    assert row["Comments_2"] == "User"
+    assert "Vishnu" not in str(row.values())
+    merged = _merge_solution_rows_for_put(
+        [{"_id": "IT__Agent_Solution_old1", "Name_1": "Aasik", "Resolution": "earlier", "Comments_2": "User"}],
+        row,
+    )
+    assert merged[-1]["Name_1"] == "Mohamed Aasik"
+    assert merged[-1]["Column_ZipK5a_k8Y"]["Name"] == "Mohamed Aasik"
+
+
+def test_parse_prefers_name_1_over_assignee_user_column():
+    field_ids = REPORT_FIELD_IDS["extrovis"]
+    author = _comment_author_from_row(
+        {
+            "Name_1": "Mohamed Aasik",
+            "Column_ZipK5a_k8Y": {"Name": "Vishnu", "Email": "vishnu@refex.co.in"},
+            "Resolution": "hello",
+            "Comments_2": "User",
+        },
+        field_ids,
+    )
+    parsed = _parse_agent_solutions(
+        {
+            "Table::IT__Agent_Solution": [
+                {
+                    "_id": "IT__Agent_Solution_new1",
+                    "Name_1": "Mohamed Aasik",
+                    "Column_ZipK5a_k8Y": {"Name": "Vishnu", "Email": "vishnu@refex.co.in"},
+                    "Resolution": "hello",
+                    "Comments_2": "User",
+                }
+            ]
+        },
+        field_ids,
+        requester_name="Mohamed Aasik",
+    )
+    assert author == "Mohamed Aasik"
+    assert parsed[0]["userName"] == "Mohamed Aasik"

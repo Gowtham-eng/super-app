@@ -1473,26 +1473,35 @@ async def _kf_get_json(
     params: Optional[Dict[str, Any]] = None,
     *,
     for_write: bool = False,
+    raise_on_challenge: bool = True,
 ) -> Any:
     url = path if path.startswith("http") else f"{cfg['kissflow_base_url']}{path}"
     host = cfg.get("kissflow_base_url") or ""
-    for attempt in range(2):
+    delays = (1.5, 3.0)
+    for attempt in range(3):
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(
                 url,
                 headers=_kissflow_headers(cfg, for_write=for_write),
                 params=params or {},
             )
-        if _response_is_kissflow_challenge(response) or _looks_like_html(getattr(response, "text", "") or ""):
+        challenged = _response_is_kissflow_challenge(response) or _looks_like_html(
+            getattr(response, "text", "") or ""
+        )
+        rate_limited = int(getattr(response, "status_code", 0) or 0) == 429
+        if challenged or rate_limited:
             logger.warning(
-                "Kissflow GET challenge %s -> %s",
+                "Kissflow GET challenge %s -> %s attempt=%s",
                 path,
                 getattr(response, "status_code", "?"),
+                attempt + 1,
             )
-            if attempt == 0:
-                await asyncio.sleep(1.2)
+            if attempt < 2:
+                await asyncio.sleep(delays[attempt])
                 continue
-            raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+            if raise_on_challenge:
+                raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+            return None
         if response.status_code >= 400:
             logger.warning("Kissflow GET %s -> %s %s", path, response.status_code, (response.text or "")[:200])
             return None
@@ -1500,9 +1509,16 @@ async def _kf_get_json(
             return response.json()
         except Exception:
             if _looks_like_html(response.text or ""):
-                raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+                if attempt < 2:
+                    await asyncio.sleep(delays[attempt])
+                    continue
+                if raise_on_challenge:
+                    raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+                return None
             return None
-    raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+    if raise_on_challenge:
+        raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+    return None
 
 
 def _kissflow_response_text(raw: Any, fallback: str = "") -> str:
@@ -2216,6 +2232,9 @@ REPORT_FIELD_IDS = {
         "requester_email": ["Column_TNDYy0NHqk", "Email", "Requester_Email", "Requestor_Email"],
         "requester_name": ["Requester_Name"],
         "created_by": ["Column_qpzG8v9AKq", "_created_by"],
+        "ticket_type": ["Column_EM6o5_acb3", "Ticket_Type", "Request_Type"],
+        "category": ["Column_pFbqS2Q9gD", "Category"],
+        "sub_category": ["Column_wgwPyyrhqe", "SubCategory", "Sub_Category"],
         # IT__Agent_Solution child table (Revisions)
         "solution_table": ["Column_KaubOsozAz", "Table::IT__Agent_Solution", "IT__Agent_Solution"],
         "solution_table_name": ["Column_mvjPOUTegd", "Name_1", "Name"],
@@ -2257,6 +2276,9 @@ REPORT_FIELD_IDS = {
         "requester_email": ["Column_Egh9ss0nVO", "Email", "Requester_Email", "Requestor_Email"],
         "requester_name": ["Requester_Name"],
         "created_by": ["Column_9D6907I8pY", "_created_by"],
+        "ticket_type": ["Column_ngHfbXhmqj", "Ticket_Type", "Request_Type"],
+        "category": ["Column_53Z2oyBbZk", "Category"],
+        "sub_category": ["Column_AC0_BCY9hP", "SubCategory", "Sub_Category"],
         # IT__Agent_Solution child table (Revisions)
         "solution_table": ["Column_qr_9gP_vE5", "Table::IT__Agent_Solution", "IT__Agent_Solution"],
         "solution_table_name": ["Column_ZipK5a_k8Y", "Name_1", "Name"],
@@ -2285,8 +2307,8 @@ def _looks_like_email(value: Any) -> bool:
 
 def _commenter_display_name(user: Optional[Dict[str, Any]], hinted: Optional[str] = None) -> str:
     """
-    Prefer a real person name for Table::IT__Agent_Solution.Name_1.
-    Never fall back to an email address when a name is available.
+    Author for Table::IT__Agent_Solution.Name_1 is the Refex One login user.
+    Never use the ticket assignee. Hint is only a fallback when JWT has no name.
     """
     email = _normalize_email((user or {}).get("email") or "")
 
@@ -2300,26 +2322,70 @@ def _commenter_display_name(user: Optional[Dict[str, Any]], hinted: Optional[str
             return ""
         return text
 
+    login_name = " ".join(
+        part
+        for part in (
+            _as_string((user or {}).get("first_name") or (user or {}).get("firstName")).strip(),
+            _as_string((user or {}).get("last_name") or (user or {}).get("lastName")).strip(),
+        )
+        if part
+    )
     candidates = [
-        hinted,
-        " ".join(
-            part
-            for part in (
-                _as_string((user or {}).get("first_name") or (user or {}).get("firstName")).strip(),
-                _as_string((user or {}).get("last_name") or (user or {}).get("lastName")).strip(),
-            )
-            if part
-        ),
+        login_name,
         (user or {}).get("name"),
         (user or {}).get("full_name"),
         (user or {}).get("display_name"),
         (user or {}).get("displayName"),
+        hinted,
     ]
     for raw in candidates:
         name = _clean(raw)
         if name:
             return name
     return "Employee"
+
+
+def _stamp_solution_author_fields(
+    row: Dict[str, Any],
+    entity: Optional[str],
+    author_name: str,
+    author_email: str = "",
+) -> Dict[str, Any]:
+    """Write the Refex One login name onto every Kissflow name column the admin PUT accepts."""
+    name = _as_string(author_name).strip()
+    email = _normalize_email(author_email)
+    if not name:
+        return row
+    field_ids = REPORT_FIELD_IDS.get(_report_entity_key(entity), REPORT_FIELD_IDS["extrovis"])
+    row["Name_1"] = name
+    row["Name"] = name
+    person = {"Name": name}
+    if email:
+        person["Email"] = email
+    for key in field_ids.get("solution_table_name") or []:
+        if not key:
+            continue
+        row[key] = person if str(key).startswith("Column_") else name
+    if _report_entity_key(entity) != "refex":
+        comments_type = _as_string(row.get("Comments_2")).strip() or "User"
+        row["Comments_2"] = comments_type
+        for key in field_ids.get("solution_table_comments_type") or []:
+            if key:
+                row[key] = comments_type
+        stages = _as_string(row.get("Stages_1") or row.get("Stages")).strip() or "InProgress"
+        row["Stages_1"] = stages
+        for key in field_ids.get("solution_table_stages") or []:
+            if key:
+                row[key] = stages
+    return row
+
+
+def _comment_author_from_row(row: Dict[str, Any], field_ids: Dict[str, List[str]]) -> Any:
+    """Prefer the text Name_1 we PUT. Column_* user objects often hold the assignee."""
+    name_cols = list(field_ids.get("solution_table_name") or ["Name_1", "Name"])
+    preferred = ["Name_1", "Name"]
+    rest = [key for key in name_cols if key not in preferred]
+    return _pick_row_field(row, *preferred, *rest)
 
 
 def _comment_step_for_entity(entity: Optional[str]) -> str:
@@ -2988,7 +3054,6 @@ def _parse_agent_solution_rows(
     requester_name: str = "",
     created_at: Any = None,
 ) -> List[Dict[str, Any]]:
-    name_cols = field_ids.get("solution_table_name") or ["Name_1", "Name"]
     res_cols = field_ids.get("solution_table_resolution") or ["Resolution"]
     dt_cols = field_ids.get("solution_table_datetime") or ["ITAgentDate_Time", "Date_Time"]
     stage_cols = field_ids.get("solution_table_stages") or ["Stages_1", "Stages"]
@@ -3003,8 +3068,9 @@ def _parse_agent_solution_rows(
             continue
         if empty_text:
             resolution = ""
-        raw_name = _as_string(_pick_row_field(row, *name_cols)).strip()
-        name = _person_label(_pick_row_field(row, *name_cols)) or raw_name or "IT Support"
+        author_raw = _comment_author_from_row(row, field_ids)
+        raw_name = _as_string(author_raw).strip()
+        name = _person_label(author_raw) or raw_name or "IT Support"
         if _looks_like_kissflow_id(name) or _looks_like_kissflow_id(raw_name):
             name = "IT Support"
         if name.lower().startswith("live it service request"):
@@ -3097,6 +3163,9 @@ def _thread_from_instance_payload(
         "activityInstanceId": activity_id or _as_string(item.get("_activity_instance_id")),
         "requestId": _as_string(item.get("Request_ID")),
         "description": _as_string(item.get("Description")),
+        "ticketType": _as_string(item.get("Ticket_Type") or item.get("Request_Type")),
+        "category": _as_string(item.get("Category")),
+        "subCategory": _as_string(item.get("SubCategory") or item.get("Sub_Category")),
         "solution": solution,
         "itAgentSolution": solution,
         "entity": _as_string(item.get("Entity")),
@@ -3154,14 +3223,14 @@ async def _thread_from_comment_path(
 ) -> Dict[str, Any]:
     """BOT key first (files), then report key (text), then nested-table GET."""
     best: Dict[str, Any] = {"comments": [], "activityInstanceId": activity_id}
-    bot_payload = await _kf_get_json(cfg, path, params, for_write=True)
+    bot_payload = await _kf_get_json(cfg, path, params, for_write=True, raise_on_challenge=False)
     if bot_payload is not None:
         thread = _thread_from_instance_payload(bot_payload, field_ids, activity_id)
         extras = {k: v for k, v in thread.items() if v not in (None, "", []) and k != "comments"}
         best = {**best, **extras, "comments": thread.get("comments") or []}
         if sum(1 for row in best["comments"] if _comment_file_count(row)):
             return best
-    report_payload = await _kf_get_json(cfg, path, params)
+    report_payload = await _kf_get_json(cfg, path, params, raise_on_challenge=False)
     if report_payload is not None and report_payload is not bot_payload:
         thread = _thread_from_instance_payload(report_payload, field_ids, activity_id)
         merged = _merge_comment_lists(best.get("comments") or [], thread.get("comments") or [])
@@ -3175,7 +3244,7 @@ async def _thread_from_comment_path(
         return best
 
     for nested_path in (f"{path}/IT__Agent_Solution", f"{path}/Table::IT__Agent_Solution"):
-        nested = await _kf_get_json(cfg, nested_path, params, for_write=True)
+        nested = await _kf_get_json(cfg, nested_path, params, for_write=True, raise_on_challenge=False)
         if nested is None:
             continue
         wrapped: Any = nested
@@ -3241,10 +3310,10 @@ async def _load_instance_comment_thread(
     progress: Any = None
     if need_reopen_progress:
         # ITSM Setup read keys — never a hardcoded secret or .env key dump.
-        progress = await _kf_get_json(cfg, f"{base}/progress", params)
+        progress = await _kf_get_json(cfg, f"{base}/progress", params, raise_on_challenge=False)
         if progress is None:
             await asyncio.sleep(0.4)
-            progress = await _kf_get_json(cfg, f"{base}/progress", params)
+            progress = await _kf_get_json(cfg, f"{base}/progress", params, raise_on_challenge=False)
         preferred: List[str] = []
         others: List[str] = []
         for step in _iter_progress_steps(progress):
@@ -3280,7 +3349,7 @@ async def _load_instance_comment_thread(
             break
 
     email = (best.get("requesterEmail") or viewer_email or "").strip()
-    if email:
+    if email and not (best.get("comments") or []):
         try:
             report_profile = {
                 "process_id": process_id,
@@ -3300,6 +3369,9 @@ async def _load_instance_comment_thread(
                 best["messageCount"] = len(best.get("comments") or [])
                 best["requestId"] = best.get("requestId") or match.get("requestId") or ""
                 best["description"] = best.get("description") or match.get("description") or ""
+                best["ticketType"] = best.get("ticketType") or match.get("ticketType") or ""
+                best["category"] = best.get("category") or match.get("category") or ""
+                best["subCategory"] = best.get("subCategory") or match.get("subCategory") or ""
                 best["currentStep"] = best.get("currentStep") or match.get("currentStep") or ""
                 best["assignedTo"] = best.get("assignedTo") or match.get("assignedTo") or ""
                 logger.info(
@@ -4531,6 +4603,23 @@ def _parse_report_ticket(
         "requestId": request_id or "—",
         "subject": subject,
         "description": description,
+        "ticketType": _lookup_field(
+            data,
+            *field_ids.get("ticket_type", []),
+            "Ticket_Type",
+            "Request_Type",
+        ),
+        "category": _lookup_field(
+            data,
+            *field_ids.get("category", []),
+            "Category",
+        ),
+        "subCategory": _lookup_field(
+            data,
+            *field_ids.get("sub_category", []),
+            "SubCategory",
+            "Sub_Category",
+        ),
         "status": display_status,
         "stage": stage,
         "solution": solution,
@@ -4644,6 +4733,9 @@ def _public_local_ticket(doc: Dict[str, Any]) -> Dict[str, Any]:
         "requestId": doc.get("kissflow_request_id") or "—",
         "subject": doc.get("subject") or "",
         "description": doc.get("description") or "",
+        "ticketType": doc.get("ticket_type") or "",
+        "category": doc.get("category") or "",
+        "subCategory": doc.get("sub_category") or doc.get("subCategory") or "",
         "status": status,
         "localStatus": local_status,
         "solution": doc.get("solution") or "",
@@ -6621,14 +6713,25 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
         cfg = {**cfg, "process_id": process_id}
         need_reopen_progress = True
-        thread = await _load_instance_comment_thread(
-            cfg,
-            entity,
-            instance_id,
-            (activity_instance_id or "").strip(),
-            viewer_email=(user.get("email") or "").strip(),
-            need_reopen_progress=need_reopen_progress,
-        )
+        kissflow_busy = False
+        try:
+            thread = await _load_instance_comment_thread(
+                cfg,
+                entity,
+                instance_id,
+                (activity_instance_id or "").strip(),
+                viewer_email=(user.get("email") or "").strip(),
+                need_reopen_progress=need_reopen_progress,
+            )
+        except HTTPException as exc:
+            if exc.status_code != 502:
+                raise
+            kissflow_busy = True
+            logger.warning("ITSM comments Kissflow busy instance=%s: %s", instance_id, exc.detail)
+            thread = {
+                "comments": [],
+                "activityInstanceId": (activity_instance_id or "").strip(),
+            }
         env_name = cfg.get("environment") or "development"
         merged = _merge_comment_lists(thread.get("comments") or [], _ledger_comments(env_name, instance_id))
         visible = _employee_visible_comments(merged, entity)
@@ -6639,6 +6742,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         thread["activeEnvironment"] = env_name
         thread["accountId"] = cfg.get("account_id") or ""
         thread["adminItemUrl"] = _admin_process_item_url(cfg, instance_id)
+        thread["kissflowBusy"] = kissflow_busy
         return {"success": True, **thread}
 
     @api_router.get("/itsm/reports/attachment-preview")
@@ -6814,7 +6918,6 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             )
         row: Dict[str, Any] = {
             "_id": row_id,
-            "Name_1": requester_name,
             "Resolution": comment_text,
         }
         comments_type = ""
@@ -6822,6 +6925,12 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             row["Stages_1"] = "InProgress"
             comments_type = "User"
             row["Comments_2"] = comments_type
+        row = _stamp_solution_author_fields(
+            row,
+            entity,
+            requester_name,
+            (user.get("email") or "").strip(),
+        )
         if attachments:
             row["Attachments"] = attachments
 
