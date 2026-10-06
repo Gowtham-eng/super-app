@@ -104,9 +104,8 @@ const canonicalizeTicketStage = (value) => {
 };
 
 const ticketDisplayStatus = (ticket) => {
-  const stage = canonicalizeTicketStage(ticket?.stage);
   const status = String(ticket?.status || '').trim().toLowerCase();
-  if (stage === 'Closed' || status.includes('closed') || status.includes('completed') || status.includes('reject') || status.includes('fail')) {
+  if (status.includes('closed') || status.includes('completed') || status.includes('reject') || status.includes('fail')) {
     return 'Closed';
   }
   return 'Open';
@@ -1323,6 +1322,7 @@ const ITSMDashboard = () => {
           requesterName: payload.requesterName || row.requesterName,
           requesterEmail: payload.requesterEmail || row.requesterEmail,
           currentStep: payload.currentStep || row.currentStep,
+          stage: payload.stage ? canonicalizeTicketStage(payload.stage) : row.stage,
           activityInstanceId: payload.activityInstanceId || row.activityInstanceId,
           entity: payload.entity || row.entity,
           source: payload.source || row.source,

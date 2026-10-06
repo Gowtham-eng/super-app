@@ -15,10 +15,11 @@ import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, EmailStr, Field
 
 logger = logging.getLogger("itsm")
@@ -849,6 +850,20 @@ def _build_kissflow_upload_object_path(account_id: str, key: str, thumbnail: boo
 def _is_gcs_signed_url(url: str) -> bool:
     text = (url or "").strip()
     return "storage.googleapis.com" in text and "X-Goog-Algorithm=" in text
+
+
+def _attachment_key_from_url(url: str) -> str:
+    """Recover the Kissflow object key from an upload or signed URL."""
+    text = (url or "").strip()
+    if not text:
+        return ""
+    if "/upload/2/" in text:
+        rest = text.split("/upload/2/", 1)[1]
+        path = rest.split("?", 1)[0]
+        parts = [part for part in path.split("/") if part]
+        if len(parts) >= 2:
+            return unquote("/".join(parts[1:]))
+    return ""
 
 
 async def _mint_gcs_get_url(cfg: Dict[str, Any], key: str, thumbnail: bool = True) -> str:
@@ -2759,6 +2774,8 @@ def _looks_like_attachment_file(item: Any) -> bool:
         return True
     if _as_string(item.get("key") or item.get("Key")).strip():
         return True
+    if _as_string(item.get("Url") or item.get("url") or item.get("URL")).strip():
+        return True
     if item.get("photos") or item.get("fileExtension") or item.get("FileExtension"):
         return True
     mime = _as_string(item.get("mimeType") or item.get("type") or item.get("contentType") or item.get("ContentType")).lower()
@@ -2844,7 +2861,12 @@ def _normalize_comment_attachment(item: Dict[str, Any]) -> Dict[str, Any]:
             photo_key = _as_string(photo.get("key") or photo.get("Key")).strip()
             if photo_key:
                 break
-    key = _as_string(item.get("key") or item.get("Key")).strip() or photo_key
+    stored_url = _as_string(item.get("Url") or item.get("url") or item.get("URL"))
+    key = (
+        _as_string(item.get("key") or item.get("Key")).strip()
+        or photo_key
+        or _attachment_key_from_url(stored_url)
+    )
     name = _as_string(item.get("name") or item.get("Name")).strip()
     attach_id = _as_string(item.get("id") or item.get("_id")).strip()
     return {
@@ -2855,7 +2877,7 @@ def _normalize_comment_attachment(item: Dict[str, Any]) -> Dict[str, Any]:
         "fileExtension": _as_string(item.get("fileExtension") or item.get("FileExtension")),
         "mimeType": _as_string(item.get("mimeType") or item.get("type") or item.get("contentType")),
         "photos": photos,
-        "Url": _as_string(item.get("Url") or item.get("url") or item.get("URL")),
+        "Url": stored_url,
     }
 
 
@@ -3069,6 +3091,7 @@ def _thread_from_instance_payload(
     solution = _it_agent_solution_text(item, field_ids)
     if isinstance(payload, dict) and payload is not item:
         solution = solution or _it_agent_solution_text(payload, field_ids)
+    live_stage = _pick_form_status_stage(item, field_ids)
     return {
         "comments": comments,
         "activityInstanceId": activity_id or _as_string(item.get("_activity_instance_id")),
@@ -3077,7 +3100,8 @@ def _thread_from_instance_payload(
         "solution": solution,
         "itAgentSolution": solution,
         "entity": _as_string(item.get("Entity")),
-        "status": _as_string(item.get("Statu_1") or item.get("_status") or item.get("Stages")),
+        "status": _as_string(item.get("_status") or item.get("Statu") or item.get("Stages")),
+        "stage": live_stage,
         "currentStep": _as_string(item.get("_current_step")),
         "requesterName": requester_name or _person_label(item.get("_created_by")),
         "requesterEmail": requester_email or _as_string(item.get("Requester_Email")),
@@ -3538,8 +3562,37 @@ def _stage_from_raw(value: Any) -> str:
     return _canonicalize_ticket_stage(value)
 
 
+def _is_validation_yes_no(label: str) -> bool:
+    return _status_token(label) in ("yes", "no")
+
+
+def _first_present_stage(data: Dict[str, Any], keys: List[str]) -> str:
+    seen = set()
+    for key in keys:
+        token = str(key or "").strip()
+        if not token or token.lower() in seen:
+            continue
+        seen.add(token.lower())
+        label = _stage_from_raw(_raw_field(data, token))
+        if not label or _is_validation_yes_no(label):
+            continue
+        return label
+    return ""
+
+
 def _pick_form_status_stage(data: Dict[str, Any], field_ids: Dict[str, Any]) -> str:
-    """Form Status first. Process Stages JSON is last. Never use workflow Statu/_status."""
+    """Stage = Statu_1 select. Extrovis Column_ps84EEKkEI; Refex Column_WRiZDgVSqj."""
+    from_statu1 = _first_present_stage(
+        data,
+        [
+            "Statu_1",
+            *(field_ids.get("item_status") or []),
+            "Column_ps84EEKkEI",
+            "Column_WRiZDgVSqj",
+        ],
+    )
+    if from_statu1:
+        return from_statu1
     form_keys = [
         "Status",
         *(field_ids.get("status") or []),
@@ -3559,26 +3612,13 @@ def _pick_form_status_stage(data: Dict[str, Any], field_ids: Dict[str, Any]) -> 
     ]
     fallback = ""
     seen = set()
-    for key in form_keys:
+    for key in [*form_keys, *fallback_keys]:
         token = str(key or "").strip()
         if not token or token.lower() in seen:
             continue
         seen.add(token.lower())
         label = _stage_from_raw(_raw_field(data, token))
-        if not label:
-            continue
-        if label != "Open":
-            return label
-        fallback = fallback or label
-    if fallback:
-        return fallback
-    for key in fallback_keys:
-        token = str(key or "").strip()
-        if not token or token.lower() in seen:
-            continue
-        seen.add(token.lower())
-        label = _stage_from_raw(_raw_field(data, token))
-        if not label:
+        if not label or _is_validation_yes_no(label):
             continue
         if label != "Open":
             return label
@@ -3586,10 +3626,11 @@ def _pick_form_status_stage(data: Dict[str, Any], field_ids: Dict[str, Any]) -> 
     return fallback
 
 
-def _display_ticket_status(status: str, stage: str) -> str:
-    """Ticket Status is Open unless Closed. Stage keeps the exact Status field."""
+def _display_ticket_status(status: str, stage: str = "") -> str:
+    """Ticket Status is Open unless the pipeline is Closed. Stage/Statu_1 never closes it."""
+    del stage
     token = _status_token(status)
-    if token in ("closed", "close", "completed", "rejected", "failed") or stage == "Closed":
+    if token in ("closed", "close", "completed", "rejected", "failed"):
         return "Closed"
     return "Open"
 
@@ -4425,7 +4466,7 @@ def _parse_report_ticket(
         status = "Closed"
     stage = _canonicalize_ticket_stage(ticket_stage_raw)
     display_status = _display_ticket_status(status, stage)
-    if display_status == "Closed":
+    if display_status == "Closed" and not stage:
         stage = "Closed"
     sendback_id = _sendback_id_from_report(
         data, field_ids, instance_id, reopen_activity_id or activity_instance_id
@@ -6611,7 +6652,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         """Mint the GET-signed GCS URL for a Non-Refex comment attachment."""
         if not _uses_extrovis_flow(entity):
             raise HTTPException(status_code=400, detail="Attachment preview is only for Non-Refex tickets.")
-        file_key = (key or "").strip()
+        file_key = _attachment_key_from_url(key) or (key or "").strip()
         if not file_key:
             raise HTTPException(status_code=400, detail="Attachment key is required.")
         cfg = await _resolve_config(
@@ -6622,6 +6663,43 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         want_thumb = bool(thumbnail) and _attachment_key_is_image(file_key)
         url = await _mint_gcs_get_url(cfg, file_key, want_thumb)
         return {"url": url, "key": file_key, "thumbnail": want_thumb}
+
+    @api_router.get("/itsm/reports/attachment-file")
+    async def get_attachment_file(
+        entity: str = Query(...),
+        key: str = Query(...),
+        download: bool = Query(False),
+        environment: Optional[str] = Query(None),
+        user: dict = Depends(get_current_user),
+    ):
+        """Same-origin file stream so Help Desk can open and download attachments."""
+        if not _uses_extrovis_flow(entity):
+            raise HTTPException(status_code=400, detail="Attachment download is only for Non-Refex tickets.")
+        file_key = _attachment_key_from_url(key) or (key or "").strip()
+        if not file_key:
+            raise HTTPException(status_code=400, detail="Attachment key is required.")
+        cfg = await _resolve_config(
+            user.get("org_id") or "",
+            entity,
+            force_env=_client_env_name(environment),
+        )
+        signed = await _mint_gcs_get_url(cfg, file_key, False)
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await client.get(signed)
+        if response.status_code >= 400:
+            logger.warning("Attachment file GET %s -> %s", file_key, response.status_code)
+            raise HTTPException(status_code=502, detail="Could not download attachment.")
+        filename = file_key.rsplit("/", 1)[-1] or "attachment"
+        disposition = "attachment" if download else "inline"
+        media = response.headers.get("content-type") or "application/octet-stream"
+        return Response(
+            content=response.content,
+            media_type=media,
+            headers={
+                "Content-Disposition": f'{disposition}; filename="{filename}"',
+                "Cache-Control": "private, max-age=60",
+            },
+        )
 
     @api_router.post("/itsm/reports/comment")
     async def submit_ticket_comment(

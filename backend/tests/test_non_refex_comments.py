@@ -23,6 +23,8 @@ from routes.itsm import (
     _parse_comment_attachments,
     _parse_report_ticket,
     _canonicalize_ticket_stage,
+    _attachment_key_from_url,
+    _pick_form_status_stage,
     _collect_reopen_notes_from_progress,
     _iter_progress_steps,
     _needs_reopen_progress_fetch,
@@ -351,6 +353,10 @@ def test_attachment_url_string():
     )
     assert files[0]["name"] == "shot.png"
     assert files[0]["Url"].endswith("shot.png")
+    upload = "https://kissflow.example/upload/2/AcCMptlq60zH/Live_IT_Service_Request_Extrovis_A00/PkX/Attach_1/shot.png"
+    assert _attachment_key_from_url(upload).endswith("Attach_1/shot.png")
+    keyed = _parse_comment_attachments({"Attachments": {"name": "shot.png", "Url": upload}})
+    assert keyed[0]["key"].endswith("Attach_1/shot.png")
 
 
 def test_attachment_unwrap():
@@ -664,7 +670,7 @@ def test_ticket_status_stays_open_unless_closed_stage_from_status():
     assert _canonicalize_ticket_stage("On Hold") == "OnHold"
     assert _canonicalize_ticket_stage("Pending with Vendor") == "Pending with Vendor"
     assert _display_ticket_status("Open", "OnHold") == "Open"
-    assert _display_ticket_status("Open", "Closed") == "Closed"
+    assert _display_ticket_status("Open", "Closed") == "Open"
     ext_ids = REPORT_FIELD_IDS["extrovis"]
     columns = [
         {"Id": ext_ids["status"][0], "Name": "Status"},
@@ -685,7 +691,22 @@ def test_ticket_status_stays_open_unless_closed_stage_from_status():
         "Extrovis",
     )
     assert hold["status"] == "Open"
-    assert hold["stage"] == "OnHold"
+    assert hold["stage"] == "Open"
+    vendor = _parse_report_ticket(
+        {
+            ext_ids["instance_id"][0]: "PkVendor1",
+            "Statu_1": "Pending with Vendor",
+            ext_ids["item_status"][0]: "Pending with Vendor",
+            ext_ids["status"][0]: "Open",
+            ext_ids["system_status"][0]: "InProgress",
+            ext_ids["current_step"][0]: "IT Agent Solution",
+        },
+        columns,
+        0,
+        "Extrovis",
+    )
+    assert vendor["stage"] == "Pending with Vendor"
+    assert vendor["status"] == "Open"
     closed = _parse_report_ticket(
         {
             ext_ids["instance_id"][0]: "PkClosed1",
@@ -700,12 +721,12 @@ def test_ticket_status_stays_open_unless_closed_stage_from_status():
     )
     assert closed["status"] == "Closed"
     assert closed["stage"] == "Closed"
-    hold_from_status = _parse_report_ticket(
+    statu1_wins = _parse_report_ticket(
         {
             ext_ids["instance_id"][0]: "PkHold2",
             "Status": "On Hold",
             ext_ids["status"][0]: "InProgress",
-            ext_ids["item_status"][0]: "Open",
+            ext_ids["item_status"][0]: "Pending with Employee",
             ext_ids["system_status"][0]: "InProgress",
             ext_ids["current_step"][0]: "IT Agent Solution",
         },
@@ -713,8 +734,8 @@ def test_ticket_status_stays_open_unless_closed_stage_from_status():
         0,
         "Extrovis",
     )
-    assert hold_from_status["stage"] == "OnHold"
-    assert hold_from_status["status"] == "Open"
+    assert statu1_wins["stage"] == "Pending with Employee"
+    assert statu1_wins["status"] == "Open"
     form_over_stages = _parse_report_ticket(
         {
             ext_ids["instance_id"][0]: "PkStage1",
@@ -729,12 +750,11 @@ def test_ticket_status_stays_open_unless_closed_stage_from_status():
         0,
         "Extrovis",
     )
-    assert form_over_stages["stage"] == "InProgress"
+    assert form_over_stages["stage"] == "Open"
     assert form_over_stages["status"] == "Open"
     empty_stage = _parse_report_ticket(
         {
             ext_ids["instance_id"][0]: "PkStage2",
-            ext_ids["item_status"][0]: "Open",
             ext_ids["system_status"][0]: "InProgress",
             ext_ids["current_step"][0]: "IT Agent Solution",
         },
@@ -744,6 +764,31 @@ def test_ticket_status_stays_open_unless_closed_stage_from_status():
     )
     assert empty_stage["stage"] == ""
     assert empty_stage["status"] == "Open"
+    refex_ids = REPORT_FIELD_IDS["refex"]
+    refex = _parse_report_ticket(
+        {
+            refex_ids["instance_id"][0]: "PkRefex1",
+            "Statu_1": "OnHold",
+            refex_ids["item_status"][0]: "OnHold",
+            refex_ids["status"][0]: "Open",
+            refex_ids["system_status"][0]: "InProgress",
+            refex_ids["current_step"][0]: "IT Tech Support",
+        },
+        [
+            {"Id": refex_ids["status"][0], "Name": "Status"},
+            {"Id": refex_ids["item_status"][0], "Name": "Item_Status"},
+            {"Id": refex_ids["system_status"][0], "Name": "System_Status"},
+            {"Id": refex_ids["current_step"][0], "Name": "Current_Step"},
+        ],
+        0,
+        "Refex",
+    )
+    assert refex["stage"] == "OnHold"
+    assert refex["status"] == "Open"
+    assert _pick_form_status_stage(
+        {"Statu_1": "Pending with Vendor", "Status": "Open", "_status": "Open"},
+        REPORT_FIELD_IDS["extrovis"],
+    ) == "Pending with Vendor"
 
 
 def test_reopen_notes_from_progress_are_user_comments():
