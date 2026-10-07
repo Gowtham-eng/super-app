@@ -191,6 +191,11 @@ def _client_env_name(value: Optional[str]) -> Optional[str]:
     return token if token in ("development", "live") else None
 
 
+def _other_itsm_env(name: Optional[str]) -> str:
+    """Opposite Help Desk account so a comment can follow the ticket after Dev/Live switch."""
+    return "development" if _client_env_name(name) == "live" else "live"
+
+
 def _read_env_runtime_file() -> Optional[Dict[str, Any]]:
     try:
         if not os.path.isfile(_ENV_RUNTIME_FILE):
@@ -388,13 +393,18 @@ def _merge_comment_lists(*groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             cid = str(row.get("id") or row.get("recordId") or "").strip()
             if _is_synthetic_comment_id(cid):
                 cid = ""
-            text_key = "" if empty_text else text.lower()
+            text_key = "" if empty_text else f"text:{text.lower()}"
             token = cid or text_key
             if not token:
                 token = f"file-{len(out)}"
-            prev_idx = index_by_token.get(token)
+            prev_idx = index_by_token.get(cid) if cid else None
             if prev_idx is None and text_key:
-                prev_idx = index_by_token.get(text_key)
+                text_prev = index_by_token.get(text_key)
+                if text_prev is not None:
+                    prev = out[text_prev]
+                    prev_cid = str(prev.get("id") or prev.get("recordId") or "").strip()
+                    if not cid or _is_synthetic_comment_id(prev_cid) or not prev_cid:
+                        prev_idx = text_prev
             if prev_idx is not None:
                 prev = out[prev_idx]
                 if _comment_file_count(row) > _comment_file_count(prev):
@@ -1521,6 +1531,21 @@ async def _kf_get_json(
     return None
 
 
+async def _load_instance_progress(cfg: Dict[str, Any], instance_id: str) -> Any:
+    """Progress GET for one ticket. None means this account/process does not have it."""
+    account = (cfg.get("account_id") or "").strip()
+    process_id = (cfg.get("process_id") or "").strip()
+    ticket_id = (instance_id or "").strip()
+    if not account or not process_id or not ticket_id:
+        return None
+    return await _kf_get_json(
+        cfg,
+        f"/process/2/{account}/{process_id}/{ticket_id}/progress",
+        {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID},
+        raise_on_challenge=False,
+    )
+
+
 def _kissflow_response_text(raw: Any, fallback: str = "") -> str:
     if _looks_like_html(raw):
         return _kissflow_challenge_message()
@@ -1677,12 +1702,17 @@ async def _upload_comment_attachments(
                 file_name,
             ]
         )
-        status_code, raw, success_text = await _kf_post_json(
-            cfg,
-            f"/upload/2/{account_id}/",
-            {"name": file_name, "size": len(content), "key": key, "mimeType": mime_type},
-            params,
-        )
+        status_code, raw, success_text = (502, None, "")
+        for for_write in (False, True):
+            status_code, raw, success_text = await _kf_post_json(
+                cfg,
+                f"/upload/2/{account_id}/",
+                {"name": file_name, "size": len(content), "key": key, "mimeType": mime_type},
+                params,
+                for_write=for_write,
+            )
+            if status_code < 400 and isinstance(raw, dict) and (raw.get("Url") or raw.get("url")):
+                break
         if status_code >= 400 or not isinstance(raw, dict):
             detail = success_text or _kissflow_response_text(raw, "Kissflow did not return an upload URL")
             raise HTTPException(status_code=502, detail=detail)
@@ -1699,6 +1729,7 @@ async def _upload_comment_attachments(
                     f"/upload/2/{account_id}/image/thumbnail",
                     {"key": stored_key, "sizes": [[1200, 800], [100, 100]], "isProfile": False},
                     params,
+                    for_write=False,
                 )
                 if isinstance(thumbs, list):
                     photos = thumbs
@@ -1738,8 +1769,23 @@ def _comment_write_accepted(status_code: int, raw: Any, success_text: str) -> bo
         )
     ):
         return False
-    saved = raw.get("Table::IT__Agent_Solution") if isinstance(raw, dict) else None
-    return bool(isinstance(saved, list) and saved) or not _is_kissflow_queue_error(success_text, status_code)
+    if isinstance(raw, dict):
+        candidates = [raw]
+        data = raw.get("Data")
+        if isinstance(data, dict):
+            candidates.append(data)
+        table_keys = {
+            "Table::IT__Agent_Solution",
+            "IT__Agent_Solution",
+            "Column_qr_9gP_vE5",
+            "Column_KaubOsozAz",
+        }
+        for item in candidates:
+            for key in table_keys:
+                saved = item.get(key)
+                if isinstance(saved, list) and saved:
+                    return True
+    return not _is_kissflow_queue_error(success_text, status_code)
 
 
 def _pick_sendback_from_nodes(
@@ -2377,6 +2423,17 @@ def _stamp_solution_author_fields(
         for key in field_ids.get("solution_table_stages") or []:
             if key:
                 row[key] = stages
+    resolution = _as_string(row.get("Resolution")).strip()
+    if resolution:
+        for key in field_ids.get("solution_table_resolution") or []:
+            if key:
+                row[key] = resolution
+    stamped_at = _as_string(row.get("ITAgentDate_Time") or row.get("Date_Time")).strip()
+    if stamped_at:
+        row.setdefault("ITAgentDate_Time", stamped_at)
+        for key in field_ids.get("solution_table_datetime") or []:
+            if key:
+                row[key] = stamped_at
     return row
 
 
@@ -2656,6 +2713,74 @@ def _merge_solution_rows_for_put(
     return rows
 
 
+def _chat_solution_row_for_put(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Exact IT__Agent_Solution row Kissflow admin PUT accepts for Help Desk chat."""
+    if not isinstance(row, dict):
+        return {}
+    rid = _as_string(row.get("_id") or row.get("Id") or row.get("id")).strip()
+    name = _as_string(row.get("Name_1") or row.get("Name")).strip()
+    if isinstance(row.get("Name_1"), dict):
+        name = _person_label(row.get("Name_1")) or name
+    resolution = _as_string(
+        row.get("Resolution") or row.get("Column_KzHlT9k9fc") or row.get("Column_RHq6XN6hvD")
+    ).strip()
+    stages = _as_string(row.get("Stages_1") or row.get("Stages") or row.get("Column_EA6Nomn1w4")).strip()
+    comments_type = _as_string(row.get("Comments_2") or row.get("Column_x6WUN8QD4O")).strip()
+    out: Dict[str, Any] = {}
+    if rid:
+        out["_id"] = rid
+    if name:
+        out["Name_1"] = name
+    if resolution:
+        out["Resolution"] = resolution
+    if stages:
+        out["Stages_1"] = stages
+    if comments_type:
+        out["Comments_2"] = comments_type
+    attachments = (
+        row.get("Attachments")
+        or row.get("attachments")
+        or row.get("Column_zXMX1EDrCx")
+    )
+    if attachments:
+        out["Attachments"] = attachments
+    return out
+
+
+def _admin_comment_write_payload(
+    instance_id: str,
+    table_rows: List[Dict[str, Any]],
+    entity: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Working Help Desk write: PUT admin item with Table::IT__Agent_Solution only."""
+    del entity
+    rows = [_chat_solution_row_for_put(row) for row in (table_rows or [])]
+    rows = [row for row in rows if row.get("_id")]
+    return {
+        "_id": instance_id,
+        "Table::IT__Agent_Solution": rows,
+    }
+
+
+def _comment_write_not_found_detail(
+    env_name: str,
+    host: str,
+    last_detail: str,
+    saw_instance: bool,
+) -> str:
+    if saw_instance:
+        extra = (last_detail or "").strip()
+        suffix = f" Kissflow said: {extra}" if extra else ""
+        return (
+            f"Kissflow rejected the comment save on {env_name} ({host}). "
+            f"The ticket is on this account; a Dev/Live switch will not help.{suffix}"
+        )
+    return (
+        f"Kissflow could not find this ticket on {env_name} ({host}). "
+        "Open Help Desk again after switching Dev/Live so comments use the same account as the ticket."
+    )
+
+
 async def _fetch_existing_solution_rows_for_put(
     cfg: Dict[str, Any],
     process_id: str,
@@ -2665,11 +2790,13 @@ async def _fetch_existing_solution_rows_for_put(
 ) -> Tuple[List[Dict[str, Any]], bool]:
     params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
     account = (cfg.get("account_id") or "").strip()
+    # Admin GET is the write source of truth. Activity GET often 400s
+    # ("moved out of your queue") on the Integration key.
     paths = [
         f"/process/2/{account}/admin/{process_id}/{instance_id}",
     ]
     if activity_id:
-        paths.insert(0, f"/process/2/{account}/{process_id}/{instance_id}/{activity_id}")
+        paths.append(f"/process/2/{account}/{process_id}/{instance_id}/{activity_id}")
     field_ids = REPORT_FIELD_IDS.get(_report_entity_key(entity), REPORT_FIELD_IDS["extrovis"])
     best: List[Dict[str, Any]] = []
     saw_instance = False
@@ -2882,9 +3009,14 @@ def _as_attachment_list(raw: Any) -> List[Dict[str, Any]]:
         return found
     if isinstance(raw, str):
         text = raw.strip()
-        if text.startswith("http") or text.startswith("/") or "." in text.rsplit("/", 1)[-1]:
-            name = text.rsplit("/", 1)[-1] or "file"
-            return [{"name": name, "Url": text, "url": text}]
+        last = text.rsplit("/", 1)[-1]
+        looks_like_path = (
+            text.startswith("http")
+            or "/upload/2/" in text
+            or ("/" in text and "." in last and " " not in last)
+        )
+        if looks_like_path:
+            return [{"name": last or "file", "Url": text, "url": text}]
         return []
     return []
 
@@ -2911,7 +3043,11 @@ def _parse_comment_attachments(
             break
     if not found:
         for key, value in row.items():
-            if str(key) in seen:
+            token = str(key)
+            if token in seen:
+                continue
+            low = token.lower()
+            if not (low in {"attachments", "files"} or "attach" in low or token.startswith("Column_")):
                 continue
             found = _as_attachment_list(value)
             if found:
@@ -3075,7 +3211,7 @@ def _parse_agent_solution_rows(
             name = requester_name
         stages = _as_string(_pick_row_field(row, *stage_cols)).strip()
         comments_type = _as_string(_pick_row_field(row, *type_cols)).strip()
-        date_time = _pick_row_field(row, *dt_cols) or row.get("_created_at") or row.get("_modified_at")
+        date_time = row.get("_created_at") or _pick_row_field(row, *dt_cols) or row.get("_modified_at")
         # Attachment-only / file rows often have a blank or older DateTime.
         # Dropping them made chat files disappear after the leak filter.
         if not attachments and not _comment_created_at_ok(date_time, created_at):
@@ -3325,8 +3461,14 @@ async def _load_instance_comment_thread(
     base = f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}"
 
     paths: List[str] = []
+    # Extrovis chat lives on the admin item (same URL as the working PUT).
+    # Activity GET often 400s "moved out of your queue" and has no files.
+    if _uses_extrovis_flow(entity):
+        paths.append(_admin_process_item_path(cfg, instance_id))
     if activity_id:
-        paths.append(f"{base}/{activity_id}")
+        activity_path = f"{base}/{activity_id}"
+        if activity_path not in paths:
+            paths.append(activity_path)
 
     progress: Any = None
     if need_reopen_progress:
@@ -3849,6 +3991,21 @@ def _is_kissflow_queue_error(text: Any, status_code: int = 0) -> bool:
             "permission to update",
         )
     )
+
+
+def _prefer_comment_activity_ids(
+    hinted_activity: str,
+    resolved: Optional[List[str]] = None,
+    instance_id: str = "",
+) -> List[str]:
+    """Keep the Help Desk activity_instance_id. Do not swap in progress `_id`."""
+    hint = _usable_activity_id(hinted_activity, instance_id)
+    rest: List[str] = []
+    for aid in resolved or []:
+        token = _usable_activity_id(aid, instance_id)
+        if token and token != hint and token not in rest:
+            rest.append(token)
+    return [hint] + rest if hint else rest
 
 
 def _usable_activity_id(value: Any, instance_id: str = "") -> str:
@@ -6892,23 +7049,51 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             user.get("org_id") or "",
             entity,
             force_env=_client_env_name(environment),
+            allow_live_lock=True,
         )
         requester_name = _commenter_display_name(user, commenter_name)
         process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
         cfg = {**cfg, "process_id": process_id}
-        activity_candidates = await _list_open_work_activity_ids(
-            cfg,
-            instance_id,
-            activity_instance_id_hint,
-            entity=entity,
-        )
+        progress = await _load_instance_progress(cfg, instance_id)
+        if not isinstance(progress, dict):
+            other = _other_itsm_env(cfg.get("environment"))
+            alt = await _resolve_config(
+                user.get("org_id") or "",
+                entity,
+                force_env=other,
+                allow_live_lock=True,
+            )
+            alt = {**alt, "process_id": alt.get("process_id") or process_id}
+            alt_progress = await _load_instance_progress(alt, instance_id)
+            if isinstance(alt_progress, dict):
+                logger.info(
+                    "ITSM comment following ticket instance=%s from %s to %s",
+                    instance_id,
+                    cfg.get("environment"),
+                    alt.get("environment"),
+                )
+                cfg = alt
+                process_id = cfg["process_id"]
+                progress = alt_progress
+        # Extrovis admin PUT is /admin/{process}/{instance} — no activity id.
+        # Do not replace the ticket's activity_instance_id with progress `_id`
+        # (that produced .../PkEJUG_Vzjom/PkEJVQcVrFhR instead of PkEJUNkehEhn).
+        if _uses_extrovis_flow(entity):
+            activity_candidates = _prefer_comment_activity_ids(
+                activity_instance_id_hint, [], instance_id
+            )
+        else:
+            activity_candidates = _prefer_comment_activity_ids(
+                activity_instance_id_hint,
+                await _list_open_work_activity_ids(
+                    cfg,
+                    instance_id,
+                    activity_instance_id_hint,
+                    entity=entity,
+                ),
+                instance_id,
+            )
         activity_instance_id = activity_candidates[0] if activity_candidates else ""
-
-        progress = await _kf_get_json(
-            cfg,
-            f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}/progress",
-            {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID},
-        )
         live_step = ""
         live_assignee = ""
         for step in _current_branch_steps(progress) or _iter_progress_steps(progress):
@@ -6945,41 +7130,38 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
 
         row_id = solution_row_id or f"IT__Agent_Solution_{uuid.uuid4().hex[:10]}"
         attachments: List[Dict[str, Any]] = []
-        if uploads and activity_instance_id:
+        if uploads:
             attachments = await _upload_comment_attachments(
                 cfg,
                 instance_id=instance_id,
-                activity_id=activity_instance_id,
+                activity_id=activity_instance_id or instance_id,
                 row_id=row_id,
                 files=uploads,
             )
+            if not attachments:
+                raise HTTPException(status_code=502, detail="Kissflow did not accept the attachment upload.")
+        comments_type = "User" if _report_entity_key(entity) != "refex" else ""
         row: Dict[str, Any] = {
             "_id": row_id,
+            "Name_1": requester_name,
             "Resolution": comment_text,
         }
-        comments_type = ""
-        if _report_entity_key(entity) != "refex":
+        if comments_type:
             row["Stages_1"] = "InProgress"
-            comments_type = "User"
             row["Comments_2"] = comments_type
-        row = _stamp_solution_author_fields(
-            row,
-            entity,
-            requester_name,
-            (user.get("email") or "").strip(),
-        )
         if attachments:
             row["Attachments"] = attachments
 
         save_ids = list(activity_candidates)
         params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
         table_rows = [row]
+        saw_instance = False
         if use_admin_put:
             existing_rows, saw_instance = await _fetch_existing_solution_rows_for_put(
                 cfg,
                 process_id,
                 instance_id,
-                activity_instance_id,
+                "",
                 entity,
             )
             if not saw_instance:
@@ -6991,10 +7173,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                     ),
                 )
             table_rows = _merge_solution_rows_for_put(existing_rows, row)
-        payload = {
-            "_id": instance_id,
-            "Table::IT__Agent_Solution": table_rows,
-        }
+        payload = _admin_comment_write_payload(instance_id, table_rows, entity)
         env_name = cfg.get("environment") or "development"
         last_detail = "Unable to save comment."
         last_status = 502
@@ -7050,12 +7229,10 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         if use_admin_put:
             path = _admin_process_item_path(cfg, instance_id)
             logger.info(
-                "ITSM comment Kissflow PUT %s env=%s setup=%s account=%s key=%s table_row=%s",
+                "ITSM comment Kissflow PUT %s env=%s account=%s table=Table::IT__Agent_Solution table_row=%s",
                 _admin_process_item_url(cfg, instance_id),
                 env_name,
-                cfg.get("setup_environment") or env_name,
                 cfg.get("account_id") or "",
-                (cfg.get("access_key_id") or "")[:12],
                 row_id,
             )
             try:
@@ -7063,7 +7240,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                     cfg,
                     path,
                     payload,
-                    params,
+                    None,
                     for_write=False,
                 )
             except Exception as exc:
@@ -7115,9 +7292,11 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             re.I,
         ):
             host = cfg.get("kissflow_base_url") or env_name
-            last_detail = (
-                f"Kissflow could not find this ticket on {env_name} ({host}). "
-                "Open Help Desk again after switching Dev/Live so comments use the same account as the ticket."
+            last_detail = _comment_write_not_found_detail(
+                env_name,
+                host,
+                last_detail,
+                saw_instance,
             )
         raise HTTPException(
             status_code=409 if _is_kissflow_queue_error(last_detail, last_status) else 502,

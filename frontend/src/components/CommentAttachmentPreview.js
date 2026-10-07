@@ -64,6 +64,15 @@ const DOCUMENT_EXTS = new Set([
   ...TEXT_EXTS, ...VIDEO_EXTS, ...AUDIO_EXTS, ...SLIDE_EXTS, ...WORD_EXTS, ...EXCEL_EXTS, ...ARCHIVE_EXTS, 'pdf',
 ]);
 
+export function isRenderableAttachment(file) {
+  const name = asText(file?.name || file?.Name);
+  const key = attachmentFileKey(file, false);
+  const attachId = asText(file?.id || file?._id);
+  if (attachId.toLowerCase().startsWith('attach_')) return true;
+  if (key) return true;
+  return /\.[a-z0-9]{2,5}$/i.test(name);
+}
+
 export function attachmentKind(file) {
   const mime = asText(file?.mimeType || file?.type || file?.contentType).toLowerCase();
   const ext = fileExtension(file);
@@ -530,6 +539,8 @@ export default function CommentAttachmentPreview({
         </div>
       </div>
     ) : null;
+
+  if (!isRenderableAttachment(file)) return null;
 
   return (
     <>

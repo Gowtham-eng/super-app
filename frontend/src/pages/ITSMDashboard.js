@@ -558,8 +558,32 @@ const initialsOf = (name) => {
 const looksLikeEmail = (value) => /@/.test(String(value || ''));
 const looksLikeKissflowId = (value) => /^Pk[A-Za-z0-9]{8,}$/.test(String(value || '').trim());
 
+const isRealCommentAttachment = (file, commentText = '') => {
+  if (!file || typeof file !== 'object') return false;
+  const name = String(file.name || file.Name || '').trim();
+  const key = String(file.key || file.Key || '').trim();
+  const attachId = String(file.id || file._id || '').trim();
+  const comment = String(commentText || '').trim();
+  if (comment && name && name.toLowerCase() === comment.toLowerCase() && !key) return false;
+  if (attachId.toLowerCase().startsWith('attach_')) return true;
+  if (key.includes('/IT__Agent_Solution/') || key.includes('/upload/2/')) return true;
+  if (/\.[a-z0-9]{2,5}$/i.test(name) && name.toLowerCase() !== comment.toLowerCase()) return true;
+  return Array.isArray(file.photos) && file.photos.length > 0;
+};
+
+const realAttachmentsOf = (entry) => {
+  const text = String(entry?.comment || entry?.resolution || '').trim();
+  return (Array.isArray(entry?.attachments) ? entry.attachments : []).filter((file) =>
+    isRealCommentAttachment(file, text)
+  );
+};
+
+const withRealAttachments = (entry) => (
+  entry && typeof entry === 'object' ? { ...entry, attachments: realAttachmentsOf(entry) } : entry
+);
+
 const realCommentRows = (rows) =>
-  (Array.isArray(rows) ? rows : []).filter((entry) => {
+  (Array.isArray(rows) ? rows : []).map(withRealAttachments).filter((entry) => {
     const text = String(entry?.comment || entry?.resolution || '').trim();
     const name = String(entry?.userName || entry?.agentName || '').trim();
     const files = Array.isArray(entry?.attachments) ? entry.attachments : [];
@@ -619,7 +643,17 @@ const mergeCommentRows = (...groups) => {
       const text = String(row?.comment || row?.resolution || '').trim().toLowerCase();
       const id = String(row?.id || row?.recordId || '').trim();
       const stableId = isSyntheticCommentId(id) ? '' : id;
-      const prev = (stableId && byId.get(stableId)) || (text && byText.get(text)) || null;
+      const prevById = stableId ? byId.get(stableId) : null;
+      const prevByText = text ? byText.get(text) : null;
+      const prevTextId = String(prevByText?.id || prevByText?.recordId || '').trim();
+      const prev =
+        prevById
+        || (
+          prevByText
+          && (!stableId || isSyntheticCommentId(prevTextId) || !prevTextId)
+            ? prevByText
+            : null
+        );
       if (prev) {
         if (commentAttachmentCount(row) > commentAttachmentCount(prev)) replace(prev, row);
         else if (String(row?.role || '').toLowerCase() === 'reopen' && String(prev?.role || '').toLowerCase() !== 'reopen') {
@@ -815,18 +849,12 @@ const TicketConversation = ({
     );
     const hasLandingThread = landingComments.length > 0 || localEntries.length > 0;
     const wantProgress = ticketNeedsReopenProgress(live);
-    const progressOnly = Boolean(!force && hasLandingThread && wantProgress);
 
-    if (!force && hasLandingThread) {
+    if (hasLandingThread) {
       setThreadReady(true);
-      if (!wantProgress) {
-        setHydrating(false);
-        setLoadError('');
-        return;
-      }
     } else {
       setHydrating(true);
-      if (!hasLandingThread) setThreadReady(false);
+      setThreadReady(false);
     }
 
     setLoadError('');
@@ -843,7 +871,6 @@ const TicketConversation = ({
               status: live.status || '',
               current_step: live.currentStep || '',
               last_completed_step: live.lastCompletedStep || '',
-              ...(progressOnly ? { progress_only: '1' } : {}),
               _t: Date.now(),
             },
             ...authRef.current(),
@@ -874,7 +901,7 @@ const TicketConversation = ({
         hydrateRef.current(live.id, {
           ...payload,
           comments: commentsBelongToTicket(
-            mergeCommentRows(nextComments, stored, keptReopen, landingComments),
+            mergeCommentRows(nextComments, keptReopen),
             live,
           ),
         });
@@ -1452,7 +1479,7 @@ const ITSMDashboard = () => {
         // Empty Kissflow GET is not proof the thread is empty (nested table is often
         // missing on instance GET). Never drop reopen notes if a later GET missed progress.
         const nextComments = incoming.length
-          ? rememberComments(row.id, mergeCommentRows(incoming, existing, existingReopen), entity)
+          ? rememberComments(row.id, mergeCommentRows(incoming, existingReopen), entity)
           : rememberComments(row.id, mergeCommentRows(existing, existingReopen), entity);
         const nextSolution = String(payload.itAgentSolution || payload.solution || '').trim();
         return {
