@@ -2,6 +2,7 @@
 
 export const NE_EMBED_HOST = 'refex-admin-ui';
 export const ITSM_VIRTUAL_ID = 'itsm-inapp';
+export const PM_TRACKER_FALLBACK_URL = 'https://pm-tracker-645830234926.asia-south1.run.app/';
 
 export function isNeEmbedApp(app = {}) {
   const url = String(app.home_url || '');
@@ -39,6 +40,21 @@ export function shouldHijackItsmLaunch(app = {}) {
   if (!app || isNeEmbedApp(app)) return false;
   if (app.type === 'oidc') return false;
   return isItsmNamedApp(app);
+}
+
+/** Project Management Tracker / Project Management tiles (not ITSM, not Reports embeds). */
+export function isPmTrackerNamedApp(app = {}) {
+  if (!app || isNeEmbedApp(app) || isItsmNamedApp(app)) return false;
+  const compact = compactAppName(`${app.name || ''} ${app.description || ''} ${app.home_url || ''}`);
+  return (
+    compact.includes('projectmanagement')
+    || compact.includes('pmtracker')
+  );
+}
+
+export function shouldHijackPmTrackerLaunch(app = {}) {
+  if (!app || isNeEmbedApp(app)) return false;
+  return isPmTrackerNamedApp(app);
 }
 
 /**
@@ -198,4 +214,48 @@ export function resolveKissflowLaunchApp(list, tappedApp) {
   );
   if (itsmKissflow) return itsmKissflow;
   return rows.find((a) => usableLauncherApp(a) && a.type === 'saml' && isKissflowApp(a)) || null;
+}
+
+/** Prefer a PM-named Kissflow SAML module so tracker clicks never open EMS. */
+export function resolvePmTrackerKissflowLaunchApp(list, tappedApp) {
+  const rows = Array.isArray(list) ? list : [];
+  if (
+    tappedApp
+    && usableLauncherApp(tappedApp)
+    && tappedApp.type === 'saml'
+    && isKissflowApp(tappedApp)
+    && isPmTrackerNamedApp(tappedApp)
+  ) {
+    return tappedApp;
+  }
+  return rows.find(
+    (a) => usableLauncherApp(a) && a.type === 'saml' && isKissflowApp(a) && isPmTrackerNamedApp(a),
+  ) || null;
+}
+
+function resolveAnyKissflowSamlApp(list) {
+  return (Array.isArray(list) ? list : []).find(
+    (a) => usableLauncherApp(a) && a.type === 'saml' && isKissflowApp(a),
+  ) || null;
+}
+
+/**
+ * Same Kissflow-status probe as Help Desk:
+ * in Kissflow → SSO to the PM Kissflow module (or Kissflow login if no module);
+ * not in Kissflow / Kissflow down → Cloud Run tracker.
+ */
+export function resolvePmTrackerLaunchFromKissflowStatus(res, apps = [], tappedApp = null) {
+  const userInKissflow = res?.data?.user_in_kissflow === true;
+  if (isKissflowApiOk(res) && userInKissflow) {
+    const moduleApp = resolvePmTrackerKissflowLaunchApp(apps, tappedApp);
+    if (moduleApp) return { mode: 'kissflow', app: moduleApp };
+    const ssoApp = resolveAnyKissflowSamlApp(apps);
+    if (ssoApp) return { mode: 'kissflow', app: { ...ssoApp, home_url: '' } };
+    return { mode: 'fallback', url: PM_TRACKER_FALLBACK_URL, reason: 'no_sso_target' };
+  }
+  return {
+    mode: 'fallback',
+    url: PM_TRACKER_FALLBACK_URL,
+    reason: itsmKissflowFallbackReason(res, userInKissflow),
+  };
 }

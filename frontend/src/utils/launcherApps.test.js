@@ -2,7 +2,11 @@ import {
   isNeEmbedApp,
   isItsmNamedApp,
   shouldHijackItsmLaunch,
+  shouldHijackPmTrackerLaunch,
+  isPmTrackerNamedApp,
   resolveKissflowLaunchApp,
+  resolvePmTrackerKissflowLaunchApp,
+  resolvePmTrackerLaunchFromKissflowStatus,
   resolveItsmLaunchFromKissflowStatus,
   isKissflowApiOk,
   itsmKissflowFallbackReason,
@@ -16,6 +20,7 @@ import {
   userCanSeeRmcP2p,
   userCanSeeProcure2Pay,
   isAdrenalinApp,
+  PM_TRACKER_FALLBACK_URL,
 } from './launcherApps';
 
 const EMS = {
@@ -154,6 +159,59 @@ describe('RMC P2P vs Procure2Pay visibility', () => {
     const otherIds = filterLauncherAppsForUser([EMS, rmc, p2p], other).map((a) => a.id);
     expect(deepaIds).toEqual(['saml-ems', 'rmc-p2p']);
     expect(otherIds).toEqual(['saml-ems', 'procure2pay']);
+  });
+});
+
+describe('Project Management Tracker launcher', () => {
+  const PM_SAML = {
+    id: 'saml-pmt',
+    name: 'Project Management Tracker',
+    type: 'saml',
+    has_access: true,
+    home_url: 'https://refexgroup.kissflow.com/view/application/Project_Management_Tracker',
+  };
+  const PM_CLOUD = {
+    id: 'ext-pmt',
+    name: 'Project Management Tracker',
+    type: 'oidc',
+    has_access: true,
+    home_url: PM_TRACKER_FALLBACK_URL,
+  };
+
+  it('detects Project Management Tracker without treating ITSM or EMS as the tracker', () => {
+    expect(isPmTrackerNamedApp(PM_SAML)).toBe(true);
+    expect(isPmTrackerNamedApp({ name: 'Project Management' })).toBe(true);
+    expect(shouldHijackPmTrackerLaunch(PM_CLOUD)).toBe(true);
+    expect(shouldHijackPmTrackerLaunch(ITSM_SAML)).toBe(false);
+    expect(isPmTrackerNamedApp(EMS)).toBe(false);
+    expect(shouldHijackItsmLaunch(PM_SAML)).toBe(false);
+  });
+
+  it('opens the PM Kissflow module when the user is in Kissflow, not EMS', () => {
+    const up = { status: 200, data: { ok: true, status_code: 200, user_in_kissflow: true } };
+    const hit = resolvePmTrackerLaunchFromKissflowStatus(up, [EMS, ITSM_SAML, PM_SAML], PM_CLOUD);
+    expect(hit.mode).toBe('kissflow');
+    expect(hit.app).toBe(PM_SAML);
+    expect(hit.app.home_url).toContain('Project_Management');
+    expect(resolvePmTrackerKissflowLaunchApp([EMS, PM_SAML], PM_CLOUD)).toBe(PM_SAML);
+  });
+
+  it('opens the Cloud Run tracker when the user is not in Kissflow', () => {
+    const up = { status: 200, data: { ok: true, status_code: 200, user_in_kissflow: false } };
+    const hit = resolvePmTrackerLaunchFromKissflowStatus(up, [EMS, PM_SAML], PM_CLOUD);
+    expect(hit).toEqual({
+      mode: 'fallback',
+      url: PM_TRACKER_FALLBACK_URL,
+      reason: 'not_in_kissflow',
+    });
+  });
+
+  it('opens the Cloud Run tracker when Kissflow is down', () => {
+    const down = { status: 200, data: { ok: false, status_code: 502, user_in_kissflow: true } };
+    const hit = resolvePmTrackerLaunchFromKissflowStatus(down, [PM_SAML], PM_SAML);
+    expect(hit.mode).toBe('fallback');
+    expect(hit.url).toBe(PM_TRACKER_FALLBACK_URL);
+    expect(hit.reason).toBe('kissflow_unavailable');
   });
 });
 

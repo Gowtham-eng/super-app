@@ -14,10 +14,13 @@ import {
   isNeEmbedApp,
   itsmKissflowFallbackReason,
   resolveKissflowLaunchApp,
+  resolvePmTrackerLaunchFromKissflowStatus,
   shouldHijackItsmLaunch,
+  shouldHijackPmTrackerLaunch,
   filterReportsForUser,
   isReportsLauncherApp,
   userCanSeeReports,
+  PM_TRACKER_FALLBACK_URL,
 } from '../utils/launcherApps';
 import { toast } from 'sonner';
 import { Search, Lock, DollarSign, Zap, Building2, Heart, LayoutGrid, FileText, Plane, ShoppingCart, ListChecks, Target, Flame, GitBranch, Home, Wrench, Utensils, Smartphone, Users as UsersIcon, Briefcase, ChevronRight, Headphones, Loader2, BarChart3 } from 'lucide-react';
@@ -475,6 +478,55 @@ const AppLauncher = () => {
     }
   };
 
+  const openPmTrackerFallback = () => {
+    const url = PM_TRACKER_FALLBACK_URL;
+    const mobileFlow = isCapacitor || (isPWA && isMobile);
+    if (mobileFlow) window.location.href = url;
+    else openDesktopAppTab(url);
+  };
+
+  const handlePmTrackerClick = async (app) => {
+    if (app.has_access === false) {
+      toast.error('You do not have permission to access this application. Please contact your administrator for assistance.', { duration: 6000 });
+      return;
+    }
+    if (app.policy_blocked) {
+      toast.error(app.policy_reason || 'Access blocked by policy');
+      return;
+    }
+
+    setItsmChecking(true);
+    try {
+      const res = await axios.get(`${ITSM_API}/itsm/kissflow-status`, getAuthHeader());
+      let list = apps;
+      let decision = resolvePmTrackerLaunchFromKissflowStatus(res, list, app);
+      if (decision.mode === 'kissflow' && decision.app) {
+        launchKissflowApp(decision.app);
+        return;
+      }
+      if (isKissflowApiOk(res) && res.data?.user_in_kissflow === true) {
+        try {
+          const appsRes = await axios.get(`${API}/launcher/apps`, getAuthHeader());
+          const rows = Array.isArray(appsRes.data) ? appsRes.data : [];
+          list = rows;
+          setApps(rows);
+        } catch (e) {
+          // ignore reload errors
+        }
+        decision = resolvePmTrackerLaunchFromKissflowStatus(res, list, app);
+        if (decision.mode === 'kissflow' && decision.app) {
+          launchKissflowApp(decision.app);
+          return;
+        }
+      }
+      openPmTrackerFallback();
+    } catch (err) {
+      openPmTrackerFallback();
+    } finally {
+      setItsmChecking(false);
+    }
+  };
+
   const launchApp = (app) => {
     if (isNeEmbedApp(app)) {
       const targetUrl = appendNeEmbedIdentity(app.home_url, user);
@@ -486,6 +538,11 @@ const AppLauncher = () => {
 
     if (shouldHijackItsmLaunch(app)) {
       handleItsmClick(app);
+      return;
+    }
+
+    if (shouldHijackPmTrackerLaunch(app)) {
+      handlePmTrackerClick(app);
       return;
     }
 
