@@ -15,10 +15,11 @@ import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, EmailStr, Field
 
 logger = logging.getLogger("itsm")
@@ -851,6 +852,20 @@ def _is_gcs_signed_url(url: str) -> bool:
     return "storage.googleapis.com" in text and "X-Goog-Algorithm=" in text
 
 
+def _attachment_key_from_url(url: str) -> str:
+    """Recover the Kissflow object key from an upload or signed URL."""
+    text = (url or "").strip()
+    if not text:
+        return ""
+    if "/upload/2/" in text:
+        rest = text.split("/upload/2/", 1)[1]
+        path = rest.split("?", 1)[0]
+        parts = [part for part in path.split("/") if part]
+        if len(parts) >= 2:
+            return unquote("/".join(parts[1:]))
+    return ""
+
+
 async def _mint_gcs_get_url(cfg: Dict[str, Any], key: str, thumbnail: bool = True) -> str:
     account_id = (cfg.get("account_id") or "").strip()
     if thumbnail and not _attachment_key_is_image(key):
@@ -1458,26 +1473,35 @@ async def _kf_get_json(
     params: Optional[Dict[str, Any]] = None,
     *,
     for_write: bool = False,
+    raise_on_challenge: bool = True,
 ) -> Any:
     url = path if path.startswith("http") else f"{cfg['kissflow_base_url']}{path}"
     host = cfg.get("kissflow_base_url") or ""
-    for attempt in range(2):
+    delays = (1.5, 3.0)
+    for attempt in range(3):
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(
                 url,
                 headers=_kissflow_headers(cfg, for_write=for_write),
                 params=params or {},
             )
-        if _response_is_kissflow_challenge(response) or _looks_like_html(getattr(response, "text", "") or ""):
+        challenged = _response_is_kissflow_challenge(response) or _looks_like_html(
+            getattr(response, "text", "") or ""
+        )
+        rate_limited = int(getattr(response, "status_code", 0) or 0) == 429
+        if challenged or rate_limited:
             logger.warning(
-                "Kissflow GET challenge %s -> %s",
+                "Kissflow GET challenge %s -> %s attempt=%s",
                 path,
                 getattr(response, "status_code", "?"),
+                attempt + 1,
             )
-            if attempt == 0:
-                await asyncio.sleep(1.2)
+            if attempt < 2:
+                await asyncio.sleep(delays[attempt])
                 continue
-            raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+            if raise_on_challenge:
+                raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+            return None
         if response.status_code >= 400:
             logger.warning("Kissflow GET %s -> %s %s", path, response.status_code, (response.text or "")[:200])
             return None
@@ -1485,9 +1509,16 @@ async def _kf_get_json(
             return response.json()
         except Exception:
             if _looks_like_html(response.text or ""):
-                raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+                if attempt < 2:
+                    await asyncio.sleep(delays[attempt])
+                    continue
+                if raise_on_challenge:
+                    raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+                return None
             return None
-    raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+    if raise_on_challenge:
+        raise HTTPException(status_code=502, detail=_kissflow_challenge_message(host))
+    return None
 
 
 def _kissflow_response_text(raw: Any, fallback: str = "") -> str:
@@ -2201,6 +2232,9 @@ REPORT_FIELD_IDS = {
         "requester_email": ["Column_TNDYy0NHqk", "Email", "Requester_Email", "Requestor_Email"],
         "requester_name": ["Requester_Name"],
         "created_by": ["Column_qpzG8v9AKq", "_created_by"],
+        "ticket_type": ["Column_EM6o5_acb3", "Ticket_Type", "Request_Type"],
+        "category": ["Column_pFbqS2Q9gD", "Category"],
+        "sub_category": ["Column_wgwPyyrhqe", "SubCategory", "Sub_Category"],
         # IT__Agent_Solution child table (Revisions)
         "solution_table": ["Column_KaubOsozAz", "Table::IT__Agent_Solution", "IT__Agent_Solution"],
         "solution_table_name": ["Column_mvjPOUTegd", "Name_1", "Name"],
@@ -2208,6 +2242,8 @@ REPORT_FIELD_IDS = {
         "solution_table_datetime": ["Column__LGAMX8kf0", "ITAgentDate_Time", "Date_Time"],
         # Refex IT__Agent_Solution has Name_1 + Resolution only (no Stages).
         "solution_table_stages": [],
+        "solution_table_attachments": ["Attachments", "attachments"],
+        "stages": ["Status", "Stages"],
     },
     "extrovis": {
         "request_id": ["Column_y4srngcUo1"],
@@ -2240,6 +2276,9 @@ REPORT_FIELD_IDS = {
         "requester_email": ["Column_Egh9ss0nVO", "Email", "Requester_Email", "Requestor_Email"],
         "requester_name": ["Requester_Name"],
         "created_by": ["Column_9D6907I8pY", "_created_by"],
+        "ticket_type": ["Column_ngHfbXhmqj", "Ticket_Type", "Request_Type"],
+        "category": ["Column_53Z2oyBbZk", "Category"],
+        "sub_category": ["Column_AC0_BCY9hP", "SubCategory", "Sub_Category"],
         # IT__Agent_Solution child table (Revisions)
         "solution_table": ["Column_qr_9gP_vE5", "Table::IT__Agent_Solution", "IT__Agent_Solution"],
         "solution_table_name": ["Column_ZipK5a_k8Y", "Name_1", "Name"],
@@ -2247,8 +2286,9 @@ REPORT_FIELD_IDS = {
         "solution_table_datetime": ["Column_R_u4Nyl5q_", "ITAgentDate_Time", "Date_Time"],
         "solution_table_stages": ["Column_EA6Nomn1w4", "Stages_1", "Stages"],
         "solution_table_comments_type": ["Column_x6WUN8QD4O", "Comments_2"],
-        "solution_table_attachments": ["Attachments", "Column_zXMX1EDrCx"],
+        "solution_table_attachments": ["Attachments", "attachments", "Column_zXMX1EDrCx"],
         "subject": ["Column_HEiwMtIBBO", "Subject"],
+        "stages": ["Status", "Column_JUGHj6d2Xj", "Stages"],
     },
 }
 
@@ -2267,8 +2307,8 @@ def _looks_like_email(value: Any) -> bool:
 
 def _commenter_display_name(user: Optional[Dict[str, Any]], hinted: Optional[str] = None) -> str:
     """
-    Prefer a real person name for Table::IT__Agent_Solution.Name_1.
-    Never fall back to an email address when a name is available.
+    Author for Table::IT__Agent_Solution.Name_1 is the Refex One login user.
+    Never use the ticket assignee. Hint is only a fallback when JWT has no name.
     """
     email = _normalize_email((user or {}).get("email") or "")
 
@@ -2282,26 +2322,70 @@ def _commenter_display_name(user: Optional[Dict[str, Any]], hinted: Optional[str
             return ""
         return text
 
+    login_name = " ".join(
+        part
+        for part in (
+            _as_string((user or {}).get("first_name") or (user or {}).get("firstName")).strip(),
+            _as_string((user or {}).get("last_name") or (user or {}).get("lastName")).strip(),
+        )
+        if part
+    )
     candidates = [
-        hinted,
-        " ".join(
-            part
-            for part in (
-                _as_string((user or {}).get("first_name") or (user or {}).get("firstName")).strip(),
-                _as_string((user or {}).get("last_name") or (user or {}).get("lastName")).strip(),
-            )
-            if part
-        ),
+        login_name,
         (user or {}).get("name"),
         (user or {}).get("full_name"),
         (user or {}).get("display_name"),
         (user or {}).get("displayName"),
+        hinted,
     ]
     for raw in candidates:
         name = _clean(raw)
         if name:
             return name
     return "Employee"
+
+
+def _stamp_solution_author_fields(
+    row: Dict[str, Any],
+    entity: Optional[str],
+    author_name: str,
+    author_email: str = "",
+) -> Dict[str, Any]:
+    """Write the Refex One login name onto every Kissflow name column the admin PUT accepts."""
+    name = _as_string(author_name).strip()
+    email = _normalize_email(author_email)
+    if not name:
+        return row
+    field_ids = REPORT_FIELD_IDS.get(_report_entity_key(entity), REPORT_FIELD_IDS["extrovis"])
+    row["Name_1"] = name
+    row["Name"] = name
+    person = {"Name": name}
+    if email:
+        person["Email"] = email
+    for key in field_ids.get("solution_table_name") or []:
+        if not key:
+            continue
+        row[key] = person if str(key).startswith("Column_") else name
+    if _report_entity_key(entity) != "refex":
+        comments_type = _as_string(row.get("Comments_2")).strip() or "User"
+        row["Comments_2"] = comments_type
+        for key in field_ids.get("solution_table_comments_type") or []:
+            if key:
+                row[key] = comments_type
+        stages = _as_string(row.get("Stages_1") or row.get("Stages")).strip() or "InProgress"
+        row["Stages_1"] = stages
+        for key in field_ids.get("solution_table_stages") or []:
+            if key:
+                row[key] = stages
+    return row
+
+
+def _comment_author_from_row(row: Dict[str, Any], field_ids: Dict[str, List[str]]) -> Any:
+    """Prefer the text Name_1 we PUT. Column_* user objects often hold the assignee."""
+    name_cols = list(field_ids.get("solution_table_name") or ["Name_1", "Name"])
+    preferred = ["Name_1", "Name"]
+    rest = [key for key in name_cols if key not in preferred]
+    return _pick_row_field(row, *preferred, *rest)
 
 
 def _comment_step_for_entity(entity: Optional[str]) -> str:
@@ -2756,6 +2840,8 @@ def _looks_like_attachment_file(item: Any) -> bool:
         return True
     if _as_string(item.get("key") or item.get("Key")).strip():
         return True
+    if _as_string(item.get("Url") or item.get("url") or item.get("URL")).strip():
+        return True
     if item.get("photos") or item.get("fileExtension") or item.get("FileExtension"):
         return True
     mime = _as_string(item.get("mimeType") or item.get("type") or item.get("contentType") or item.get("ContentType")).lower()
@@ -2787,7 +2873,19 @@ def _as_attachment_list(raw: Any) -> List[Dict[str, Any]]:
             return keyed
         return [raw] if _looks_like_attachment_file(raw) else []
     if isinstance(raw, list):
-        return [item for item in raw if _looks_like_attachment_file(item)]
+        found: List[Dict[str, Any]] = []
+        for item in raw:
+            if isinstance(item, str):
+                found.extend(_as_attachment_list(item))
+            elif _looks_like_attachment_file(item):
+                found.append(item)
+        return found
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("http") or text.startswith("/") or "." in text.rsplit("/", 1)[-1]:
+            name = text.rsplit("/", 1)[-1] or "file"
+            return [{"name": name, "Url": text, "url": text}]
+        return []
     return []
 
 
@@ -2829,7 +2927,12 @@ def _normalize_comment_attachment(item: Dict[str, Any]) -> Dict[str, Any]:
             photo_key = _as_string(photo.get("key") or photo.get("Key")).strip()
             if photo_key:
                 break
-    key = _as_string(item.get("key") or item.get("Key")).strip() or photo_key
+    stored_url = _as_string(item.get("Url") or item.get("url") or item.get("URL"))
+    key = (
+        _as_string(item.get("key") or item.get("Key")).strip()
+        or photo_key
+        or _attachment_key_from_url(stored_url)
+    )
     name = _as_string(item.get("name") or item.get("Name")).strip()
     attach_id = _as_string(item.get("id") or item.get("_id")).strip()
     return {
@@ -2840,7 +2943,7 @@ def _normalize_comment_attachment(item: Dict[str, Any]) -> Dict[str, Any]:
         "fileExtension": _as_string(item.get("fileExtension") or item.get("FileExtension")),
         "mimeType": _as_string(item.get("mimeType") or item.get("type") or item.get("contentType")),
         "photos": photos,
-        "Url": _as_string(item.get("Url") or item.get("url") or item.get("URL")),
+        "Url": stored_url,
     }
 
 
@@ -2898,10 +3001,6 @@ def _needs_reopen_progress_fetch(
     blob = f"{current_step} {last_completed_step}".lower()
     if "reopen" in blob and "reopened" not in blob.replace("can be reopened", ""):
         return True
-    status_token = _status_token(status)
-    # Closed tickets that already went through ReOpen Window still have the sendback note.
-    if status_token in ("closed", "close", "completed", "complete"):
-        return True
     return False
 
 
@@ -2951,7 +3050,6 @@ def _parse_agent_solution_rows(
     requester_name: str = "",
     created_at: Any = None,
 ) -> List[Dict[str, Any]]:
-    name_cols = field_ids.get("solution_table_name") or ["Name_1", "Name"]
     res_cols = field_ids.get("solution_table_resolution") or ["Resolution"]
     dt_cols = field_ids.get("solution_table_datetime") or ["ITAgentDate_Time", "Date_Time"]
     stage_cols = field_ids.get("solution_table_stages") or ["Stages_1", "Stages"]
@@ -2966,8 +3064,9 @@ def _parse_agent_solution_rows(
             continue
         if empty_text:
             resolution = ""
-        raw_name = _as_string(_pick_row_field(row, *name_cols)).strip()
-        name = _person_label(_pick_row_field(row, *name_cols)) or raw_name or "IT Support"
+        author_raw = _comment_author_from_row(row, field_ids)
+        raw_name = _as_string(author_raw).strip()
+        name = _person_label(author_raw) or raw_name or "IT Support"
         if _looks_like_kissflow_id(name) or _looks_like_kissflow_id(raw_name):
             name = "IT Support"
         if name.lower().startswith("live it service request"):
@@ -2977,7 +3076,9 @@ def _parse_agent_solution_rows(
         stages = _as_string(_pick_row_field(row, *stage_cols)).strip()
         comments_type = _as_string(_pick_row_field(row, *type_cols)).strip()
         date_time = _pick_row_field(row, *dt_cols) or row.get("_created_at") or row.get("_modified_at")
-        if not _comment_created_at_ok(date_time, created_at):
+        # Attachment-only / file rows often have a blank or older DateTime.
+        # Dropping them made chat files disappear after the leak filter.
+        if not attachments and not _comment_created_at_ok(date_time, created_at):
             continue
         record_id = _as_string(row.get("_id") or row.get("Id") or row.get("id") or "").strip()
         if record_id and record_id in seen_ids:
@@ -3052,15 +3153,20 @@ def _thread_from_instance_payload(
     solution = _it_agent_solution_text(item, field_ids)
     if isinstance(payload, dict) and payload is not item:
         solution = solution or _it_agent_solution_text(payload, field_ids)
+    live_stage = _pick_form_status_stage(item, field_ids)
     return {
         "comments": comments,
         "activityInstanceId": activity_id or _as_string(item.get("_activity_instance_id")),
         "requestId": _as_string(item.get("Request_ID")),
         "description": _as_string(item.get("Description")),
+        "ticketType": _as_string(item.get("Ticket_Type") or item.get("Request_Type")),
+        "category": _as_string(item.get("Category")),
+        "subCategory": _as_string(item.get("SubCategory") or item.get("Sub_Category")),
         "solution": solution,
         "itAgentSolution": solution,
         "entity": _as_string(item.get("Entity")),
-        "status": _as_string(item.get("Statu_1") or item.get("_status") or item.get("Stages")),
+        "status": _as_string(item.get("_status") or item.get("Statu") or item.get("Stages")),
+        "stage": live_stage,
         "currentStep": _as_string(item.get("_current_step")),
         "requesterName": requester_name or _person_label(item.get("_created_by")),
         "requesterEmail": requester_email or _as_string(item.get("Requester_Email")),
@@ -3113,14 +3219,14 @@ async def _thread_from_comment_path(
 ) -> Dict[str, Any]:
     """BOT key first (files), then report key (text), then nested-table GET."""
     best: Dict[str, Any] = {"comments": [], "activityInstanceId": activity_id}
-    bot_payload = await _kf_get_json(cfg, path, params, for_write=True)
+    bot_payload = await _kf_get_json(cfg, path, params, for_write=True, raise_on_challenge=False)
     if bot_payload is not None:
         thread = _thread_from_instance_payload(bot_payload, field_ids, activity_id)
         extras = {k: v for k, v in thread.items() if v not in (None, "", []) and k != "comments"}
         best = {**best, **extras, "comments": thread.get("comments") or []}
         if sum(1 for row in best["comments"] if _comment_file_count(row)):
             return best
-    report_payload = await _kf_get_json(cfg, path, params)
+    report_payload = await _kf_get_json(cfg, path, params, raise_on_challenge=False)
     if report_payload is not None and report_payload is not bot_payload:
         thread = _thread_from_instance_payload(report_payload, field_ids, activity_id)
         merged = _merge_comment_lists(best.get("comments") or [], thread.get("comments") or [])
@@ -3134,7 +3240,7 @@ async def _thread_from_comment_path(
         return best
 
     for nested_path in (f"{path}/IT__Agent_Solution", f"{path}/Table::IT__Agent_Solution"):
-        nested = await _kf_get_json(cfg, nested_path, params, for_write=True)
+        nested = await _kf_get_json(cfg, nested_path, params, for_write=True, raise_on_challenge=False)
         if nested is None:
             continue
         wrapped: Any = nested
@@ -3178,6 +3284,30 @@ async def _thread_from_comment_path(
     return best
 
 
+async def _load_progress_comment_notes(
+    cfg: Dict[str, Any],
+    instance_id: str,
+    entity: Optional[str] = None,
+    requester_name: str = "",
+) -> Dict[str, Any]:
+    """Progress GET only — reopen sendback notes. Does not pull the instance or full report."""
+    process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
+    params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
+    base = f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}"
+    progress = await _kf_get_json(cfg, f"{base}/progress", params, raise_on_challenge=False)
+    notes = (
+        _collect_reopen_notes_from_progress(progress, requester_name)
+        if progress is not None
+        else []
+    )
+    return {
+        "comments": notes,
+        "activityInstanceId": "",
+        "progressOnly": True,
+        "messageCount": len(notes),
+    }
+
+
 async def _load_instance_comment_thread(
     cfg: Dict[str, Any],
     entity: Optional[str],
@@ -3185,6 +3315,7 @@ async def _load_instance_comment_thread(
     hinted_activity: str = "",
     viewer_email: str = "",
     need_reopen_progress: bool = False,
+    allow_report_fallback: bool = False,
 ) -> Dict[str, Any]:
     """Load IT__Agent_Solution comments. Progress GET only when the ticket was reopened."""
     process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
@@ -3200,10 +3331,10 @@ async def _load_instance_comment_thread(
     progress: Any = None
     if need_reopen_progress:
         # ITSM Setup read keys — never a hardcoded secret or .env key dump.
-        progress = await _kf_get_json(cfg, f"{base}/progress", params)
+        progress = await _kf_get_json(cfg, f"{base}/progress", params, raise_on_challenge=False)
         if progress is None:
             await asyncio.sleep(0.4)
-            progress = await _kf_get_json(cfg, f"{base}/progress", params)
+            progress = await _kf_get_json(cfg, f"{base}/progress", params, raise_on_challenge=False)
         preferred: List[str] = []
         others: List[str] = []
         for step in _iter_progress_steps(progress):
@@ -3239,7 +3370,7 @@ async def _load_instance_comment_thread(
             break
 
     email = (best.get("requesterEmail") or viewer_email or "").strip()
-    if email:
+    if allow_report_fallback and email and not (best.get("comments") or []):
         try:
             report_profile = {
                 "process_id": process_id,
@@ -3259,6 +3390,9 @@ async def _load_instance_comment_thread(
                 best["messageCount"] = len(best.get("comments") or [])
                 best["requestId"] = best.get("requestId") or match.get("requestId") or ""
                 best["description"] = best.get("description") or match.get("description") or ""
+                best["ticketType"] = best.get("ticketType") or match.get("ticketType") or ""
+                best["category"] = best.get("category") or match.get("category") or ""
+                best["subCategory"] = best.get("subCategory") or match.get("subCategory") or ""
                 best["currentStep"] = best.get("currentStep") or match.get("currentStep") or ""
                 best["assignedTo"] = best.get("assignedTo") or match.get("assignedTo") or ""
                 logger.info(
@@ -3513,10 +3647,83 @@ def _canonicalize_ticket_stage(value: Any) -> str:
     return raw
 
 
-def _display_ticket_status(status: str, stage: str) -> str:
-    """Ticket Status is Open unless Closed. Stage keeps the exact Status field."""
+def _stage_from_raw(value: Any) -> str:
+    if isinstance(value, dict):
+        return _canonicalize_ticket_stage(
+            value.get("Name") or value.get("name") or value.get("value") or value.get("v") or ""
+        )
+    return _canonicalize_ticket_stage(value)
+
+
+def _is_validation_yes_no(label: str) -> bool:
+    return _status_token(label) in ("yes", "no")
+
+
+def _first_present_stage(data: Dict[str, Any], keys: List[str]) -> str:
+    seen = set()
+    for key in keys:
+        token = str(key or "").strip()
+        if not token or token.lower() in seen:
+            continue
+        seen.add(token.lower())
+        label = _stage_from_raw(_raw_field(data, token))
+        if not label or _is_validation_yes_no(label):
+            continue
+        return label
+    return ""
+
+
+def _pick_form_status_stage(data: Dict[str, Any], field_ids: Dict[str, Any]) -> str:
+    """Stage = Statu_1 select. Extrovis Column_ps84EEKkEI; Refex Column_WRiZDgVSqj."""
+    from_statu1 = _first_present_stage(
+        data,
+        [
+            "Statu_1",
+            *(field_ids.get("item_status") or []),
+            "Column_ps84EEKkEI",
+            "Column_WRiZDgVSqj",
+        ],
+    )
+    if from_statu1:
+        return from_statu1
+    form_keys = [
+        "Status",
+        *(field_ids.get("status") or []),
+        "Column_69zTtmtO92",
+        "Column_0GDnNoEuA7",
+    ]
+    skip = {str(key).strip().lower() for key in form_keys if key}
+    fallback_keys = [
+        key
+        for key in (
+            *(field_ids.get("stages") or []),
+            "Stages",
+            "Column_JUGHj6d2Xj",
+            "Column_GooYV3HuY1",
+        )
+        if key and str(key).strip().lower() not in skip
+    ]
+    fallback = ""
+    seen = set()
+    for key in [*form_keys, *fallback_keys]:
+        token = str(key or "").strip()
+        if not token or token.lower() in seen:
+            continue
+        seen.add(token.lower())
+        label = _stage_from_raw(_raw_field(data, token))
+        if not label or _is_validation_yes_no(label):
+            continue
+        if label != "Open":
+            return label
+        fallback = fallback or label
+    return fallback
+
+
+def _display_ticket_status(status: str, stage: str = "") -> str:
+    """Ticket Status is Open unless the pipeline is Closed. Stage/Statu_1 never closes it."""
+    del stage
     token = _status_token(status)
-    if token in ("closed", "close", "completed", "rejected", "failed") or stage == "Closed":
+    if token in ("closed", "close", "completed", "rejected", "failed"):
         return "Closed"
     return "Open"
 
@@ -4297,11 +4504,7 @@ def _parse_report_ticket(
         "Ticket_Status",
         "Ticket Status",
     )
-    ticket_stage_raw = _lookup_field(
-        data,
-        *field_ids["status"],
-        "Status",
-    )
+    ticket_stage_raw = _pick_form_status_stage(data, field_ids)
     solution = _it_agent_solution_text(data, field_ids)
     employee_rating = _parse_rating(
         _raw_field(data, *field_ids.get("employee_rating", []), "Ratings_emp")
@@ -4356,10 +4559,8 @@ def _parse_report_ticket(
         status = "Closed"
     stage = _canonicalize_ticket_stage(ticket_stage_raw)
     display_status = _display_ticket_status(status, stage)
-    if display_status == "Closed":
+    if display_status == "Closed" and not stage:
         stage = "Closed"
-    elif not stage:
-        stage = "Open"
     sendback_id = _sendback_id_from_report(
         data, field_ids, instance_id, reopen_activity_id or activity_instance_id
     )
@@ -4423,6 +4624,23 @@ def _parse_report_ticket(
         "requestId": request_id or "—",
         "subject": subject,
         "description": description,
+        "ticketType": _lookup_field(
+            data,
+            *field_ids.get("ticket_type", []),
+            "Ticket_Type",
+            "Request_Type",
+        ),
+        "category": _lookup_field(
+            data,
+            *field_ids.get("category", []),
+            "Category",
+        ),
+        "subCategory": _lookup_field(
+            data,
+            *field_ids.get("sub_category", []),
+            "SubCategory",
+            "Sub_Category",
+        ),
         "status": display_status,
         "stage": stage,
         "solution": solution,
@@ -4536,6 +4754,9 @@ def _public_local_ticket(doc: Dict[str, Any]) -> Dict[str, Any]:
         "requestId": doc.get("kissflow_request_id") or "—",
         "subject": doc.get("subject") or "",
         "description": doc.get("description") or "",
+        "ticketType": doc.get("ticket_type") or "",
+        "category": doc.get("category") or "",
+        "subCategory": doc.get("sub_category") or doc.get("subCategory") or "",
         "status": status,
         "localStatus": local_status,
         "solution": doc.get("solution") or "",
@@ -6498,10 +6719,11 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         status: Optional[str] = Query(None),
         current_step: Optional[str] = Query(None),
         last_completed_step: Optional[str] = Query(None),
+        progress_only: Optional[str] = Query(None),
         _t: Optional[str] = Query(None),
         user: dict = Depends(get_current_user),
     ):
-        """Load the full IT__Agent_Solution table from the process instance GET."""
+        """Ticket conversation: instance GET on refresh; progress GET only for reopen notes."""
         instance_id = (instance_id or "").strip()
         if not instance_id:
             raise HTTPException(status_code=400, detail="Ticket id is required")
@@ -6512,15 +6734,41 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         )
         process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
         cfg = {**cfg, "process_id": process_id}
-        need_reopen_progress = True
-        thread = await _load_instance_comment_thread(
-            cfg,
-            entity,
-            instance_id,
-            (activity_instance_id or "").strip(),
-            viewer_email=(user.get("email") or "").strip(),
-            need_reopen_progress=need_reopen_progress,
+        want_progress_only = str(progress_only or "").strip().lower() in ("1", "true", "yes")
+        need_reopen_progress = _needs_reopen_progress_fetch(
+            reopened=bool(reopened),
+            status=status or "",
+            current_step=current_step or "",
+            last_completed_step=last_completed_step or "",
         )
+        kissflow_busy = False
+        try:
+            if want_progress_only:
+                thread = await _load_progress_comment_notes(
+                    cfg,
+                    instance_id,
+                    entity,
+                    requester_name="",
+                )
+            else:
+                thread = await _load_instance_comment_thread(
+                    cfg,
+                    entity,
+                    instance_id,
+                    (activity_instance_id or "").strip(),
+                    viewer_email=(user.get("email") or "").strip(),
+                    need_reopen_progress=need_reopen_progress,
+                    allow_report_fallback=False,
+                )
+        except HTTPException as exc:
+            if exc.status_code != 502:
+                raise
+            kissflow_busy = True
+            logger.warning("ITSM comments Kissflow busy instance=%s: %s", instance_id, exc.detail)
+            thread = {
+                "comments": [],
+                "activityInstanceId": (activity_instance_id or "").strip(),
+            }
         env_name = cfg.get("environment") or "development"
         merged = _merge_comment_lists(thread.get("comments") or [], _ledger_comments(env_name, instance_id))
         visible = _employee_visible_comments(merged, entity)
@@ -6531,6 +6779,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         thread["activeEnvironment"] = env_name
         thread["accountId"] = cfg.get("account_id") or ""
         thread["adminItemUrl"] = _admin_process_item_url(cfg, instance_id)
+        thread["kissflowBusy"] = kissflow_busy
         return {"success": True, **thread}
 
     @api_router.get("/itsm/reports/attachment-preview")
@@ -6541,10 +6790,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         environment: Optional[str] = Query(None),
         user: dict = Depends(get_current_user),
     ):
-        """Mint the GET-signed GCS URL for a Non-Refex comment attachment."""
-        if not _uses_extrovis_flow(entity):
-            raise HTTPException(status_code=400, detail="Attachment preview is only for Non-Refex tickets.")
-        file_key = (key or "").strip()
+        """Mint the GET-signed GCS URL for a Help Desk comment attachment."""
+        file_key = _attachment_key_from_url(key) or (key or "").strip()
         if not file_key:
             raise HTTPException(status_code=400, detail="Attachment key is required.")
         cfg = await _resolve_config(
@@ -6555,6 +6802,41 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         want_thumb = bool(thumbnail) and _attachment_key_is_image(file_key)
         url = await _mint_gcs_get_url(cfg, file_key, want_thumb)
         return {"url": url, "key": file_key, "thumbnail": want_thumb}
+
+    @api_router.get("/itsm/reports/attachment-file")
+    async def get_attachment_file(
+        entity: str = Query(...),
+        key: str = Query(...),
+        download: bool = Query(False),
+        environment: Optional[str] = Query(None),
+        user: dict = Depends(get_current_user),
+    ):
+        """Same-origin file stream so Help Desk can open and download attachments."""
+        file_key = _attachment_key_from_url(key) or (key or "").strip()
+        if not file_key:
+            raise HTTPException(status_code=400, detail="Attachment key is required.")
+        cfg = await _resolve_config(
+            user.get("org_id") or "",
+            entity,
+            force_env=_client_env_name(environment),
+        )
+        signed = await _mint_gcs_get_url(cfg, file_key, False)
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await client.get(signed)
+        if response.status_code >= 400:
+            logger.warning("Attachment file GET %s -> %s", file_key, response.status_code)
+            raise HTTPException(status_code=502, detail="Could not download attachment.")
+        filename = file_key.rsplit("/", 1)[-1] or "attachment"
+        disposition = "attachment" if download else "inline"
+        media = response.headers.get("content-type") or "application/octet-stream"
+        return Response(
+            content=response.content,
+            media_type=media,
+            headers={
+                "Content-Disposition": f'{disposition}; filename="{filename}"',
+                "Cache-Control": "private, max-age=60",
+            },
+        )
 
     @api_router.post("/itsm/reports/comment")
     async def submit_ticket_comment(
@@ -6673,7 +6955,6 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             )
         row: Dict[str, Any] = {
             "_id": row_id,
-            "Name_1": requester_name,
             "Resolution": comment_text,
         }
         comments_type = ""
@@ -6681,6 +6962,12 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             row["Stages_1"] = "InProgress"
             comments_type = "User"
             row["Comments_2"] = comments_type
+        row = _stamp_solution_author_fields(
+            row,
+            entity,
+            requester_name,
+            (user.get("email") or "").strip(),
+        )
         if attachments:
             row["Attachments"] = attachments
 

@@ -4,7 +4,7 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { ITSM_API } from '../config/api';
 import { toast } from 'sonner';
-import { getApiErrorMessage } from '../utils/apiError';
+import { getApiErrorMessage, isKissflowChallengeError, withKissflowRetry } from '../utils/apiError';
 import { mergeItsmProfile, isRefexEntity } from '../utils/itsmEntity';
 import CommentAttachmentPreview, { attachmentKind } from '../components/CommentAttachmentPreview';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
@@ -104,9 +104,8 @@ const canonicalizeTicketStage = (value) => {
 };
 
 const ticketDisplayStatus = (ticket) => {
-  const stage = canonicalizeTicketStage(ticket?.stage);
   const status = String(ticket?.status || '').trim().toLowerCase();
-  if (stage === 'Closed' || status.includes('closed') || status.includes('completed') || status.includes('reject') || status.includes('fail')) {
+  if (status.includes('closed') || status.includes('completed') || status.includes('reject') || status.includes('fail')) {
     return 'Closed';
   }
   return 'Open';
@@ -114,7 +113,7 @@ const ticketDisplayStatus = (ticket) => {
 
 const ticketStageLabel = (ticket) => {
   if (ticketDisplayStatus(ticket) === 'Closed') return 'Closed';
-  return canonicalizeTicketStage(ticket?.stage) || 'Open';
+  return canonicalizeTicketStage(ticket?.stage) || '';
 };
 
 const statusBadgeClass = (status = '') => {
@@ -277,6 +276,57 @@ const TicketStatusTags = ({ ticket, size = 'md' }) => {
 const isRefexHelpdeskEntity = (entity) => isRefexEntity(entity);
 
 const ticketSubject = (ticket) => String(ticket?.subject || ticket?.Subject || '').trim();
+
+const firstTicketText = (ticket, keys) => {
+  for (const key of keys) {
+    const value = String(ticket?.[key] ?? '').trim();
+    if (value && value !== '—') return value;
+  }
+  return '';
+};
+
+const TicketDetailsPanel = ({
+  ticket,
+  showSolution = false,
+  solutionLoading = false,
+  className = '',
+}) => {
+  const ticketType = firstTicketText(ticket, ['ticketType', 'Ticket_Type', 'requestType']);
+  const category = firstTicketText(ticket, ['category', 'Category']);
+  const subCategory = firstTicketText(ticket, ['subCategory', 'SubCategory', 'sub_category']);
+  const description = firstTicketText(ticket, ['description', 'Description']);
+  return (
+    <aside
+      className={`itsm-conversation-details bg-slate-50/90 px-3 py-3 sm:px-4 ${className}`}
+      data-testid={`itsm-ticket-details-${ticket?.id || ticket?.localId || 'ticket'}`}
+    >
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Ticket details</p>
+      <dl className="mt-2 space-y-2.5">
+        <div>
+          <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Ticket Type</dt>
+          <dd className="mt-0.5 text-sm font-medium text-slate-800">{ticketType || '—'}</dd>
+        </div>
+        <div>
+          <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Category</dt>
+          <dd className="mt-0.5 text-sm font-medium text-slate-800">{category || '—'}</dd>
+        </div>
+        <div>
+          <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Sub Category</dt>
+          <dd className="mt-0.5 text-sm font-medium text-slate-800">{subCategory || '—'}</dd>
+        </div>
+        <div>
+          <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Description</dt>
+          <dd className="mt-0.5 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{description || '—'}</dd>
+        </div>
+      </dl>
+      {showSolution ? (
+        <div className="mt-3">
+          <AgentSolutionBlock ticket={ticket} loading={solutionLoading} />
+        </div>
+      ) : null}
+    </aside>
+  );
+};
 
 const ticketAgentSolution = (ticket) =>
   String(ticket?.itAgentSolution || ticket?.solution || '').trim();
@@ -538,6 +588,8 @@ const commentsBelongToTicket = (rows, ticket) => {
     if (!createdMs || Number.isNaN(createdMs)) return true;
     const stamped = entry?.dateTime ? new Date(entry.dateTime).getTime() : 0;
     if (!stamped || Number.isNaN(stamped)) return true;
+    const files = Array.isArray(entry?.attachments) ? entry.attachments : [];
+    if (files.length) return true;
     return stamped + 120000 >= createdMs;
   });
 };
@@ -695,6 +747,14 @@ const PendingAttachChip = ({ file, onRemove }) => {
   );
 };
 
+const ticketNeedsReopenProgress = (ticket) => {
+  if (!ticket) return false;
+  if (ticket.reopened) return true;
+  const blob = `${ticket.currentStep || ''} ${ticket.lastCompletedStep || ''}`;
+  if (/reopen/i.test(blob) && !/can be reopened/i.test(blob)) return true;
+  return false;
+};
+
 const TicketConversation = ({
   ticket,
   entity = '',
@@ -709,10 +769,13 @@ const TicketConversation = ({
   allowAttachments = false,
   onSend,
   onHydrated,
+  showSolution = false,
+  solutionLoading = false,
 }) => {
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
-  const [hydrating, setHydrating] = useState(false);
+  const [hydrating, setHydrating] = useState(true);
+  const [threadReady, setThreadReady] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [pendingFiles, setPendingFiles] = useState([]);
   const inputRef = React.useRef(null);
@@ -735,34 +798,73 @@ const TicketConversation = ({
   const resolvedEnv = isDevHelpdesk(environment, kissflowBaseUrl) ? 'development' : environment;
   const allowCompose = Boolean(canComment);
 
+  const loadGenRef = React.useRef(0);
   const loadComments = React.useCallback(async (force = false) => {
     const live = ticketRef.current;
-    if (!ticket?.id || !live?.id || live.id !== ticket.id || !entity || typeof authRef.current !== 'function') return;
+    const gen = ++loadGenRef.current;
+    if (!ticket?.id || !live?.id || live.id !== ticket.id || !entity || typeof authRef.current !== 'function') {
+      setHydrating(false);
+      setThreadReady(true);
+      return;
+    }
     const stored = commentsBelongToTicket(commentsFromStore(live.id, entity), live);
     const localEntries = revisionEntriesFromTicket(live, entity);
-    const localHasFiles = [...stored, ...localEntries].some(
-      (entry) => Array.isArray(entry?.attachments) && entry.attachments.length,
+    const landingComments = commentsBelongToTicket(
+      mergeCommentRows(stored, live.agentSolutions),
+      live,
     );
-    if (!force && stored.length && typeof hydrateRef.current === 'function') {
-      hydrateRef.current(live.id, { comments: stored });
+    const hasLandingThread = landingComments.length > 0 || localEntries.length > 0;
+    const wantProgress = ticketNeedsReopenProgress(live);
+    const progressOnly = Boolean(!force && hasLandingThread && wantProgress);
+
+    if (!force && hasLandingThread) {
+      setThreadReady(true);
+      if (!wantProgress) {
+        setHydrating(false);
+        setLoadError('');
+        return;
+      }
+    } else {
+      setHydrating(true);
+      if (!hasLandingThread) setThreadReady(false);
     }
-    if (force || !localHasFiles) setHydrating(true);
+
     setLoadError('');
     try {
-      const res = await axios.get(`${ITSM_API}/itsm/reports/comments`, {
-        params: {
-          entity,
-          instance_id: live.id,
-          activity_instance_id: live.activityInstanceId || '',
-          environment: resolvedEnv || environment || undefined,
-          reopened: true,
-          status: live.status || '',
-          current_step: live.currentStep || '',
-          last_completed_step: live.lastCompletedStep || '',
-          _t: Date.now(),
+      const res = await withKissflowRetry(
+        async () => {
+          const response = await axios.get(`${ITSM_API}/itsm/reports/comments`, {
+            params: {
+              entity,
+              instance_id: live.id,
+              activity_instance_id: live.activityInstanceId || '',
+              environment: resolvedEnv || environment || undefined,
+              reopened: wantProgress,
+              status: live.status || '',
+              current_step: live.currentStep || '',
+              last_completed_step: live.lastCompletedStep || '',
+              ...(progressOnly ? { progress_only: '1' } : {}),
+              _t: Date.now(),
+            },
+            ...authRef.current(),
+          });
+          const data = response.data || {};
+          if (data.kissflowBusy && !(Array.isArray(data.comments) && data.comments.length)) {
+            const busy = new Error('Kissflow is temporarily blocking the request. Wait a few seconds and try again.');
+            busy.response = { status: 502, data: { detail: busy.message } };
+            throw busy;
+          }
+          return response;
         },
-        ...authRef.current(),
-      });
+        {
+          onRetry: () => {
+            if (gen === loadGenRef.current) {
+              setLoadError('Kissflow is busy. Retrying…');
+            }
+          },
+        },
+      );
+      if (gen !== loadGenRef.current) return;
       const payload = res.data || {};
       const nextComments = Array.isArray(payload.comments) ? realCommentRows(payload.comments) : [];
       const keptReopen = [...stored, ...localEntries].filter(
@@ -772,20 +874,33 @@ const TicketConversation = ({
         hydrateRef.current(live.id, {
           ...payload,
           comments: commentsBelongToTicket(
-            mergeCommentRows(nextComments, stored, keptReopen),
+            mergeCommentRows(nextComments, stored, keptReopen, landingComments),
             live,
           ),
         });
       }
+      setLoadError('');
     } catch (err) {
+      if (gen !== loadGenRef.current) return;
       setLoadError(getApiErrorMessage(err, 'Could not refresh comments from Kissflow.'));
     } finally {
-      setHydrating(false);
+      if (gen === loadGenRef.current) {
+        setHydrating(false);
+        setThreadReady(true);
+      }
     }
   }, [ticket?.id, entity, environment, kissflowBaseUrl, resolvedEnv]);
 
   React.useEffect(() => {
-    loadComments();
+    const live = ticketRef.current;
+    const hasLanding = revisionEntriesFromTicket(live, entity).length > 0
+      || commentsBelongToTicket(commentsFromStore(live?.id, entity), live).length > 0;
+    setThreadReady(hasLanding);
+    setHydrating(!hasLanding);
+  }, [ticket?.id, entity]);
+
+  React.useEffect(() => {
+    loadComments(false);
   }, [loadComments]);
 
   React.useEffect(() => {
@@ -811,7 +926,7 @@ const TicketConversation = ({
       await onSend(note, files);
       setDraft('');
       setPendingFiles([]);
-      loadComments();
+      loadComments(true);
     } catch (err) {
       setError(err?.message || 'Unable to save comment.');
     }
@@ -827,7 +942,9 @@ const TicketConversation = ({
       className="itsm-conversation w-full min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white"
       data-testid={`itsm-revisions-${ticket.id}`}
     >
-      <div className="border-b border-slate-200 bg-white px-3 py-3 sm:px-4">
+      <div className="itsm-conversation-split">
+      <div className="itsm-conversation-chat">
+      <div className="border-b border-slate-200 bg-white px-3 py-2.5 sm:px-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -844,13 +961,7 @@ const TicketConversation = ({
               ) : null}
             </div>
             {ticketSubject(ticket) && !isRefexHelpdeskEntity(entity) ? (
-              <p className="mt-1 text-sm font-medium text-slate-800">{ticketSubject(ticket)}</p>
-            ) : null}
-            {ticket.description ? (
-              <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Description</p>
-                <p className="mt-0.5 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{ticket.description}</p>
-              </div>
+              <p className="mt-1 truncate text-sm font-medium text-slate-800">{ticketSubject(ticket)}</p>
             ) : null}
             <p className="mt-1 truncate text-[11px] text-slate-400">
               {[ticket.requesterName, entityLabel, createdLabel].filter(Boolean).join(' · ')}
@@ -858,7 +969,7 @@ const TicketConversation = ({
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             <span className="inline-flex h-8 min-w-[2rem] items-center justify-center rounded-md border border-slate-200 bg-slate-50 px-2 text-[11px] font-semibold text-slate-700">
-              {entries.length}
+              {threadReady ? entries.length : '…'}
             </span>
             <button
               type="button"
@@ -881,15 +992,29 @@ const TicketConversation = ({
 
       <div
         ref={scrollerRef}
-        className={`itsm-thread ${entries.length ? 'max-h-80 overflow-y-auto' : ''} px-3 py-4 sm:px-5`}
+        className="itsm-thread px-3 py-4 sm:px-5"
       >
-        {loadError ? <p className="relative z-[1] mb-2 text-center text-[11px] text-rose-600">{loadError}</p> : null}
-        {!entries.length ? (
+        {loadError ? (
+          <p className={`relative z-[1] mb-2 text-center text-[11px] ${/retrying/i.test(loadError) ? 'text-amber-700' : 'text-rose-600'}`}>
+            {loadError}
+          </p>
+        ) : null}
+        {hydrating && !threadReady ? (
+          <div className="relative z-[1] flex flex-col items-center justify-center px-4 py-10 text-center" data-testid={`itsm-revisions-loading-${ticket.id}`}>
+            <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg border border-slate-200 bg-white text-teal-700">
+              <Loader2 size={20} className="animate-spin" />
+            </span>
+            <p className="text-sm font-semibold text-slate-800">Loading conversation…</p>
+            <p className="mt-1 max-w-xs text-xs leading-relaxed text-slate-500">
+              Fetching reopen notes from Kissflow.
+            </p>
+          </div>
+        ) : !entries.length ? (
           <div className="relative z-[1] flex flex-col items-center justify-center px-4 py-8 text-center" data-testid={`itsm-revisions-empty-${ticket.id}`}>
             <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400">
-              {hydrating ? <Loader2 size={20} className="animate-spin" /> : <MessageSquare size={20} />}
+              <MessageSquare size={20} />
             </span>
-            <p className="text-sm font-semibold text-slate-800">{hydrating ? 'Loading comments…' : 'No comments yet'}</p>
+            <p className="text-sm font-semibold text-slate-800">No comments yet</p>
             <p className="mt-1 max-w-xs text-xs leading-relaxed text-slate-500">
               {allowCompose
                 ? 'Write a comment below to start this ticket thread with IT Support.'
@@ -928,7 +1053,7 @@ const TicketConversation = ({
                   </div>
                 ) : null}
                 <div className={`flex ${mine ? 'justify-end' : 'justify-start'} ${grouped ? 'mt-1.5' : 'mt-3'}`}>
-                  <div className={`flex max-w-[85%] items-end gap-2 sm:max-w-[72%] max-xl:!max-w-full ${mine ? 'flex-row-reverse' : 'flex-row'}`}>
+                  <div className={`flex min-w-0 max-w-[min(100%,28rem)] items-end gap-2 ${mine ? 'flex-row-reverse' : 'flex-row'}`}>
                     {grouped ? (
                       <span className="h-7 w-7 shrink-0" aria-hidden />
                     ) : (
@@ -936,7 +1061,7 @@ const TicketConversation = ({
                         {initialsOf(name === 'You' ? viewerName || entry.userName : name)}
                       </span>
                     )}
-                    <div className="min-w-0 max-xl:min-w-[12rem] max-xl:flex-1">
+                    <div className="min-w-0 flex-1">
                       {!grouped ? (
                         <p className={`mb-1 text-[11px] font-medium ${mine ? 'text-right text-teal-800' : 'text-left text-slate-500'}`}>
                           {name === 'You' ? 'You' : name}
@@ -987,7 +1112,7 @@ const TicketConversation = ({
         )}
       </div>
 
-      {allowCompose ? (
+      {allowCompose && threadReady ? (
         <div className="border-t border-slate-200 bg-white px-3 py-3 sm:px-4">
           <div className="mb-2 flex flex-wrap gap-1.5">
             {QUICK_REPLIES.map((item) => (
@@ -1002,7 +1127,7 @@ const TicketConversation = ({
               </button>
             ))}
           </div>
-          <div className="flex items-end gap-2 max-xl:flex-wrap">
+          <div className="flex items-end gap-2">
             <textarea
               ref={inputRef}
               value={draft}
@@ -1019,7 +1144,7 @@ const TicketConversation = ({
               rows={2}
               disabled={commenting}
               placeholder="Write a comment…"
-              className="min-h-[48px] max-h-28 flex-1 resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100 max-xl:min-w-full"
+              className="min-h-[48px] max-h-28 min-w-0 flex-1 resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100"
               data-testid={`itsm-comment-note-${ticket.id}`}
             />
             {allowAttachments ? (
@@ -1051,7 +1176,7 @@ const TicketConversation = ({
                   htmlFor={fileInputId}
                   title="Add attachment"
                   aria-label="Add attachment"
-                  className={`inline-flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-teal-600 hover:bg-teal-50 hover:text-teal-800 max-xl:h-12 max-xl:w-12 ${commenting ? 'pointer-events-none opacity-40' : ''}`}
+                  className={`inline-flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-teal-600 hover:bg-teal-50 hover:text-teal-800 ${commenting ? 'pointer-events-none opacity-40' : ''}`}
                   data-testid={`itsm-comment-attach-${ticket.id}`}
                 >
                   <Paperclip size={16} />
@@ -1062,7 +1187,7 @@ const TicketConversation = ({
               type="button"
               onClick={() => send()}
               disabled={commenting || (!draft.trim() && !(allowAttachments && pendingFiles.length))}
-              className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-40 max-xl:min-h-12 max-xl:flex-1"
+              className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-40"
               data-testid={`itsm-comment-send-${ticket.id}`}
               aria-label="Send comment"
             >
@@ -1084,7 +1209,7 @@ const TicketConversation = ({
           {error ? <p className="mt-1.5 text-xs text-red-600">{error}</p> : null}
           <p className="mt-1.5 text-[10px] text-slate-400">Enter to send · Shift+Enter for a new line</p>
         </div>
-      ) : (
+      ) : threadReady ? (
         <p className="border-t border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] text-slate-500">
           {isPickupStep(ticket.currentStep)
             ? 'Comments open after IT picks up the ticket.'
@@ -1092,7 +1217,15 @@ const TicketConversation = ({
               ? 'This ticket is closed for comments.'
               : 'Replies open when this ticket is with IT on the work step.'}
         </p>
-      )}
+      ) : null}
+      </div>
+      <TicketDetailsPanel
+        ticket={ticket}
+        showSolution={showSolution}
+        solutionLoading={solutionLoading}
+        className="border-t border-slate-200 md:border-l md:border-t-0"
+      />
+      </div>
     </div>
   );
 };
@@ -1134,7 +1267,7 @@ const ticketsCache = {
   fetchedAt: 0,
 };
 
-const TICKETS_CACHE_KEY = 'itsmTicketsCache.v17';
+const TICKETS_CACHE_KEY = 'itsmTicketsCache.v18';
 const COMMENTS_STORE_KEY = 'itsmCommentsStore.v1';
 const commentsStore = new Map();
 let ticketsInflight = null;
@@ -1291,8 +1424,15 @@ const ITSMDashboard = () => {
   const [composerTicketId, setComposerTicketId] = useState('');
   const [solutionHydratingIds, setSolutionHydratingIds] = useState(() => new Set());
   const solutionHydrateRef = React.useRef(new Set());
-  const viewerName = useMemo(() => (mergeItsmProfile(user).name || '').trim(), [user]);
-  const viewerEmail = useMemo(() => (mergeItsmProfile(user).email || '').trim(), [user]);
+  const viewerName = useMemo(() => {
+    const first = String(user?.first_name || user?.firstName || '').trim();
+    const last = String(user?.last_name || user?.lastName || '').trim();
+    const combined = [first, last].filter(Boolean).join(' ').trim();
+    return combined || (mergeItsmProfile(user).name || '').trim();
+  }, [user]);
+  const viewerEmail = useMemo(() => (
+    String(user?.email || '').trim() || (mergeItsmProfile(user).email || '').trim()
+  ), [user]);
 
   const applyCommentThread = (ticketId, payload) => {
     if (!ticketId || !payload) return;
@@ -1321,10 +1461,15 @@ const ITSMDashboard = () => {
           requesterName: payload.requesterName || row.requesterName,
           requesterEmail: payload.requesterEmail || row.requesterEmail,
           currentStep: payload.currentStep || row.currentStep,
+          stage: payload.stage ? canonicalizeTicketStage(payload.stage) : row.stage,
           activityInstanceId: payload.activityInstanceId || row.activityInstanceId,
           entity: payload.entity || row.entity,
           source: payload.source || row.source,
           location: payload.location || row.location,
+          description: payload.description || row.description,
+          ticketType: payload.ticketType || row.ticketType,
+          category: payload.category || row.category,
+          subCategory: payload.subCategory || row.subCategory,
           solution: nextSolution || row.solution || '',
           itAgentSolution: nextSolution || row.itAgentSolution || row.solution || '',
         };
@@ -1473,11 +1618,11 @@ const ITSMDashboard = () => {
         }
       }
 
-      const res = await axios.get(`${ITSM_API}/itsm/reports`, {
+      const res = await withKissflowRetry(() => axios.get(`${ITSM_API}/itsm/reports`, {
         ...getAuthHeader(),
         params: { entity },
         timeout: 90000,
-      });
+      }));
       const incoming = res.data.tickets || [];
       const incomingEnv = res.data.activeEnvironment || '';
       const incomingBase = res.data.kissflowBaseUrl || '';
@@ -1538,15 +1683,20 @@ const ITSMDashboard = () => {
       setKissflowBaseUrl(ticketsCache.kissflowBaseUrl);
       setLastFetchedAt(ticketsCache.fetchedAt);
       if (data?.reportError && !data?.keptCachedTickets && !data?.skippedFull) {
-        toast.error(`Kissflow report: ${getApiErrorMessage({ detail: data.reportError }, data.reportError)}`);
+        const reportMessage = getApiErrorMessage({ detail: data.reportError }, data.reportError);
+        if (!isKissflowChallengeError({ detail: reportMessage }) || !ticketsCache.tickets.length) {
+          toast.error(`Kissflow report: ${reportMessage}`);
+        }
       }
     } catch (err) {
       if (!ticketsCache.tickets.length) {
         setTickets([]);
         setActiveEnvironment('');
         setKissflowBaseUrl('');
+        setError(getApiErrorMessage(err, 'Unable to load tickets.'));
+      } else if (!isKissflowChallengeError(err)) {
+        setError(getApiErrorMessage(err, 'Unable to load tickets.'));
       }
-      setError(getApiErrorMessage(err, 'Unable to load tickets.'));
     } finally {
       ticketsInflight = null;
       setLoading(false);
@@ -1611,7 +1761,13 @@ const ITSMDashboard = () => {
 
   const filteredTickets = useMemo(() => {
     const tab = statusTab === 'Reopened' ? 'Open' : statusTab;
-    return tickets.filter((ticket) => matchesKpiFilter(ticket, tab));
+    return tickets
+      .filter((ticket) => matchesKpiFilter(ticket, tab))
+      .sort((a, b) => {
+        const right = new Date(b?.createdOn || b?.createdAt || 0).getTime() || 0;
+        const left = new Date(a?.createdOn || a?.createdAt || 0).getTime() || 0;
+        return right - left;
+      });
   }, [tickets, statusTab]);
 
   React.useEffect(() => {
@@ -1879,7 +2035,7 @@ const ITSMDashboard = () => {
                       <TicketStatusTags ticket={ticket} />
                     </td>
                     <td className="text-slate-700" title={ticketStageLabel(ticket)}>
-                      {ticketStageLabel(ticket)}
+                      {ticketStageLabel(ticket) || '—'}
                     </td>
                     <td className="text-slate-700" title={ticket.closedBy || ''}>
                       {ticket.closedBy || '—'}
@@ -1922,13 +2078,7 @@ const ITSMDashboard = () => {
                   {expanded && showExpand ? (
                     <tr className="bg-slate-50/80">
                       <td colSpan={conversationColSpan} className="itsm-conversation-cell !p-3 sm:!p-4 border-t border-slate-100">
-                        <div className="space-y-3">
-                          {showSolution ? (
-                            <AgentSolutionBlock
-                              ticket={ticket}
-                              loading={solutionHydratingIds.has(ticket.id)}
-                            />
-                          ) : null}
+                        <div className="w-full min-w-0">
                           {showCommentSection ? (
                         <TicketConversation
                           ticket={ticket}
@@ -1944,11 +2094,16 @@ const ITSMDashboard = () => {
                           onSend={(note, files) => submitCommentForTicket(ticket, note, files)}
                           onHydrated={applyCommentThread}
                           allowAttachments={!isRefexHelpdeskEntity(entity)}
+                          showSolution={showSolution}
+                          solutionLoading={solutionHydratingIds.has(ticket.id)}
                         />
-                          ) : hasDescription ? (
-                          <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
-                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Description</p>
-                            <p className="mt-1 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{ticket.description}</p>
+                          ) : hasDescription || showSolution ? (
+                          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                            <TicketDetailsPanel
+                              ticket={ticket}
+                              showSolution={showSolution}
+                              solutionLoading={solutionHydratingIds.has(ticket.id)}
+                            />
                           </div>
                           ) : null}
                         </div>
@@ -1991,7 +2146,7 @@ const ITSMDashboard = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1 mb-3">
                 <p className="text-xs text-slate-500">Created On: {formatTicketDate(ticket.createdOn)}</p>
                 <p className="text-xs text-slate-500">Assigned To: {formatAssignedToDisplay(ticket.assignedTo)}</p>
-                <p className="text-xs text-slate-500">Stage: {ticketStageLabel(ticket)}</p>
+                <p className="text-xs text-slate-500">Stage: {ticketStageLabel(ticket) || '—'}</p>
                 <p className="text-xs text-slate-500">Closed By: {ticket.closedBy || '—'}</p>
                 <p className="text-xs text-slate-500">Closed On: {formatTicketDate(ticket.closedOn)}</p>
                 {ticket.currentStep ? (
@@ -2002,7 +2157,10 @@ const ITSMDashboard = () => {
                 {showExpand ? (
                   <button
                     type="button"
-                    onClick={() => toggleExpanded(rowId)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleExpanded(rowId);
+                    }}
                     className="btn-secondary w-full sm:w-auto"
                     data-testid={`itsm-expand-mobile-${rowId}`}
                   >
@@ -2013,7 +2171,10 @@ const ITSMDashboard = () => {
                 {showComment ? (
                   <button
                     type="button"
-                    onClick={() => openConversation(ticket)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openConversation(ticket);
+                    }}
                     disabled={commentingId === ticket.id}
                     className="btn-secondary w-full sm:w-auto"
                     data-testid={`itsm-comment-mobile-${ticket.id}`}
@@ -2028,7 +2189,10 @@ const ITSMDashboard = () => {
                     {ticketAllowsReopen(ticket) ? (
                     <button
                       type="button"
-                      onClick={() => openReopenDialog(ticket)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openReopenDialog(ticket);
+                      }}
                       disabled={reopeningId === ticket.id}
                       className="btn-secondary w-full"
                       data-testid={`itsm-reopen-mobile-${ticket.id}`}
@@ -2041,13 +2205,10 @@ const ITSMDashboard = () => {
                 ) : null}
               </div>
               {expanded && showExpand ? (
-                <div className="mt-3 border-t border-slate-100 pt-3 space-y-3">
-                  {showSolution ? (
-                    <AgentSolutionBlock
-                      ticket={ticket}
-                      loading={solutionHydratingIds.has(ticket.id)}
-                    />
-                  ) : null}
+                <div
+                  className="mt-3 w-full min-w-0 border-t border-slate-100 pt-3"
+                  onClick={(event) => event.stopPropagation()}
+                >
                   {showCommentSection ? (
                   <TicketConversation
                     ticket={ticket}
@@ -2063,11 +2224,16 @@ const ITSMDashboard = () => {
                     onSend={(note, files) => submitCommentForTicket(ticket, note, files)}
                     onHydrated={applyCommentThread}
                     allowAttachments={!isRefexHelpdeskEntity(entity)}
+                    showSolution={showSolution}
+                    solutionLoading={solutionHydratingIds.has(ticket.id)}
                   />
-                  ) : hasDescription ? (
-                    <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Description</p>
-                      <p className="mt-1 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{ticket.description}</p>
+                  ) : hasDescription || showSolution ? (
+                    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                      <TicketDetailsPanel
+                        ticket={ticket}
+                        showSolution={showSolution}
+                        solutionLoading={solutionHydratingIds.has(ticket.id)}
+                      />
                     </div>
                   ) : null}
                 </div>

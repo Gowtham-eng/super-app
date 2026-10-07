@@ -23,6 +23,16 @@ function photoSizeToken(photo) {
   return asText(photo.size || photo.Size);
 }
 
+function keyFromStoredUrl(url) {
+  const text = asText(url);
+  const marker = '/upload/2/';
+  const idx = text.indexOf(marker);
+  if (idx === -1) return '';
+  const rest = text.slice(idx + marker.length).split('?')[0];
+  const parts = rest.split('/').filter(Boolean);
+  return parts.length >= 2 ? decodeURIComponent(parts.slice(1).join('/')) : '';
+}
+
 export function attachmentFileKey(file, thumbnail = false) {
   const photos = Array.isArray(file?.photos) ? file.photos : [];
   if (thumbnail && photos.length) {
@@ -34,7 +44,7 @@ export function attachmentFileKey(file, thumbnail = false) {
     const key = photoKey(thumb);
     if (key) return key;
   }
-  return asText(file?.key || file?.Key) || photoKey(photos[0]);
+  return asText(file?.key || file?.Key) || photoKey(photos[0]) || keyFromStoredUrl(file?.Url || file?.url);
 }
 
 function fileExtension(file) {
@@ -144,8 +154,10 @@ async function loadPreview({ file, entity, environment, getAuthHeader, thumbnail
   if (gcsStillFresh(stored)) return stored;
   const cached = peekCache(file, thumbnail);
   if (cached) return cached;
-  const key = attachmentFileKey(file, thumbnail);
-  if (!key || !entity || typeof getAuthHeader !== 'function') return '';
+  const key = attachmentFileKey(file, thumbnail) || attachmentFileKey(file, false);
+  if (!key || !entity || typeof getAuthHeader !== 'function') {
+    return stored.startsWith('http') ? stored : '';
+  }
   const id = cacheId(file, thumbnail);
   if (id && inflight.has(id)) return inflight.get(id);
   const pending = (async () => {
@@ -168,6 +180,22 @@ async function loadPreview({ file, entity, environment, getAuthHeader, thumbnail
   } finally {
     if (id) inflight.delete(id);
   }
+}
+
+async function loadAttachmentBlob({ file, entity, environment, getAuthHeader, download = false }) {
+  const key = attachmentFileKey(file, false);
+  if (!key || !entity || typeof getAuthHeader !== 'function') return null;
+  const res = await axios.get(`${ITSM_API}/itsm/reports/attachment-file`, {
+    params: {
+      entity,
+      key,
+      download: download ? 'true' : 'false',
+      ...(environment ? { environment } : {}),
+    },
+    responseType: 'blob',
+    ...getAuthHeader(),
+  });
+  return res.data instanceof Blob ? res.data : new Blob([res.data]);
 }
 
 async function loadRenderablePreview(url, kind) {
@@ -278,33 +306,133 @@ export default function CommentAttachmentPreview({
       const cached = fullUrl || peekCache(file, false);
       let url = cached;
       if (!url) {
-        url = await loadPreview({
+        try {
+          url = await loadPreview({
+            file,
+            entity,
+            environment,
+            getAuthHeader: authRef.current,
+            thumbnail: false,
+          });
+        } catch {
+          url = '';
+        }
+      }
+      if (kind === 'text' || kind === 'pdf' || kind === 'audio' || kind === 'video') {
+        try {
+          const rendered = url ? await loadRenderablePreview(url, kind) : { text: '', objectUrl: '' };
+          if (rendered.text || rendered.objectUrl) {
+            setFullUrl(url || fullUrl);
+            setTextPreview(rendered.text || '');
+            rememberObjectUrl(rendered.objectUrl);
+            setOpen(true);
+            setFailed(false);
+            return;
+          }
+        } catch {
+          /* GCS often blocks browser CORS — stream through the Help Desk API. */
+        }
+        const blob = await loadAttachmentBlob({
           file,
           entity,
           environment,
           getAuthHeader: authRef.current,
-          thumbnail: false,
         });
+        if (!blob) {
+          const stored = asText(file?.Url || file?.url);
+          if (stored) {
+            setFullUrl(stored);
+            setOpen(true);
+            setFailed(false);
+            return;
+          }
+          setFailed(true);
+          setOpen(true);
+          return;
+        }
+        const blobUrl = URL.createObjectURL(blob);
+        if (kind === 'text') {
+          const text = await blob.text();
+          setTextPreview(text.length > TEXT_PREVIEW_LIMIT ? `${text.slice(0, TEXT_PREVIEW_LIMIT)}\n\n… truncated` : text);
+          rememberObjectUrl('');
+        } else {
+          setTextPreview('');
+          rememberObjectUrl(blobUrl);
+        }
+        setFullUrl(blobUrl);
+        setOpen(true);
+        setFailed(false);
+        return;
       }
       const next = url || thumbUrl;
       if (!next) {
-        setFailed(true);
+        const blob = await loadAttachmentBlob({
+          file,
+          entity,
+          environment,
+          getAuthHeader: authRef.current,
+        });
+        if (!blob) {
+          const stored = asText(file?.Url || file?.url);
+          if (stored) {
+            setFullUrl(stored);
+            setOpen(true);
+            setFailed(false);
+            return;
+          }
+          setFailed(true);
+          setOpen(true);
+          return;
+        }
+        const blobUrl = URL.createObjectURL(blob);
+        rememberObjectUrl(blobUrl);
+        setFullUrl(blobUrl);
+        setOpen(true);
+        setFailed(false);
         return;
       }
       setFullUrl(next);
-      if (kind === 'text' || kind === 'pdf' || kind === 'audio' || kind === 'video') {
-        const rendered = await loadRenderablePreview(next, kind);
-        setTextPreview(rendered.text || '');
-        rememberObjectUrl(rendered.objectUrl);
-      } else {
-        setTextPreview('');
-        rememberObjectUrl('');
-      }
+      setTextPreview('');
+      rememberObjectUrl('');
       setOpen(true);
       setFailed(false);
     } catch {
-      if (fullUrl || thumbUrl) setOpen(true);
-      else setFailed(true);
+      const stored = fullUrl || thumbUrl || asText(file?.Url || file?.url);
+      if (stored) setFullUrl(stored);
+      setOpen(true);
+      if (!stored) setFailed(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const downloadFile = async (event) => {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    setLoading(true);
+    try {
+      const blob = await loadAttachmentBlob({
+        file,
+        entity,
+        environment,
+        getAuthHeader: authRef.current,
+        download: true,
+      });
+      const href = blob ? URL.createObjectURL(blob) : (fullUrl || thumbUrl);
+      if (!href) {
+        setFailed(true);
+        return;
+      }
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = label;
+      link.rel = 'noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      if (blob) window.setTimeout(() => URL.revokeObjectURL(href), 4000);
+    } catch {
+      setFailed(true);
     } finally {
       setLoading(false);
     }
@@ -326,7 +454,7 @@ export default function CommentAttachmentPreview({
 
   const href = fullUrl || thumbUrl;
   const lightbox =
-    open && href ? (
+    open ? (
       <div
         role="dialog"
         aria-modal="true"
@@ -339,19 +467,29 @@ export default function CommentAttachmentPreview({
           className="relative flex max-h-[min(94dvh,960px)] w-full max-w-[min(calc(100vw-1.5rem),72rem)] flex-col overflow-hidden rounded-xl bg-white p-3 shadow-2xl sm:p-4"
           onClick={(event) => event.stopPropagation()}
         >
-          <p id={titleId} className="mb-2 max-w-full truncate pr-10 text-xs font-semibold text-slate-700 sm:text-sm">
+          <p id={titleId} className="mb-2 max-w-full truncate pr-24 text-xs font-semibold text-slate-700 sm:text-sm">
             {label}
           </p>
-          <button
-            type="button"
-            aria-label="Close attachment"
-            onClick={() => setOpen(false)}
-            className="absolute right-2 top-2 min-h-11 min-w-11 rounded-md p-2 text-slate-500 hover:bg-slate-100"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="absolute right-2 top-2 flex items-center gap-1">
+            <button
+              type="button"
+              aria-label={`Download ${label}`}
+              onClick={downloadFile}
+              className="min-h-11 min-w-11 rounded-md p-2 text-slate-500 hover:bg-slate-100"
+            >
+              <Download className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              aria-label="Close attachment"
+              onClick={() => setOpen(false)}
+              className="min-h-11 min-w-11 rounded-md p-2 text-slate-500 hover:bg-slate-100"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
           <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto">
-            {image ? (
+            {image && href ? (
               <img
                 src={href}
                 alt={label}
@@ -378,16 +516,14 @@ export default function CommentAttachmentPreview({
                   {kindLabel(kind)}
                 </span>
                 <p className="max-w-md text-sm text-slate-600">{label}</p>
-                <a
-                  href={href}
-                  download={label}
-                  target="_blank"
-                  rel="noreferrer"
+                <button
+                  type="button"
+                  onClick={downloadFile}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-800"
                 >
                   <Download className="h-4 w-4" />
                   Download
-                </a>
+                </button>
               </div>
             )}
           </div>

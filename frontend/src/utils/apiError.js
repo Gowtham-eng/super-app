@@ -15,6 +15,32 @@ function cleanErrorText(text, fallback) {
   return text || fallback;
 }
 
+export function isKissflowChallengeError(error) {
+  const status = error?.response?.status;
+  if (status === 429 || status === 502 || status === 503) return true;
+  const text = getApiErrorMessage(error, '');
+  return /temporarily blocking/i.test(text);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Retry Kissflow Cloudflare / 429 / 502 bursts before showing the banner. */
+export async function withKissflowRetry(run, { attempts = 3, onRetry } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      lastError = error;
+      const retry = attempt < attempts - 1 && isKissflowChallengeError(error);
+      if (!retry) throw error;
+      if (typeof onRetry === 'function') onRetry(error, attempt + 1);
+      await sleep(1500 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 /** Normalize FastAPI / axios error payloads into a displayable string. */
 export function getApiErrorMessage(error, fallback = 'Something went wrong') {
   if (error?.response?.status === 413) {

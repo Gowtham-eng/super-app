@@ -2,7 +2,10 @@
 from routes.itsm import (
     _admin_process_item_path,
     _admin_process_item_url,
+    _comment_author_from_row,
     _comment_write_accepted,
+    _commenter_display_name,
+    _stamp_solution_author_fields,
     _kissflow_response_text,
     _looks_like_html,
     _attachment_key_is_image,
@@ -23,6 +26,8 @@ from routes.itsm import (
     _parse_comment_attachments,
     _parse_report_ticket,
     _canonicalize_ticket_stage,
+    _attachment_key_from_url,
+    _pick_form_status_stage,
     _collect_reopen_notes_from_progress,
     _iter_progress_steps,
     _needs_reopen_progress_fetch,
@@ -301,6 +306,30 @@ def test_merge_keeps_files_when_refresh_returns_text_only():
     assert parsed[0]["attachments"][0]["name"] == "shot.png"
 
 
+def test_keeps_attachments_when_datetime_is_before_ticket():
+    field_ids = REPORT_FIELD_IDS["extrovis"]
+    data = {
+        "Table::IT__Agent_Solution": [
+            {
+                "_id": "IT__Agent_Solution_aaaaaaaaaa",
+                "Name_1": "Aasik",
+                "Resolution": "screenshot",
+                "Date_Time": "2026-01-01T00:00:00Z",
+                "Comments_2": "User",
+                "Attachments": [{"id": "Attach_1", "name": "shot.png", "key": "k1"}],
+            }
+        ]
+    }
+    parsed = _parse_agent_solutions(
+        data,
+        field_ids,
+        requester_name="Aasik",
+        created_at="2026-10-05T06:15:58Z",
+    )
+    assert len(parsed) == 1
+    assert parsed[0]["attachments"][0]["name"] == "shot.png"
+
+
 def test_parse_keeps_attachment_only_rows():
     field_ids = REPORT_FIELD_IDS["extrovis"]
     data = {
@@ -319,6 +348,18 @@ def test_parse_keeps_attachment_only_rows():
     assert parsed[0]["comment"] == ""
     assert parsed[0]["commentsType"] == "User"
     assert parsed[0]["attachments"][0]["name"] == "shot.png"
+
+
+def test_attachment_url_string():
+    files = _parse_comment_attachments(
+        {"Attachments": "https://files.example/shot.png"}
+    )
+    assert files[0]["name"] == "shot.png"
+    assert files[0]["Url"].endswith("shot.png")
+    upload = "https://kissflow.example/upload/2/AcCMptlq60zH/Live_IT_Service_Request_Extrovis_A00/PkX/Attach_1/shot.png"
+    assert _attachment_key_from_url(upload).endswith("Attach_1/shot.png")
+    keyed = _parse_comment_attachments({"Attachments": {"name": "shot.png", "Url": upload}})
+    assert keyed[0]["key"].endswith("Attach_1/shot.png")
 
 
 def test_attachment_unwrap():
@@ -504,6 +545,39 @@ def test_extrovis_report_ticket_includes_subject():
     assert refex.get("subject", "") == ""
 
 
+def test_report_and_instance_map_ticket_type_category():
+    ext_ids = REPORT_FIELD_IDS["extrovis"]
+    parsed = _parse_report_ticket(
+        {
+            ext_ids["ticket_type"][0]: "Incident",
+            ext_ids["category"][0]: "Hardware",
+            ext_ids["sub_category"][0]: "Laptop",
+            "Description": "screen flicker",
+            "_id": "PkCatRow",
+        },
+        [],
+        0,
+        "Extrovis",
+    )
+    assert parsed["ticketType"] == "Incident"
+    assert parsed["category"] == "Hardware"
+    assert parsed["subCategory"] == "Laptop"
+    native = _thread_from_instance_payload(
+        {
+            "Ticket_Type": "Service Request",
+            "Category": "Network",
+            "SubCategory": "VPN",
+            "Description": "vpn down",
+            "Request_ID": "SR-1",
+        },
+        REPORT_FIELD_IDS["extrovis"],
+    )
+    assert native["ticketType"] == "Service Request"
+    assert native["category"] == "Network"
+    assert native["subCategory"] == "VPN"
+    assert native["description"] == "vpn down"
+
+
 def test_comment_nested_table_prefers_solution_not_pickup():
     assert _is_comment_nested_table_step("IT Agent Solution") is True
     assert _is_comment_nested_table_step("IT Tech Support") is True
@@ -632,7 +706,7 @@ def test_ticket_status_stays_open_unless_closed_stage_from_status():
     assert _canonicalize_ticket_stage("On Hold") == "OnHold"
     assert _canonicalize_ticket_stage("Pending with Vendor") == "Pending with Vendor"
     assert _display_ticket_status("Open", "OnHold") == "Open"
-    assert _display_ticket_status("Open", "Closed") == "Closed"
+    assert _display_ticket_status("Open", "Closed") == "Open"
     ext_ids = REPORT_FIELD_IDS["extrovis"]
     columns = [
         {"Id": ext_ids["status"][0], "Name": "Status"},
@@ -653,7 +727,22 @@ def test_ticket_status_stays_open_unless_closed_stage_from_status():
         "Extrovis",
     )
     assert hold["status"] == "Open"
-    assert hold["stage"] == "OnHold"
+    assert hold["stage"] == "Open"
+    vendor = _parse_report_ticket(
+        {
+            ext_ids["instance_id"][0]: "PkVendor1",
+            "Statu_1": "Pending with Vendor",
+            ext_ids["item_status"][0]: "Pending with Vendor",
+            ext_ids["status"][0]: "Open",
+            ext_ids["system_status"][0]: "InProgress",
+            ext_ids["current_step"][0]: "IT Agent Solution",
+        },
+        columns,
+        0,
+        "Extrovis",
+    )
+    assert vendor["stage"] == "Pending with Vendor"
+    assert vendor["status"] == "Open"
     closed = _parse_report_ticket(
         {
             ext_ids["instance_id"][0]: "PkClosed1",
@@ -668,6 +757,74 @@ def test_ticket_status_stays_open_unless_closed_stage_from_status():
     )
     assert closed["status"] == "Closed"
     assert closed["stage"] == "Closed"
+    statu1_wins = _parse_report_ticket(
+        {
+            ext_ids["instance_id"][0]: "PkHold2",
+            "Status": "On Hold",
+            ext_ids["status"][0]: "InProgress",
+            ext_ids["item_status"][0]: "Pending with Employee",
+            ext_ids["system_status"][0]: "InProgress",
+            ext_ids["current_step"][0]: "IT Agent Solution",
+        },
+        columns,
+        0,
+        "Extrovis",
+    )
+    assert statu1_wins["stage"] == "Pending with Employee"
+    assert statu1_wins["status"] == "Open"
+    form_over_stages = _parse_report_ticket(
+        {
+            ext_ids["instance_id"][0]: "PkStage1",
+            ext_ids["status"][0]: "InProgress",
+            "Stages": "Open",
+            "Column_JUGHj6d2Xj": "Open",
+            ext_ids["item_status"][0]: "Open",
+            ext_ids["system_status"][0]: "InProgress",
+            ext_ids["current_step"][0]: "IT Agent Solution",
+        },
+        columns,
+        0,
+        "Extrovis",
+    )
+    assert form_over_stages["stage"] == "Open"
+    assert form_over_stages["status"] == "Open"
+    empty_stage = _parse_report_ticket(
+        {
+            ext_ids["instance_id"][0]: "PkStage2",
+            ext_ids["system_status"][0]: "InProgress",
+            ext_ids["current_step"][0]: "IT Agent Solution",
+        },
+        columns,
+        0,
+        "Extrovis",
+    )
+    assert empty_stage["stage"] == ""
+    assert empty_stage["status"] == "Open"
+    refex_ids = REPORT_FIELD_IDS["refex"]
+    refex = _parse_report_ticket(
+        {
+            refex_ids["instance_id"][0]: "PkRefex1",
+            "Statu_1": "OnHold",
+            refex_ids["item_status"][0]: "OnHold",
+            refex_ids["status"][0]: "Open",
+            refex_ids["system_status"][0]: "InProgress",
+            refex_ids["current_step"][0]: "IT Tech Support",
+        },
+        [
+            {"Id": refex_ids["status"][0], "Name": "Status"},
+            {"Id": refex_ids["item_status"][0], "Name": "Item_Status"},
+            {"Id": refex_ids["system_status"][0], "Name": "System_Status"},
+            {"Id": refex_ids["current_step"][0], "Name": "Current_Step"},
+        ],
+        0,
+        "Refex",
+    )
+    assert refex["stage"] == "OnHold"
+    assert refex["status"] == "Open"
+    assert _pick_form_status_stage(
+        {"Statu_1": "Pending with Vendor", "Status": "Open", "_status": "Open"},
+        REPORT_FIELD_IDS["extrovis"],
+    ) == "Pending with Vendor"
 
 
 def test_reopen_notes_from_progress_are_user_comments():
@@ -723,7 +880,8 @@ def test_live_extrovis_reopen_window_note_from_progress():
     assert notes[0]["role"] == "reopen"
     assert notes[0]["commentsType"] == "User"
     assert _needs_reopen_progress_fetch(reopened=True) is True
-    assert _needs_reopen_progress_fetch(status="Closed") is True
+    assert _needs_reopen_progress_fetch(status="Closed") is False
+    assert _needs_reopen_progress_fetch(status="Closed", reopened=True) is True
     assert _needs_reopen_progress_fetch(current_step="IT Agent Solution") is False
 
 
@@ -750,3 +908,69 @@ def test_reopen_notes_survive_wrapped_progress_and_completed_step():
     assert len(notes) == 1
     assert notes[0]["comment"] == "Still i am facing the issue"
     assert notes[0]["role"] == "reopen"
+
+
+def test_commenter_name_is_refexone_login_not_assignee():
+    user = {
+        "first_name": "Mohamed",
+        "last_name": "Aasik",
+        "email": "mohamed.aasik@refex.co.in",
+        "name": "Mohamed Aasik",
+    }
+    assert _commenter_display_name(user, "Vishnu") == "Mohamed Aasik"
+    assert _commenter_display_name(user, "vishnu@refex.co.in") == "Mohamed Aasik"
+    email_only = {"email": "mohamed.aasik@refex.co.in", "name": "mohamed.aasik@refex.co.in"}
+    assert _commenter_display_name(email_only, "Mohamed Aasik") == "Mohamed Aasik"
+
+
+def test_admin_put_row_stamps_login_name_on_all_name_columns():
+    row = _stamp_solution_author_fields(
+        {"_id": "IT__Agent_Solution_new1", "Resolution": "please check", "Comments_2": "User"},
+        "Extrovis",
+        "Mohamed Aasik",
+        "mohamed.aasik@refex.co.in",
+    )
+    assert row["Name_1"] == "Mohamed Aasik"
+    assert row["Name"] == "Mohamed Aasik"
+    assert row["Column_ZipK5a_k8Y"] == {
+        "Name": "Mohamed Aasik",
+        "Email": "mohamed.aasik@refex.co.in",
+    }
+    assert row["Comments_2"] == "User"
+    assert "Vishnu" not in str(row.values())
+    merged = _merge_solution_rows_for_put(
+        [{"_id": "IT__Agent_Solution_old1", "Name_1": "Aasik", "Resolution": "earlier", "Comments_2": "User"}],
+        row,
+    )
+    assert merged[-1]["Name_1"] == "Mohamed Aasik"
+    assert merged[-1]["Column_ZipK5a_k8Y"]["Name"] == "Mohamed Aasik"
+
+
+def test_parse_prefers_name_1_over_assignee_user_column():
+    field_ids = REPORT_FIELD_IDS["extrovis"]
+    author = _comment_author_from_row(
+        {
+            "Name_1": "Mohamed Aasik",
+            "Column_ZipK5a_k8Y": {"Name": "Vishnu", "Email": "vishnu@refex.co.in"},
+            "Resolution": "hello",
+            "Comments_2": "User",
+        },
+        field_ids,
+    )
+    parsed = _parse_agent_solutions(
+        {
+            "Table::IT__Agent_Solution": [
+                {
+                    "_id": "IT__Agent_Solution_new1",
+                    "Name_1": "Mohamed Aasik",
+                    "Column_ZipK5a_k8Y": {"Name": "Vishnu", "Email": "vishnu@refex.co.in"},
+                    "Resolution": "hello",
+                    "Comments_2": "User",
+                }
+            ]
+        },
+        field_ids,
+        requester_name="Mohamed Aasik",
+    )
+    assert author == "Mohamed Aasik"
+    assert parsed[0]["userName"] == "Mohamed Aasik"
