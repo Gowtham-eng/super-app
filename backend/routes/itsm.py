@@ -3001,10 +3001,6 @@ def _needs_reopen_progress_fetch(
     blob = f"{current_step} {last_completed_step}".lower()
     if "reopen" in blob and "reopened" not in blob.replace("can be reopened", ""):
         return True
-    status_token = _status_token(status)
-    # Closed tickets that already went through ReOpen Window still have the sendback note.
-    if status_token in ("closed", "close", "completed", "complete"):
-        return True
     return False
 
 
@@ -3288,6 +3284,30 @@ async def _thread_from_comment_path(
     return best
 
 
+async def _load_progress_comment_notes(
+    cfg: Dict[str, Any],
+    instance_id: str,
+    entity: Optional[str] = None,
+    requester_name: str = "",
+) -> Dict[str, Any]:
+    """Progress GET only — reopen sendback notes. Does not pull the instance or full report."""
+    process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
+    params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
+    base = f"/process/2/{cfg['account_id']}/{process_id}/{instance_id}"
+    progress = await _kf_get_json(cfg, f"{base}/progress", params, raise_on_challenge=False)
+    notes = (
+        _collect_reopen_notes_from_progress(progress, requester_name)
+        if progress is not None
+        else []
+    )
+    return {
+        "comments": notes,
+        "activityInstanceId": "",
+        "progressOnly": True,
+        "messageCount": len(notes),
+    }
+
+
 async def _load_instance_comment_thread(
     cfg: Dict[str, Any],
     entity: Optional[str],
@@ -3295,6 +3315,7 @@ async def _load_instance_comment_thread(
     hinted_activity: str = "",
     viewer_email: str = "",
     need_reopen_progress: bool = False,
+    allow_report_fallback: bool = False,
 ) -> Dict[str, Any]:
     """Load IT__Agent_Solution comments. Progress GET only when the ticket was reopened."""
     process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
@@ -3349,7 +3370,7 @@ async def _load_instance_comment_thread(
             break
 
     email = (best.get("requesterEmail") or viewer_email or "").strip()
-    if email and not (best.get("comments") or []):
+    if allow_report_fallback and email and not (best.get("comments") or []):
         try:
             report_profile = {
                 "process_id": process_id,
@@ -6698,10 +6719,11 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         status: Optional[str] = Query(None),
         current_step: Optional[str] = Query(None),
         last_completed_step: Optional[str] = Query(None),
+        progress_only: Optional[str] = Query(None),
         _t: Optional[str] = Query(None),
         user: dict = Depends(get_current_user),
     ):
-        """Load the full IT__Agent_Solution table from the process instance GET."""
+        """Ticket conversation: instance GET on refresh; progress GET only for reopen notes."""
         instance_id = (instance_id or "").strip()
         if not instance_id:
             raise HTTPException(status_code=400, detail="Ticket id is required")
@@ -6712,17 +6734,32 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         )
         process_id = cfg.get("process_id") or _report_profile(entity)["process_id"]
         cfg = {**cfg, "process_id": process_id}
-        need_reopen_progress = True
+        want_progress_only = str(progress_only or "").strip().lower() in ("1", "true", "yes")
+        need_reopen_progress = _needs_reopen_progress_fetch(
+            reopened=bool(reopened),
+            status=status or "",
+            current_step=current_step or "",
+            last_completed_step=last_completed_step or "",
+        )
         kissflow_busy = False
         try:
-            thread = await _load_instance_comment_thread(
-                cfg,
-                entity,
-                instance_id,
-                (activity_instance_id or "").strip(),
-                viewer_email=(user.get("email") or "").strip(),
-                need_reopen_progress=need_reopen_progress,
-            )
+            if want_progress_only:
+                thread = await _load_progress_comment_notes(
+                    cfg,
+                    instance_id,
+                    entity,
+                    requester_name="",
+                )
+            else:
+                thread = await _load_instance_comment_thread(
+                    cfg,
+                    entity,
+                    instance_id,
+                    (activity_instance_id or "").strip(),
+                    viewer_email=(user.get("email") or "").strip(),
+                    need_reopen_progress=need_reopen_progress,
+                    allow_report_fallback=False,
+                )
         except HTTPException as exc:
             if exc.status_code != 502:
                 raise

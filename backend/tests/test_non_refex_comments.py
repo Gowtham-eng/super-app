@@ -880,7 +880,8 @@ def test_live_extrovis_reopen_window_note_from_progress():
     assert notes[0]["role"] == "reopen"
     assert notes[0]["commentsType"] == "User"
     assert _needs_reopen_progress_fetch(reopened=True) is True
-    assert _needs_reopen_progress_fetch(status="Closed") is True
+    assert _needs_reopen_progress_fetch(status="Closed") is False
+    assert _needs_reopen_progress_fetch(status="Closed", reopened=True) is True
     assert _needs_reopen_progress_fetch(current_step="IT Agent Solution") is False
 
 

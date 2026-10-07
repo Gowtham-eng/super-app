@@ -747,6 +747,14 @@ const PendingAttachChip = ({ file, onRemove }) => {
   );
 };
 
+const ticketNeedsReopenProgress = (ticket) => {
+  if (!ticket) return false;
+  if (ticket.reopened) return true;
+  const blob = `${ticket.currentStep || ''} ${ticket.lastCompletedStep || ''}`;
+  if (/reopen/i.test(blob) && !/can be reopened/i.test(blob)) return true;
+  return false;
+};
+
 const TicketConversation = ({
   ticket,
   entity = '',
@@ -791,7 +799,7 @@ const TicketConversation = ({
   const allowCompose = Boolean(canComment);
 
   const loadGenRef = React.useRef(0);
-  const loadComments = React.useCallback(async () => {
+  const loadComments = React.useCallback(async (force = false) => {
     const live = ticketRef.current;
     const gen = ++loadGenRef.current;
     if (!ticket?.id || !live?.id || live.id !== ticket.id || !entity || typeof authRef.current !== 'function') {
@@ -801,7 +809,26 @@ const TicketConversation = ({
     }
     const stored = commentsBelongToTicket(commentsFromStore(live.id, entity), live);
     const localEntries = revisionEntriesFromTicket(live, entity);
-    setHydrating(true);
+    const landingComments = commentsBelongToTicket(
+      mergeCommentRows(stored, live.agentSolutions),
+      live,
+    );
+    const hasLandingThread = landingComments.length > 0 || localEntries.length > 0;
+    const wantProgress = ticketNeedsReopenProgress(live);
+    const progressOnly = Boolean(!force && hasLandingThread && wantProgress);
+
+    if (!force && hasLandingThread) {
+      setThreadReady(true);
+      if (!wantProgress) {
+        setHydrating(false);
+        setLoadError('');
+        return;
+      }
+    } else {
+      setHydrating(true);
+      if (!hasLandingThread) setThreadReady(false);
+    }
+
     setLoadError('');
     try {
       const res = await withKissflowRetry(
@@ -812,10 +839,11 @@ const TicketConversation = ({
               instance_id: live.id,
               activity_instance_id: live.activityInstanceId || '',
               environment: resolvedEnv || environment || undefined,
-              reopened: true,
+              reopened: wantProgress,
               status: live.status || '',
               current_step: live.currentStep || '',
               last_completed_step: live.lastCompletedStep || '',
+              ...(progressOnly ? { progress_only: '1' } : {}),
               _t: Date.now(),
             },
             ...authRef.current(),
@@ -846,7 +874,7 @@ const TicketConversation = ({
         hydrateRef.current(live.id, {
           ...payload,
           comments: commentsBelongToTicket(
-            mergeCommentRows(nextComments, stored, keptReopen),
+            mergeCommentRows(nextComments, stored, keptReopen, landingComments),
             live,
           ),
         });
@@ -864,12 +892,15 @@ const TicketConversation = ({
   }, [ticket?.id, entity, environment, kissflowBaseUrl, resolvedEnv]);
 
   React.useEffect(() => {
-    setThreadReady(false);
-    setHydrating(true);
-  }, [ticket?.id]);
+    const live = ticketRef.current;
+    const hasLanding = revisionEntriesFromTicket(live, entity).length > 0
+      || commentsBelongToTicket(commentsFromStore(live?.id, entity), live).length > 0;
+    setThreadReady(hasLanding);
+    setHydrating(!hasLanding);
+  }, [ticket?.id, entity]);
 
   React.useEffect(() => {
-    loadComments();
+    loadComments(false);
   }, [loadComments]);
 
   React.useEffect(() => {
@@ -895,7 +926,7 @@ const TicketConversation = ({
       await onSend(note, files);
       setDraft('');
       setPendingFiles([]);
-      loadComments();
+      loadComments(true);
     } catch (err) {
       setError(err?.message || 'Unable to save comment.');
     }
@@ -975,7 +1006,7 @@ const TicketConversation = ({
             </span>
             <p className="text-sm font-semibold text-slate-800">Loading conversation…</p>
             <p className="mt-1 max-w-xs text-xs leading-relaxed text-slate-500">
-              Fetching comments and reopen notes from Kissflow.
+              Fetching reopen notes from Kissflow.
             </p>
           </div>
         ) : !entries.length ? (
