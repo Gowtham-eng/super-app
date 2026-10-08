@@ -2,7 +2,7 @@
 
 **Product:** Refex Super App (RefexOne)  
 **Purpose:** Check every user and admin flow **before** and **after** a change. Report which flows the change would affect. **Do not change application code until the owner confirms.**  
-**Last updated:** 2026-09-19
+**Last updated:** 2026-10-09
 
 Related docs (do not replace this runbook):
 
@@ -13,6 +13,7 @@ Related docs (do not replace this runbook):
 | `frontend/public/DOCUMENTATION.md` §17 | Ops troubleshooting (backend down, SAML, SCIM, HR) |
 | `scripts/NE_REPORTS_OIDC_SETUP.md` | Notification Engine Reports OIDC wiring |
 | `docs/REFEXIONS_WEBCHAT_PLAN.md` | Refexions chat intents |
+| This runbook §8 | Public App Store listing for RefexOne Superapp (do **not** use unlisted) |
 
 ---
 
@@ -494,7 +495,80 @@ A change in **users / auth** can affect almost every flow. A change in **ITSM Se
 
 ---
 
-## 8. Sign-off
+## 8. App Store — public listing for RefexOne Superapp (mandatory)
+
+**Owner decision:** RefexOne Superapp must stay **public** on the App Store (searchable, Business category). Do **not** request unlisted distribution, custom B2B, or Enterprise-only. The previous RefexOne listing was asked to go unlisted; Superapp exists so the product can remain publicly listed.
+
+| Record | Value |
+|--------|--------|
+| App | RefexOne Superapp |
+| Apple ID | `6820672817` |
+| Bundle ID | `com.refex.refex` (do **not** upload `com.refex.refexone` here — that is the live RefexOne app) |
+| Live RefexOne (do not overwrite) | Apple ID `6800654140`, bundle `com.refex.refexone` |
+| Version / build | `1.0.10` / `10` |
+| Distribution method | **Public — Discoverable by anyone on the App Store** |
+| Price | Free |
+| ASC | https://appstoreconnect.apple.com/apps/6820672817 |
+
+### 8.1 Why Apple previously pushed unlisted (Guideline 3.2)
+
+Apple treats apps whose listing says “employees only / internal / intranet / exclusive” as limited-audience apps. Those are the examples Apple lists for **unlisted** distribution. Superapp copy must **never** use that language.
+
+### 8.2 Listing copy rules (public)
+
+Always keep this framing:
+
+- Anyone may **download** from the public App Store.
+- Sign-in is required for workplace features.
+- Accounts are issued by Refex Group companies to people who work with us (employees, contractors, vendors, partners).
+- Free, no IAP, no ads.
+- Ask App Review in **Notes** to keep **public** listing; explicitly say **do not convert to Unlisted**.
+
+Never put in description, keywords, promotional text, review notes, or privacy policy:
+
+- exclusively for employees
+- internal only / intranet
+- not intended for the general public (as a distribution statement)
+- request unlisted / custom B2B
+
+### 8.3 Rejection checklist before Add for Review
+
+| Check | Pass if |
+|-------|---------|
+| Distribution | Pricing and Availability = **Public**, not Private/Custom |
+| Description / promo / keywords | Public workplace-portal wording (see §8.2) |
+| Review Notes | Public-distribution request + working Google demo login |
+| Build | Superapp IPA `com.refex.refex` selected on version 1.0.10 |
+| Screenshots | iPhone 6.9" and 6.5" (and iPad if iPad is listed). Files: `~/Desktop/RefexOne-AppStore-Screenshots/` |
+| App Privacy | Policy URL `https://refexone.com/privacy-policy.html`; nutrition labels published. Prefer **Data Linked to You** for Name, Email, User ID (login app). Deploy privacy HTML that allows public download. |
+| Age rating | 18+ (unrestricted web access), matching live RefexOne |
+| Content rights | Yes |
+| Encryption | `ITSAppUsesNonExemptEncryption` = false in Info.plist |
+| Name | Keep **RefexOne Superapp** (Apple trademark warning blocks exact name “RefexOne”) |
+| Demo account | Reviewer can Sign in with Google and reach the launcher |
+
+### 8.4 Build / upload (Superapp only)
+
+Do **not** change `PRODUCT_BUNDLE_IDENTIFIER` in git (leave live app as `com.refex.refexone`). Archive Superapp with a command-line override:
+
+```bash
+cd frontend/ios-project
+xcodebuild -project RefexSuperApp.xcodeproj -scheme RefexSuperApp -configuration Release \
+  -destination 'generic/platform=iOS' \
+  -archivePath build/RefexOneSuperApp-1.0.10.xcarchive \
+  PRODUCT_BUNDLE_IDENTIFIER=com.refex.refex DEVELOPMENT_TEAM=54GZ733HV4 \
+  -allowProvisioningUpdates archive
+xcodebuild -exportArchive -archivePath build/RefexOneSuperApp-1.0.10.xcarchive \
+  -exportOptionsPlist UploadOptions.plist -allowProvisioningUpdates
+```
+
+### 8.5 If App Review replies “use unlisted”
+
+Reply: this record is **RefexOne Superapp**, submitted for **public** App Store distribution; accounts are issued to employees, contractors, vendors, and partners; anyone can download; demo login was provided; please **do not** switch to unlisted. Do not file an unlisted-distribution request unless the owner explicitly changes §8.
+
+---
+
+## 9. Sign-off
 
 | Gate | Owner | Result |
 |------|--------|--------|
