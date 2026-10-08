@@ -1320,13 +1320,13 @@ const CreateITRequest = () => {
                 onChange={(e) => setDescription(e.target.value)}
                 rows={6}
                 placeholder="Describe your issue or request in detail"
-                className="input-brutalist w-full px-4 py-3 pr-12 resize-y min-h-[140px] lg:min-h-[180px]"
+                className="input-brutalist w-full !pl-4 !pr-16 py-3 resize-y min-h-[140px] lg:min-h-[180px]"
                 data-testid="itsm-description"
               />
               <button
                 type="button"
                 onClick={toggleMic}
-                className={`absolute right-3 top-3 p-2 rounded-lg border transition-colors ${
+                className={`absolute right-2 top-2 p-2 rounded-lg border transition-colors ${
                   isListening
                     ? 'bg-red-50 border-red-200 text-red-600'
                     : 'bg-emerald-50 border-emerald-100 text-emerald-700 hover:bg-emerald-100'

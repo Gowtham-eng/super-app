@@ -558,8 +558,32 @@ const initialsOf = (name) => {
 const looksLikeEmail = (value) => /@/.test(String(value || ''));
 const looksLikeKissflowId = (value) => /^Pk[A-Za-z0-9]{8,}$/.test(String(value || '').trim());
 
+const isRealCommentAttachment = (file, commentText = '') => {
+  if (!file || typeof file !== 'object') return false;
+  const name = String(file.name || file.Name || '').trim();
+  const key = String(file.key || file.Key || '').trim();
+  const attachId = String(file.id || file._id || '').trim();
+  const comment = String(commentText || '').trim();
+  if (comment && name && name.toLowerCase() === comment.toLowerCase() && !key) return false;
+  if (attachId.toLowerCase().startsWith('attach_')) return true;
+  if (key.includes('/IT__Agent_Solution/') || key.includes('/upload/2/')) return true;
+  if (/\.[a-z0-9]{2,5}$/i.test(name) && name.toLowerCase() !== comment.toLowerCase()) return true;
+  return Array.isArray(file.photos) && file.photos.length > 0;
+};
+
+const realAttachmentsOf = (entry) => {
+  const text = String(entry?.comment || entry?.resolution || '').trim();
+  return (Array.isArray(entry?.attachments) ? entry.attachments : []).filter((file) =>
+    isRealCommentAttachment(file, text)
+  );
+};
+
+const withRealAttachments = (entry) => (
+  entry && typeof entry === 'object' ? { ...entry, attachments: realAttachmentsOf(entry) } : entry
+);
+
 const realCommentRows = (rows) =>
-  (Array.isArray(rows) ? rows : []).filter((entry) => {
+  (Array.isArray(rows) ? rows : []).map(withRealAttachments).filter((entry) => {
     const text = String(entry?.comment || entry?.resolution || '').trim();
     const name = String(entry?.userName || entry?.agentName || '').trim();
     const files = Array.isArray(entry?.attachments) ? entry.attachments : [];
@@ -619,7 +643,29 @@ const mergeCommentRows = (...groups) => {
       const text = String(row?.comment || row?.resolution || '').trim().toLowerCase();
       const id = String(row?.id || row?.recordId || '').trim();
       const stableId = isSyntheticCommentId(id) ? '' : id;
-      const prev = (stableId && byId.get(stableId)) || (text && byText.get(text)) || null;
+      const prevById = stableId ? byId.get(stableId) : null;
+      const prevByText = text ? byText.get(text) : null;
+      const prevTextId = String(prevByText?.id || prevByText?.recordId || '').trim();
+      const sameMinute = (() => {
+        if (!prevByText || !text) return false;
+        const a = prevByText?.dateTime ? new Date(prevByText.dateTime).getTime() : 0;
+        const b = row?.dateTime ? new Date(row.dateTime).getTime() : 0;
+        if (!a || !b || Number.isNaN(a) || Number.isNaN(b)) return true;
+        return Math.abs(a - b) < 60000;
+      })();
+      const prev =
+        prevById
+        || (
+          prevByText
+          && (
+            !stableId
+            || isSyntheticCommentId(prevTextId)
+            || !prevTextId
+            || sameMinute
+          )
+            ? prevByText
+            : null
+        );
       if (prev) {
         if (commentAttachmentCount(row) > commentAttachmentCount(prev)) replace(prev, row);
         else if (String(row?.role || '').toLowerCase() === 'reopen' && String(prev?.role || '').toLowerCase() !== 'reopen') {
@@ -720,26 +766,28 @@ const PendingAttachChip = ({ file, onRemove }) => {
   const [src, setSrc] = useState('');
   const kind = attachmentKind(file);
   useEffect(() => {
-    if (!file?.type || !String(file.type).startsWith('image/')) return undefined;
+    if (!file || !(String(file.type || '').startsWith('image/') || looksLikeCommentImage(file))) {
+      return undefined;
+    }
     const url = URL.createObjectURL(file);
     setSrc(url);
     return () => URL.revokeObjectURL(url);
   }, [file]);
   return (
-    <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 pr-1 text-[11px] text-slate-700">
+    <span className="inline-flex max-w-full items-center gap-1 rounded-md border border-slate-200 bg-white pr-1 text-[11px] text-slate-700 shadow-sm">
       {src ? (
-        <img src={src} alt={file.name} className="h-10 w-10 rounded-l-md object-cover" />
+        <img src={src} alt={file.name} className="h-12 w-12 shrink-0 rounded-l-md object-cover" />
       ) : (
-        <span className="ml-1 rounded bg-white px-1 py-0.5 text-[9px] font-bold tracking-wide text-slate-600">
+        <span className="ml-1 rounded bg-slate-100 px-1 py-0.5 text-[9px] font-bold tracking-wide text-slate-600">
           {KIND_CHIP[kind] || 'FILE'}
         </span>
       )}
-      <span className="max-w-[8rem] truncate px-1">{file.name}</span>
+      <span className="max-w-[10rem] truncate px-1">{file.name || 'Attachment'}</span>
       <button
         type="button"
         aria-label={`Remove ${file.name}`}
         onClick={onRemove}
-        className="rounded p-0.5 text-slate-400 hover:bg-white hover:text-slate-700"
+        className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
       >
         ×
       </button>
@@ -815,18 +863,12 @@ const TicketConversation = ({
     );
     const hasLandingThread = landingComments.length > 0 || localEntries.length > 0;
     const wantProgress = ticketNeedsReopenProgress(live);
-    const progressOnly = Boolean(!force && hasLandingThread && wantProgress);
 
-    if (!force && hasLandingThread) {
+    if (hasLandingThread) {
       setThreadReady(true);
-      if (!wantProgress) {
-        setHydrating(false);
-        setLoadError('');
-        return;
-      }
     } else {
       setHydrating(true);
-      if (!hasLandingThread) setThreadReady(false);
+      setThreadReady(false);
     }
 
     setLoadError('');
@@ -843,7 +885,6 @@ const TicketConversation = ({
               status: live.status || '',
               current_step: live.currentStep || '',
               last_completed_step: live.lastCompletedStep || '',
-              ...(progressOnly ? { progress_only: '1' } : {}),
               _t: Date.now(),
             },
             ...authRef.current(),
@@ -874,7 +915,7 @@ const TicketConversation = ({
         hydrateRef.current(live.id, {
           ...payload,
           comments: commentsBelongToTicket(
-            mergeCommentRows(nextComments, stored, keptReopen, landingComments),
+            mergeCommentRows(nextComments, keptReopen),
             live,
           ),
         });
@@ -939,7 +980,7 @@ const TicketConversation = ({
 
   return (
     <div
-      className="itsm-conversation w-full min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white"
+      className="itsm-conversation w-full min-w-0 overflow-x-hidden rounded-xl border border-slate-200 bg-white"
       data-testid={`itsm-revisions-${ticket.id}`}
     >
       <div className="itsm-conversation-split">
@@ -1068,6 +1109,7 @@ const TicketConversation = ({
                           <span className="font-normal text-slate-400"> · {roleLabel}</span>
                         </p>
                       ) : null}
+                      {entry.comment ? (
                       <div
                         className={`whitespace-pre-wrap px-3 py-2 text-left text-sm leading-snug ${
                           isReopen
@@ -1078,25 +1120,27 @@ const TicketConversation = ({
                         }`}
                       >
                         {entry.comment}
-                        {Array.isArray(entry.attachments) && entry.attachments.length ? (
-                          <span
-                            className={`${entry.comment ? 'mt-1.5' : ''} relative z-10 flex flex-wrap gap-1.5 max-xl:mt-2`}
-                            onPointerDown={(event) => event.stopPropagation()}
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            {entry.attachments.map((file, fileIdx) => (
-                              <CommentAttachmentPreview
-                                key={`${file.id || file.key || file.name || fileIdx}`}
-                                file={file}
-                                entity={entity}
-                                environment={environment}
-                                getAuthHeader={getAuthHeader}
-                                mine={mine}
-                              />
-                            ))}
-                          </span>
-                        ) : null}
                       </div>
+                      ) : null}
+                      {Array.isArray(entry.attachments) && entry.attachments.length ? (
+                        <div
+                          className={`${entry.comment ? 'mt-1.5' : ''} relative z-10 flex flex-wrap gap-1.5`}
+                          data-testid="itsm-comment-attachments"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          {entry.attachments.map((file, fileIdx) => (
+                            <CommentAttachmentPreview
+                              key={`${file.id || file.key || file.name || fileIdx}`}
+                              file={file}
+                              entity={entity}
+                              environment={environment}
+                              getAuthHeader={getAuthHeader}
+                              mine={mine}
+                            />
+                          ))}
+                        </div>
+                      ) : null}
                       {entry.dateTime ? (
                         <p className={`mt-1 text-[10px] text-slate-400 ${mine ? 'text-right' : 'text-left'}`}>
                           {formatRevisionDateTime(entry.dateTime)}
@@ -1113,7 +1157,11 @@ const TicketConversation = ({
       </div>
 
       {allowCompose && threadReady ? (
-        <div className="border-t border-slate-200 bg-white px-3 py-3 sm:px-4">
+        <div
+          className="itsm-comment-composer shrink-0 border-t border-slate-200 bg-white px-3 py-3 sm:px-4"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
           <div className="mb-2 flex flex-wrap gap-1.5">
             {QUICK_REPLIES.map((item) => (
               <button
@@ -1172,15 +1220,17 @@ const TicketConversation = ({
                     event.target.value = '';
                   }}
                 />
-                <label
-                  htmlFor={fileInputId}
+                <button
+                  type="button"
                   title="Add attachment"
                   aria-label="Add attachment"
-                  className={`inline-flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-teal-600 hover:bg-teal-50 hover:text-teal-800 ${commenting ? 'pointer-events-none opacity-40' : ''}`}
+                  disabled={commenting}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-teal-600 hover:bg-teal-50 hover:text-teal-800 disabled:pointer-events-none disabled:opacity-40"
                   data-testid={`itsm-comment-attach-${ticket.id}`}
                 >
                   <Paperclip size={16} />
-                </label>
+                </button>
               </>
             ) : null}
             <button
@@ -1196,7 +1246,10 @@ const TicketConversation = ({
             </button>
           </div>
           {pendingFiles.length ? (
-            <div className="mt-2 flex flex-wrap gap-1.5">
+            <div
+              className="itsm-pending-attachments mt-2 flex min-h-[3.25rem] flex-wrap gap-1.5"
+              data-testid={`itsm-pending-attachments-${ticket.id}`}
+            >
               {pendingFiles.map((file, index) => (
                 <PendingAttachChip
                   key={`${file.name}-${file.size}-${index}`}
@@ -1452,7 +1505,7 @@ const ITSMDashboard = () => {
         // Empty Kissflow GET is not proof the thread is empty (nested table is often
         // missing on instance GET). Never drop reopen notes if a later GET missed progress.
         const nextComments = incoming.length
-          ? rememberComments(row.id, mergeCommentRows(incoming, existing, existingReopen), entity)
+          ? rememberComments(row.id, mergeCommentRows(incoming, existingReopen), entity)
           : rememberComments(row.id, mergeCommentRows(existing, existingReopen), entity);
         const nextSolution = String(payload.itAgentSolution || payload.solution || '').trim();
         return {
@@ -2130,8 +2183,7 @@ const ITSMDashboard = () => {
           return (
             <div
               key={rowId}
-              className={`rounded-xl border border-slate-200 bg-white p-4 ${showExpand ? 'cursor-pointer' : ''}`}
-              onClick={showExpand ? () => toggleExpanded(rowId) : undefined}
+              className="rounded-xl border border-slate-200 bg-white p-4"
             >
               <div className="flex items-start justify-between gap-3 mb-2">
                 <p className="font-semibold text-slate-900 text-sm break-all">{ticket.requestId || '—'}</p>

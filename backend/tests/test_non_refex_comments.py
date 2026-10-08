@@ -1,7 +1,10 @@
 """Non-Refex Help Desk comment channel + attachment parsing (no live Kissflow)."""
 from routes.itsm import (
+    _admin_comment_write_payload,
+    _chat_solution_row_for_put,
     _admin_process_item_path,
     _admin_process_item_url,
+    _comment_write_not_found_detail,
     _comment_author_from_row,
     _comment_write_accepted,
     _commenter_display_name,
@@ -25,12 +28,14 @@ from routes.itsm import (
     _parse_agent_solutions,
     _parse_comment_attachments,
     _parse_report_ticket,
+    _prefer_comment_activity_ids,
     _canonicalize_ticket_stage,
     _attachment_key_from_url,
     _pick_form_status_stage,
     _collect_reopen_notes_from_progress,
     _iter_progress_steps,
     _needs_reopen_progress_fetch,
+    _other_itsm_env,
     _display_ticket_status,
     _thread_from_instance_payload,
     _ticket_webhook_body,
@@ -92,6 +97,90 @@ def test_dev_reopened_extrovis_can_comment():
     assert _parse_report_ticket(pickup, columns, 0, "Extrovis", environment="live")["canComment"] is False
 
 
+def test_comment_keeps_ticket_activity_instance_id():
+    hinted = "PkEJUNkehEhn"
+    swapped = ["PkEJVQcVrFhR", "PkEJUNkehEhn"]
+    assert _prefer_comment_activity_ids(hinted, swapped, "PkEJUG_Vzjom")[0] == hinted
+    assert _prefer_comment_activity_ids(hinted, ["PkEJVQcVrFhR"], "PkEJUG_Vzjom") == [
+        hinted,
+        "PkEJVQcVrFhR",
+    ]
+    assert _prefer_comment_activity_ids(hinted, [], "PkEJUG_Vzjom") == [hinted]
+
+
+def test_admin_comment_write_payload_uses_table_agent_solution():
+    rows = [
+        {
+            "_id": "IT__Agent_Solution_5c4beu734",
+            "Name_1": "Syed Ajju",
+            "Resolution": "Checking",
+            "Stages_1": "InProgress",
+            "Comments_2": "User",
+            "Column_qr_9gP_vE5": "drop-me",
+        }
+    ]
+    payload = _admin_comment_write_payload("PkEJUG_Vzjom", rows, "Extrovis")
+    assert payload == {
+        "_id": "PkEJUG_Vzjom",
+        "Table::IT__Agent_Solution": [
+            {
+                "_id": "IT__Agent_Solution_5c4beu734",
+                "Name_1": "Syed Ajju",
+                "Resolution": "Checking",
+                "Stages_1": "InProgress",
+                "Comments_2": "User",
+            }
+        ],
+    }
+    assert "Column_qr_9gP_vE5" not in payload
+    assert set(_chat_solution_row_for_put(rows[0])) == {
+        "_id",
+        "Name_1",
+        "Resolution",
+        "Stages_1",
+        "Comments_2",
+    }
+
+
+def test_admin_comment_write_payload_keeps_attachments():
+    files = [{"id": "Attach_1", "name": "shot.png", "key": "Live/PkX/shot.png", "size": 12}]
+    payload = _admin_comment_write_payload(
+        "PkEJUG_Vzjom",
+        [
+            {
+                "_id": "IT__Agent_Solution_file1",
+                "Name_1": "Syed Ajju",
+                "Resolution": "",
+                "Stages_1": "InProgress",
+                "Comments_2": "User",
+                "Attachments": files,
+            }
+        ],
+        "Extrovis",
+    )
+    row = payload["Table::IT__Agent_Solution"][0]
+    assert row["Attachments"] == files
+    assert row["_id"] == "IT__Agent_Solution_file1"
+
+
+def test_comment_write_404_does_not_blame_dev_live_when_ticket_was_read():
+    detail = _comment_write_not_found_detail(
+        "live",
+        "https://refexgroup.kissflow.com",
+        "IdNotFound",
+        True,
+    )
+    assert "rejected the comment save" in detail
+    assert "Dev/Live switch will not help" in detail
+    missing = _comment_write_not_found_detail(
+        "live",
+        "https://refexgroup.kissflow.com",
+        "IdNotFound",
+        False,
+    )
+    assert "could not find this ticket" in missing
+
+
 def test_admin_put_keeps_existing_comment_rows():
     existing = [
         {"_id": "IT__Agent_Solution_old1", "Name_1": "asik", "Resolution": "yes please", "Comments_2": "External"},
@@ -123,6 +212,7 @@ def test_cloudflare_html_is_never_treated_as_kissflow_success():
     assert _looks_like_html(CLOUDFLARE_HTML) is True
     assert "Just a moment" not in _kissflow_response_text(CLOUDFLARE_HTML, "fallback")
     assert "temporarily blocking" in _kissflow_response_text(CLOUDFLARE_HTML, "fallback")
+    assert _comment_write_accepted(200, {"Column_qr_9gP_vE5": [{"Resolution": "ok"}]}, "") is True
     assert _comment_write_accepted(200, CLOUDFLARE_HTML, "") is False
     assert _comment_write_accepted(200, {"challenge": True, "message": "blocked"}, "blocked") is False
     assert _comment_write_accepted(403, CLOUDFLARE_HTML, CLOUDFLARE_HTML) is False
@@ -159,6 +249,146 @@ def test_reopen_comments_use_setup_admin_put():
     assert _admin_process_item_path(live_cfg, "PkX") == (
         "/process/2/AcCMptlq60zH/admin/Live_IT_Service_Request_Extrovis_A00/PkX"
     )
+
+
+def test_admin_item_keeps_all_solution_rows_and_files():
+    field_ids = REPORT_FIELD_IDS["extrovis"]
+    rows = [
+        {"_id": "IT__Agent_Solution_a1", "Name_1": "Vishnu", "Resolution": "Sure", "Comments_2": "User"},
+        {"_id": "IT__Agent_Solution_a2", "Name_1": "Syed Ajju", "Resolution": "Thanks", "Comments_2": "User"},
+        {
+            "_id": "IT__Agent_Solution_a3",
+            "Name_1": "Vishnu",
+            "Resolution": "Please follow the steps",
+            "Comments_2": "User",
+            "Attachments": [{"id": "Attach_1", "name": "Extrovis logo.png", "key": "k1"}],
+        },
+        {
+            "_id": "IT__Agent_Solution_a4",
+            "Name_1": "Syed Ajju",
+            "Resolution": "",
+            "Comments_2": "User",
+            "Attachments": [{"id": "Attach_2", "name": "list.xlsx", "key": "k2"}],
+        },
+        {
+            "_id": "IT__Agent_Solution_a5",
+            "Name_1": "Vishnu",
+            "Resolution": "",
+            "Comments_2": "User",
+            "Attachments": [{"id": "Attach_3", "name": "list.xlsx", "key": "k3"}],
+        },
+        {"_id": "PkEJVQeDu7fO", "Name_1": "Vishnu", "Resolution": "", "Comments_2": "User"},
+        {"_id": "IT__Agent_Solution_a6", "Name_1": "Vishnu", "Resolution": "okokok", "Comments_2": "User"},
+        {
+            "_id": "IT__Agent_Solution_a7",
+            "Name_1": "Syed Ajju",
+            "Resolution": "okokok",
+            "Comments_2": "User",
+            "Attachments": [{"id": "Attach_4", "name": "shot.png", "key": "k4"}],
+        },
+    ]
+    parsed = _parse_agent_solutions(
+        {"Table::IT__Agent_Solution": rows, "_created_at": "2026-10-05T06:15:58Z"},
+        field_ids,
+        requester_name="Syed Ajju",
+    )
+    visible = _employee_visible_comments(parsed, "Extrovis")
+    assert [row["id"] for row in visible] == [
+        "IT__Agent_Solution_a1",
+        "IT__Agent_Solution_a2",
+        "IT__Agent_Solution_a3",
+        "IT__Agent_Solution_a4",
+        "IT__Agent_Solution_a5",
+        "IT__Agent_Solution_a6",
+        "IT__Agent_Solution_a7",
+    ]
+    assert [row["id"] for row in visible if row["attachments"]] == [
+        "IT__Agent_Solution_a3",
+        "IT__Agent_Solution_a4",
+        "IT__Agent_Solution_a5",
+        "IT__Agent_Solution_a7",
+    ]
+    merged = _merge_comment_lists(visible)
+    assert len(merged) == 7
+    assert merged[-1]["attachments"][0]["name"] == "shot.png"
+
+
+def test_live_ticket_get_and_put_keep_every_text_and_file():
+    field_ids = REPORT_FIELD_IDS["extrovis"]
+    table = [
+        {"_id": "IT__Agent_Solution_af45d7dc4e", "Name_1": "Vishnu Gullapally", "Resolution": "Sure, we will check it shortly.", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "IT__Agent_Solution_d6f4abdfc6", "Name_1": "Syed Ajju", "Resolution": "Thanks, this helped.", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "IT__Agent_Solution_7c0f30d050", "Name_1": "Vishnu Gullapally", "Resolution": "Please follow the steps", "Comments_2": "User", "Stages_1": "InProgress", "Attachments": [{"id": "Attach_MWVZfxNhBE", "name": "Extrovis logo.png", "key": "k-logo"}]},
+        {"_id": "IT__Agent_Solution_21ec02328b", "Name_1": "Syed Ajju", "Resolution": "", "Comments_2": "User", "Stages_1": "InProgress", "Attachments": [{"id": "Attach_26214eeafd", "name": "Pending MS Office and Product Key machines list New.xlsx", "key": "k-xlsx1"}]},
+        {"_id": "IT__Agent_Solution_15da732208", "Name_1": "Vishnu Gullapally", "Resolution": "", "Comments_2": "User", "Stages_1": "InProgress", "Attachments": [{"id": "Attach_zygRRmBrSu", "name": "Pending MS Office and Product Key machines list New.xlsx", "key": "k-xlsx2"}]},
+        {"_id": "IT__Agent_Solution_17b8e84892", "Name_1": "Vishnu Gullapally", "Resolution": "Test", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "PkEJVQeDu7fO", "Name_1": "Vishnu Gullapally", "Resolution": "", "Comments_2": "User"},
+        {"_id": "IT__Agent_Solution_9c6d390640", "Name_1": "Vishnu Gullapally", "Resolution": "hii", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "IT__Agent_Solution_91101cad04", "Name_1": "Vishnu Gullapally", "Resolution": "how are you", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "IT__Agent_Solution_2df4524a9c", "Name_1": "Vishnu Gullapally", "Resolution": "Need update", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "IT__Agent_Solution_be29d956d3", "Name_1": "Syed Ajju", "Resolution": "hi", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "IT__Agent_Solution_ea28d09043", "Name_1": "Vishnu Gullapally", "Resolution": "yes tell me", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "IT__Agent_Solution_80d20f98bc", "Name_1": "Syed Ajju", "Resolution": "Could you please share an update?", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "IT__Agent_Solution_335b09dfe3", "Name_1": "Vishnu Gullapally", "Resolution": "Thanks", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "IT__Agent_Solution_5c4be83de6", "Name_1": "Vishnu Gullapally", "Resolution": "jjj", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "IT__Agent_Solution_5c4beu734", "Name_1": "Syed Ajju", "Resolution": "Checking", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "IT__Agent_Solution_0047148036", "Name_1": "Syed Ajju", "Resolution": "now check", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "IT__Agent_Solution_954a412389", "Name_1": "Vishnu Gullapally", "Resolution": "okokok", "Comments_2": "User", "Stages_1": "InProgress", "Attachments": [{"id": "Attach_JaaQqaPREw", "name": "Screenshot 2026-10-05 at 2.35.06 PM.png", "key": "k-shot"}]},
+        {"_id": "IT__Agent_Solution_69ed71d60b", "Name_1": "Syed Ajju", "Resolution": "okokok", "Comments_2": "User", "Stages_1": "InProgress"},
+        {"_id": "IT__Agent_Solution_383d4f99d6", "Name_1": "Syed Ajju", "Resolution": "find the attachment", "Comments_2": "User", "Stages_1": "InProgress"},
+    ]
+    admin_item = {
+        "_id": "PkEJUG_Vzjom",
+        "Requester_Name": "Syed Ajju",
+        "Requester_Email": "ajjusyed@extrovis.com",
+        "_created_at": "2026-10-05T06:15:58Z",
+        "Table::IT__Agent_Solution": table,
+    }
+    thread = _thread_from_instance_payload(admin_item, field_ids)
+    visible = _employee_visible_comments(thread["comments"], "Extrovis")
+    texts = [row["comment"] for row in visible]
+    files = [file["name"] for row in visible for file in row["attachments"]]
+    assert "Sure, we will check it shortly." in texts
+    assert "find the attachment" in texts
+    assert texts.count("okokok") == 2
+    assert "Extrovis logo.png" in files
+    assert files.count("Pending MS Office and Product Key machines list New.xlsx") == 2
+    assert "Screenshot 2026-10-05 at 2.35.06 PM.png" in files
+    assert len(visible) == 19
+    assert len(files) == 4
+
+    new_row = {
+        "_id": "IT__Agent_Solution_newfile",
+        "Name_1": "Syed Ajju",
+        "Resolution": "sending with file",
+        "Stages_1": "InProgress",
+        "Comments_2": "User",
+        "Attachments": [{"id": "Attach_new", "name": "new.png", "key": "k-new"}],
+    }
+    merged = _merge_solution_rows_for_put(table, new_row)
+    payload = _admin_comment_write_payload("PkEJUG_Vzjom", merged, "Extrovis")
+    put_rows = payload["Table::IT__Agent_Solution"]
+    put_ids = [row["_id"] for row in put_rows]
+    put_texts = [row.get("Resolution") for row in put_rows if row.get("Resolution")]
+    put_files = [file["name"] for row in put_rows for file in (row.get("Attachments") or [])]
+    assert put_ids[:20] == [row["_id"] for row in table]
+    assert put_ids[-1] == "IT__Agent_Solution_newfile"
+    assert "Sure, we will check it shortly." in put_texts
+    assert "find the attachment" in put_texts
+    assert put_texts.count("okokok") == 2
+    assert put_files == [
+        "Extrovis logo.png",
+        "Pending MS Office and Product Key machines list New.xlsx",
+        "Pending MS Office and Product Key machines list New.xlsx",
+        "Screenshot 2026-10-05 at 2.35.06 PM.png",
+        "new.png",
+    ]
+    reread = _employee_visible_comments(
+        _parse_agent_solutions(payload, field_ids, requester_name="Syed Ajju"),
+        "Extrovis",
+    )
+    assert len(reread) == 20
+    assert [file["name"] for row in reread for file in row["attachments"]][-1] == "new.png"
 
 
 def test_keeps_all_user_comments_when_attachment_table_is_shorter():
@@ -885,6 +1115,14 @@ def test_live_extrovis_reopen_window_note_from_progress():
     assert _needs_reopen_progress_fetch(current_step="IT Agent Solution") is False
 
 
+def test_other_itsm_env_follows_ticket_account():
+    assert _other_itsm_env("live") == "development"
+    assert _other_itsm_env("production") == "development"
+    assert _other_itsm_env("development") == "live"
+    assert _other_itsm_env("dev") == "live"
+    assert _other_itsm_env("") == "live"
+
+
 def test_reopen_notes_survive_wrapped_progress_and_completed_step():
     wrapped = {
         "Data": {
@@ -937,6 +1175,7 @@ def test_admin_put_row_stamps_login_name_on_all_name_columns():
         "Email": "mohamed.aasik@refex.co.in",
     }
     assert row["Comments_2"] == "User"
+    assert row["Column_KzHlT9k9fc"] == "please check"
     assert "Vishnu" not in str(row.values())
     merged = _merge_solution_rows_for_put(
         [{"_id": "IT__Agent_Solution_old1", "Name_1": "Aasik", "Resolution": "earlier", "Comments_2": "User"}],

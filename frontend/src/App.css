@@ -290,6 +290,7 @@ button:not(.btn-primary):not(.btn-secondary):not(.btn-danger):not(.btn-ghost):no
   min-width: 0;
   width: 100%;
   max-width: 100%;
+  overflow: visible;
 }
 
 .itsm-conversation-split {
@@ -337,6 +338,22 @@ button:not(.btn-primary):not(.btn-secondary):not(.btn-danger):not(.btn-ghost):no
   flex-shrink: 0;
   min-width: 4.5rem;
   min-height: 4.5rem;
+}
+
+.itsm-pending-attachments {
+  flex-shrink: 0;
+}
+
+@media (max-width: 1279px) {
+  .itsm-thread {
+    max-height: min(22rem, 48dvh);
+  }
+
+  .itsm-conversation [data-testid="itsm-comment-attachments"] {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+  }
 }
 
 /* Sticky cells must layer above non-sticky neighbours */
