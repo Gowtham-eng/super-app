@@ -22,6 +22,7 @@ from services.app_update import get_app_update_config, save_app_update_config, e
 from services.oidc_crypto import get_jwks, sign_oidc_jwt, normalize_issuer, decode_oidc_jwt
 from services.oidc_access import OIDC_ACCESS_MODES, oidc_app_access
 from services.oidc_launch import LAUNCH_COOKIE, LAUNCH_TTL_SECONDS, create_launch_grant, consume_launch_grant
+from services.oidc_pkce import valid_s256_challenge, matches_s256_verifier
 from routes import scim as scim_router_module
 from routes.itsm import register_itsm_routes
 from routes.azure_ad import register_azure_ad_routes
@@ -2386,6 +2387,7 @@ async def get_oidc_discovery(app_id: str, request: Request):
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256"],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
+        **({"code_challenge_methods_supported": ["S256"]} if app.get('access_mode') == 'assigned_only' else {}),
     }
 
 @api_router.get("/oidc/jwks")
@@ -2431,6 +2433,8 @@ async def oidc_authorize(
     scope: str = Query("openid"),
     state: Optional[str] = Query(None),
     nonce: Optional[str] = Query(None),
+    code_challenge: Optional[str] = Query(None),
+    code_challenge_method: Optional[str] = Query(None),
 ):
     """OAuth2 Authorization endpoint - shows login page or redirects with auth code"""
     # Find the OIDC app by client_id
@@ -2454,6 +2458,8 @@ async def oidc_authorize(
         raise HTTPException(status_code=400, detail="Only response_type=code is supported")
     if app.get('access_mode') == 'assigned_only' and (not state or not nonce):
         raise HTTPException(status_code=400, detail="state and nonce are required")
+    if app.get('access_mode') == 'assigned_only' and not valid_s256_challenge(code_challenge, code_challenge_method):
+        raise HTTPException(status_code=400, detail="S256 PKCE is required")
     
     # Assigned-only launches use only an opaque HttpOnly grant prepared by the
     # authenticated launcher. Legacy apps retain their existing IAM path.
@@ -2494,6 +2500,7 @@ async def oidc_authorize(
                 "code": auth_code,
                 "client_id": client_id,
                 "app_id": app.get('id'),
+                "access_mode": app.get('access_mode', 'open'),
                 "user_id": user['id'],
                 "email": user['email'],
                 "name": user.get('name', user.get('full_name', '')),
@@ -2501,6 +2508,7 @@ async def oidc_authorize(
                 "redirect_uri": redirect_uri,
                 "scope": scope,
                 "nonce": nonce,
+                "code_challenge": code_challenge if assigned_only else None,
                 "created_at": datetime.now(timezone.utc),
                 "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
                 "used": False,
@@ -2556,6 +2564,7 @@ async def oidc_token(app_id: str, request: Request):
     
     grant_type = data.get('grant_type')
     code = data.get('code')
+    code_verifier = data.get('code_verifier')
     redirect_uri = data.get('redirect_uri')
     client_id = data.get('client_id')
     client_secret = data.get('client_secret')
@@ -2601,6 +2610,12 @@ async def oidc_token(app_id: str, request: Request):
         )
     if app.get('access_mode') == 'assigned_only' and (
         app.get('id') != app_id or auth_code.get('app_id') != app_id
+    ):
+        raise HTTPException(status_code=400, detail="invalid_grant")
+    if auth_code.get('access_mode', 'open') != app.get('access_mode', 'open'):
+        raise HTTPException(status_code=400, detail="invalid_grant")
+    if app.get('access_mode') == 'assigned_only' and not matches_s256_verifier(
+        code_verifier, auth_code.get('code_challenge')
     ):
         raise HTTPException(status_code=400, detail="invalid_grant")
     user = await db.users.find_one({"id": auth_code.get('user_id')}, {"_id": 0})

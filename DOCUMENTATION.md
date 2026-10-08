@@ -1226,6 +1226,9 @@ expired, reused or revoked launch. The assigned-only path never uses an IAM
 token query parameter, JavaScript cookie or login redirect. It requires OIDC
 state and nonce. Its ID token and UserInfo do not assert `email_verified`;
 EIOS must use the issuer and immutable subject binding for executive identity.
+Assigned-only authorization also requires PKCE S256: authorize stores the code
+challenge, and token exchange checks the server-held verifier before the code
+is consumed. The discovery response advertises S256 for these apps.
 The Refex One launch collection needs a TTL index on `expires_at` as a
 separate, reviewed live database step before deployment. Production also
 needs a nondefault IAM signing secret and stable OIDC signing keys. The older
