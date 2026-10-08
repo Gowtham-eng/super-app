@@ -20,6 +20,9 @@ from services.adrenalin_sync import sync_employees
 from services.kissflow_scim_client import sync_to_kissflow, push_single_user_to_kissflow, get_kissflow_scim_config, save_kissflow_scim_config, resolve_managers_in_kissflow
 from services.app_update import get_app_update_config, save_app_update_config, evaluate_update
 from services.oidc_crypto import get_jwks, sign_oidc_jwt, normalize_issuer, decode_oidc_jwt
+from services.oidc_access import OIDC_ACCESS_MODES, oidc_app_access, oidc_assignee_ids_match, oidc_token_unexpired
+from services.oidc_launch import LAUNCH_COOKIE, LAUNCH_TTL_SECONDS, create_launch_grant, consume_launch_grant
+from services.oidc_pkce import valid_s256_challenge, matches_s256_verifier
 from routes import scim as scim_router_module
 from routes.itsm import register_itsm_routes
 from routes.azure_ad import register_azure_ad_routes
@@ -251,6 +254,8 @@ class OIDCAppCreate(BaseModel):
     sort_order: Optional[int] = 99
     is_placeholder: Optional[bool] = False
     restricted: Optional[bool] = False
+    access_mode: str = "open"
+    approved_user_ids: List[str] = []
 
 class MobileAppCreate(BaseModel):
     name: str
@@ -407,6 +412,21 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         }
     raise HTTPException(status_code=401, detail="User not found")
 
+
+async def get_local_iam_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Require a signed Refex One IAM session for app entitlement decisions."""
+    payload = decode_token(credentials.credentials)
+    user_id = payload.get('user_id')
+    org_id = payload.get('org_id')
+    if not isinstance(user_id, str) or not isinstance(org_id, str):
+        raise HTTPException(status_code=401, detail="Invalid session")
+    user = await db.users.find_one(
+        {"id": user_id, "org_id": org_id}, {"_id": 0, "password": 0}
+    )
+    if not user or user.get('status') != 'active':
+        raise HTTPException(status_code=401, detail="Invalid session")
+    return user
+
 async def log_audit(org_id: str, action: str, resource_type: str, user_id: str = None, 
                    user_email: str = None, resource_id: str = None, details: dict = None,
                    ip_address: str = None, status: str = "success"):
@@ -526,6 +546,24 @@ async def check_user_app_access(user: dict, app: dict) -> bool:
     if app.get('restricted'):
         return is_admin_role
     return True
+
+
+async def check_oidc_app_access(user: dict, app: dict) -> bool:
+    """Enforce the OIDC app's explicit assignment mode on server records."""
+    if app.get('access_mode', 'open') != 'assigned_only':
+        return oidc_app_access(user, app)
+    user_groups = user.get('group_ids') or []
+    if not isinstance(user_groups, list):
+        return False
+    group_role_ids = set()
+    if user_groups and app.get('allowed_role_ids'):
+        groups = await db.groups.find(
+            {'org_id': user.get('org_id'), 'id': {'$in': user_groups}},
+            {'_id': 0, 'role_ids': 1},
+        ).to_list(100)
+        for group in groups:
+            group_role_ids.update(group.get('role_ids') or [])
+    return oidc_app_access(user, app, group_role_ids)
 
 
 def _is_adrenalin_sp(acs_url: str = '', entity_id: str = '', app_name: str = '') -> bool:
@@ -926,7 +964,9 @@ async def list_groups(user: dict = Depends(get_current_user)):
     return groups
 
 @api_router.post("/groups")
-async def create_group(group: GroupCreate, request: Request, user: dict = Depends(get_current_user)):
+async def create_group(group: GroupCreate, request: Request, user: dict = Depends(get_local_iam_user)):
+    if user.get('role') not in ('org_admin', 'owner', 'admin'):
+        raise HTTPException(status_code=403, detail="Administrator access required")
     if group.org_id != user['org_id']:
         raise HTTPException(status_code=403, detail="Access denied")
     
@@ -946,7 +986,9 @@ async def create_group(group: GroupCreate, request: Request, user: dict = Depend
     return {**group_doc, "_id": None, "member_count": 0}
 
 @api_router.put("/groups/{group_id}")
-async def update_group(group_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+async def update_group(group_id: str, update: dict, request: Request, user: dict = Depends(get_local_iam_user)):
+    if user.get('role') not in ('org_admin', 'owner', 'admin'):
+        raise HTTPException(status_code=403, detail="Administrator access required")
     group = await db.groups.find_one({"id": group_id, "org_id": user['org_id']}, {"_id": 0})
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -959,7 +1001,9 @@ async def update_group(group_id: str, update: dict, request: Request, user: dict
     return await db.groups.find_one({"id": group_id}, {"_id": 0})
 
 @api_router.delete("/groups/{group_id}")
-async def delete_group(group_id: str, request: Request, user: dict = Depends(get_current_user)):
+async def delete_group(group_id: str, request: Request, user: dict = Depends(get_local_iam_user)):
+    if user.get('role') not in ('org_admin', 'owner', 'admin'):
+        raise HTTPException(status_code=403, detail="Administrator access required")
     group = await db.groups.find_one({"id": group_id, "org_id": user['org_id']}, {"_id": 0})
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -972,7 +1016,9 @@ async def delete_group(group_id: str, request: Request, user: dict = Depends(get
     return {"message": "Group deleted"}
 
 @api_router.post("/groups/{group_id}/members")
-async def add_group_members(group_id: str, user_ids: List[str], request: Request, user: dict = Depends(get_current_user)):
+async def add_group_members(group_id: str, user_ids: List[str], request: Request, user: dict = Depends(get_local_iam_user)):
+    if user.get('role') not in ('org_admin', 'owner', 'admin'):
+        raise HTTPException(status_code=403, detail="Administrator access required")
     group = await db.groups.find_one({"id": group_id, "org_id": user['org_id']}, {"_id": 0})
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -986,7 +1032,9 @@ async def add_group_members(group_id: str, user_ids: List[str], request: Request
     return {"message": f"Added {len(user_ids)} members to group"}
 
 @api_router.delete("/groups/{group_id}/members")
-async def remove_group_members(group_id: str, user_ids: List[str], request: Request, user: dict = Depends(get_current_user)):
+async def remove_group_members(group_id: str, user_ids: List[str], request: Request, user: dict = Depends(get_local_iam_user)):
+    if user.get('role') not in ('org_admin', 'owner', 'admin'):
+        raise HTTPException(status_code=403, detail="Administrator access required")
     group = await db.groups.find_one({"id": group_id, "org_id": user['org_id']}, {"_id": 0})
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -1180,12 +1228,14 @@ async def create_user(new_user: UserCreate, request: Request, user: dict = Depen
     return {k: v for k, v in user_doc.items() if k != 'password' and k != '_id'}
 
 @api_router.put("/users/{user_id}")
-async def update_user(user_id: str, update: UserUpdate, request: Request, user: dict = Depends(get_current_user)):
+async def update_user(user_id: str, update: UserUpdate, request: Request, user: dict = Depends(get_local_iam_user)):
     target_user = await db.users.find_one({"id": user_id, "org_id": user['org_id']}, {"_id": 0})
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
     
     update_data = {k: v for k, v in update.model_dump().items() if v is not None}
+    if ('group_ids' in update_data or 'role_ids' in update_data) and user.get('role') not in ('org_admin', 'owner', 'admin'):
+        raise HTTPException(status_code=403, detail="Administrator access required for assignments")
 
     # Only org admins can change system role
     if 'role' in update_data:
@@ -2126,15 +2176,43 @@ async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_
 
 # ===================== OIDC APP ROUTES =====================
 
+async def validate_oidc_assignees(approved_user_ids, org_id):
+    if not oidc_assignee_ids_match(approved_user_ids, approved_user_ids):
+        raise HTTPException(status_code=400, detail="Invalid approved user IDs")
+    if not approved_user_ids:
+        return
+    users = await db.users.find(
+        {"id": {"$in": approved_user_ids}, "org_id": org_id, "status": "active"},
+        {"_id": 0, "id": 1},
+    ).to_list(len(approved_user_ids) + 1)
+    if not oidc_assignee_ids_match(approved_user_ids, [record.get("id") for record in users]):
+        raise HTTPException(status_code=400, detail="Approved users must be active in this organization")
+
 @api_router.get("/apps/oidc")
-async def list_oidc_apps(user: dict = Depends(get_current_user)):
+async def list_oidc_apps(user: dict = Depends(get_local_iam_user)):
     apps = await db.oidc_apps.find({"org_id": user['org_id']}, {"_id": 0, "client_secret": 0}).to_list(100)
     return apps
 
+@api_router.get("/apps/oidc/assignable-users")
+async def list_oidc_assignable_users(user: dict = Depends(get_local_iam_user)):
+    if user.get('role') not in ('org_admin', 'owner', 'admin'):
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    return await db.users.find(
+        {"org_id": user['org_id'], "status": "active"},
+        {"_id": 0, "id": 1, "name": 1, "email": 1},
+    ).to_list(10000)
+
 @api_router.post("/apps/oidc")
-async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Depends(get_current_user)):
+async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Depends(get_local_iam_user)):
+    if user.get('role') not in ('org_admin', 'owner', 'admin'):
+        raise HTTPException(status_code=403, detail="Administrator access required")
     if app.org_id != user['org_id']:
         raise HTTPException(status_code=403, detail="Access denied")
+    if app.access_mode not in OIDC_ACCESS_MODES:
+        raise HTTPException(status_code=400, detail="Invalid access mode")
+    if app.access_mode == 'assigned_only' and app.restricted:
+        raise HTTPException(status_code=400, detail="Restricted and assigned-only modes cannot be combined")
+    await validate_oidc_assignees(app.approved_user_ids, user['org_id'])
     
     app_id = str(uuid.uuid4())
     client_id = f"oidc_{str(uuid.uuid4()).replace('-', '')[:16]}"
@@ -2164,6 +2242,8 @@ async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Dep
         "sort_order": app.sort_order if app.sort_order is not None else 99,
         "is_placeholder": bool(app.is_placeholder),
         "restricted": bool(app.restricted),
+        "access_mode": app.access_mode,
+        "approved_user_ids": app.approved_user_ids,
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -2175,7 +2255,9 @@ async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Dep
     return {k: v for k, v in app_doc.items() if k != '_id'}
 
 @api_router.get("/apps/oidc/{app_id}")
-async def get_oidc_app(app_id: str, include_secret: bool = False, user: dict = Depends(get_current_user)):
+async def get_oidc_app(app_id: str, include_secret: bool = False, user: dict = Depends(get_local_iam_user)):
+    if include_secret and user.get('role') not in ('org_admin', 'owner', 'admin'):
+        raise HTTPException(status_code=403, detail="Administrator access required")
     projection = {"_id": 0} if include_secret else {"_id": 0, "client_secret": 0}
     app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, projection)
     if not app:
@@ -2183,7 +2265,9 @@ async def get_oidc_app(app_id: str, include_secret: bool = False, user: dict = D
     return app
 
 @api_router.put("/apps/oidc/{app_id}")
-async def update_oidc_app(app_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+async def update_oidc_app(app_id: str, update: dict, request: Request, user: dict = Depends(get_local_iam_user)):
+    if user.get('role') not in ('org_admin', 'owner', 'admin'):
+        raise HTTPException(status_code=403, detail="Administrator access required")
     app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
@@ -2191,6 +2275,16 @@ async def update_oidc_app(app_id: str, update: dict, request: Request, user: dic
     update.pop('id', None)
     update.pop('org_id', None)
     update.pop('client_secret', None)  # secrets are only changed via regenerate endpoint
+    if 'access_mode' in update and (
+        not isinstance(update['access_mode'], str) or update['access_mode'] not in OIDC_ACCESS_MODES
+    ):
+        raise HTTPException(status_code=400, detail="Invalid access mode")
+    if update.get('access_mode', app.get('access_mode', 'open')) == 'assigned_only' and (
+        update.get('restricted', app.get('restricted', False))
+    ):
+        raise HTTPException(status_code=400, detail="Restricted and assigned-only modes cannot be combined")
+    if 'approved_user_ids' in update:
+        await validate_oidc_assignees(update['approved_user_ids'], user['org_id'])
 
     # If client_id is being changed, validate uniqueness across the org
     new_client_id = update.get('client_id')
@@ -2210,8 +2304,10 @@ async def update_oidc_app(app_id: str, update: dict, request: Request, user: dic
     return await db.oidc_apps.find_one({"id": app_id}, {"_id": 0, "client_secret": 0})
 
 @api_router.post("/apps/oidc/{app_id}/regenerate-secret")
-async def regenerate_oidc_secret(app_id: str, request: Request, user: dict = Depends(get_current_user)):
+async def regenerate_oidc_secret(app_id: str, request: Request, user: dict = Depends(get_local_iam_user)):
     """Generate a new client_secret for an OIDC app and return it once."""
+    if user.get('role') not in ('org_admin', 'owner', 'admin'):
+        raise HTTPException(status_code=403, detail="Administrator access required")
     app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
@@ -2222,7 +2318,9 @@ async def regenerate_oidc_secret(app_id: str, request: Request, user: dict = Dep
     return {"client_secret": new_secret}
 
 @api_router.delete("/apps/oidc/{app_id}")
-async def delete_oidc_app(app_id: str, request: Request, user: dict = Depends(get_current_user)):
+async def delete_oidc_app(app_id: str, request: Request, user: dict = Depends(get_local_iam_user)):
+    if user.get('role') not in ('org_admin', 'owner', 'admin'):
+        raise HTTPException(status_code=403, detail="Administrator access required")
     app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
@@ -2315,6 +2413,7 @@ async def get_oidc_discovery(app_id: str, request: Request):
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256"],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
+        **({"code_challenge_methods_supported": ["S256"]} if app.get('access_mode') == 'assigned_only' else {}),
     }
 
 @api_router.get("/oidc/jwks")
@@ -2328,6 +2427,28 @@ async def oidc_jwks():
 
 # ===================== OIDC PROVIDER FLOW =====================
 
+@api_router.post("/oidc/{app_id}/prepare-launch")
+async def oidc_prepare_launch(app_id: str, request: Request, user: dict = Depends(get_local_iam_user)):
+    """Exchange the existing signed IAM session for an HttpOnly one-use launch grant."""
+    if JWT_SECRET == 'kissflow-iam-secret-key-2024':
+        raise HTTPException(status_code=503, detail="OIDC launch configuration unavailable")
+    app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app or app.get('status') != 'active' or app.get('access_mode') != 'assigned_only':
+        raise HTTPException(status_code=404, detail="Application unavailable")
+    if not await check_oidc_app_access(user, app):
+        raise HTTPException(status_code=403, detail="Application access denied")
+    allowed, _ = await check_access_policies(user, app, request)
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Application access denied")
+    raw, grant = create_launch_grant(user, app, datetime.now(timezone.utc))
+    await db.oidc_launch_grants.insert_one(grant)
+    result = Response(status_code=204, headers={"Cache-Control": "no-store"})
+    result.set_cookie(
+        LAUNCH_COOKIE, raw, max_age=LAUNCH_TTL_SECONDS,
+        httponly=True, secure=True, samesite="lax", path="/",
+    )
+    return result
+
 @api_router.get("/oidc/{app_id}/authorize")
 async def oidc_authorize(
     app_id: str,
@@ -2338,6 +2459,8 @@ async def oidc_authorize(
     scope: str = Query("openid"),
     state: Optional[str] = Query(None),
     nonce: Optional[str] = Query(None),
+    code_challenge: Optional[str] = Query(None),
+    code_challenge_method: Optional[str] = Query(None),
 ):
     """OAuth2 Authorization endpoint - shows login page or redirects with auth code"""
     # Find the OIDC app by client_id
@@ -2346,6 +2469,8 @@ async def oidc_authorize(
         # Also try finding just by client_id (some apps don't include app_id in URL)
         app = await db.oidc_apps.find_one({"client_id": client_id}, {"_id": 0})
     if not app:
+        raise HTTPException(status_code=400, detail="Invalid client_id")
+    if app.get('access_mode') == 'assigned_only' and app.get('id') != app_id:
         raise HTTPException(status_code=400, detail="Invalid client_id")
     
     if app.get('status') != 'active':
@@ -2357,54 +2482,72 @@ async def oidc_authorize(
     
     if response_type != 'code':
         raise HTTPException(status_code=400, detail="Only response_type=code is supported")
-    
-    # Check if user has an active session (IAM token cookie or query param)
-    token = request.query_params.get('token') or request.cookies.get('iam_token')
-    if not token:
+    if app.get('access_mode') == 'assigned_only' and (not state or not nonce):
+        raise HTTPException(status_code=400, detail="state and nonce are required")
+    if app.get('access_mode') == 'assigned_only' and not valid_s256_challenge(code_challenge, code_challenge_method):
+        raise HTTPException(status_code=400, detail="S256 PKCE is required")
+
+    # Assigned-only launches use only an opaque HttpOnly grant prepared by the
+    # authenticated launcher. Legacy apps retain their existing IAM path.
+    assigned_only = app.get('access_mode') == 'assigned_only'
+    token = None if assigned_only else (request.query_params.get('token') or request.cookies.get('iam_token'))
+    if not token and not assigned_only:
         auth_header = request.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
             token = auth_header[7:]
     
     base_url = get_public_base_url(request)
     
-    if token:
+    if assigned_only:
+        grant = await consume_launch_grant(
+            db.oidc_launch_grants, request.cookies.get(LAUNCH_COOKIE), app_id, datetime.now(timezone.utc)
+        )
+        if grant is None:
+            raise HTTPException(status_code=403, detail="Start from the assigned app launcher")
+        payload = {"user_id": grant['user_id'], "org_id": grant['org_id']}
+    elif token:
         try:
             payload = decode_token(token)
-            user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0})
-            if user:
-                # User is authenticated - generate authorization code
-                auth_code = str(uuid.uuid4()).replace('-', '')
-                
-                # Store auth code in DB with expiry
-                await db.oidc_auth_codes.insert_one({
-                    "code": auth_code,
-                    "client_id": client_id,
-                    "app_id": app.get('id'),
-                    "user_id": user['id'],
-                    "email": user['email'],
-                    "name": user.get('name', user.get('full_name', '')),
-                    "org_id": user.get('org_id', ''),
-                    "redirect_uri": redirect_uri,
-                    "scope": scope,
-                    "nonce": nonce,
-                    "created_at": datetime.now(timezone.utc),
-                    "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
-                    "used": False,
-                })
-                
-                # Redirect back to the app with authorization code
-                separator = '&' if '?' in redirect_uri else '?'
-                redirect_url = f"{redirect_uri}{separator}code={auth_code}"
-                if state:
-                    redirect_url += f"&state={state}"
-                
-                return Response(
-                    status_code=302,
-                    headers={"Location": redirect_url}
-                )
-        except Exception:
-            pass  # Token invalid, show login page
+        except HTTPException:
+            payload = None
+    else:
+        payload = None
+    if payload and isinstance(payload.get('user_id'), str):
+        user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0})
+        if (user and user.get('status') == 'active' and
+                user.get('org_id') == payload.get('org_id') == app.get('org_id')):
+            if not await check_oidc_app_access(user, app):
+                raise HTTPException(status_code=403, detail="Application access denied")
+            allowed, _ = await check_access_policies(user, app, request)
+            if not allowed:
+                raise HTTPException(status_code=403, detail="Application access denied")
+            auth_code = str(uuid.uuid4()).replace('-', '')
+            await db.oidc_auth_codes.insert_one({
+                "code": auth_code,
+                "client_id": client_id,
+                "app_id": app.get('id'),
+                "access_mode": app.get('access_mode', 'open'),
+                "user_id": user['id'],
+                "email": user['email'],
+                "name": user.get('name', user.get('full_name', '')),
+                "org_id": user.get('org_id', ''),
+                "redirect_uri": redirect_uri,
+                "scope": scope,
+                "nonce": nonce,
+                "code_challenge": code_challenge if assigned_only else None,
+                "created_at": datetime.now(timezone.utc),
+                "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+                "used": False,
+            })
+            separator = '&' if '?' in redirect_uri else '?'
+            redirect_url = f"{redirect_uri}{separator}code={auth_code}"
+            if state:
+                redirect_url += f"&state={state}"
+            return Response(status_code=302, headers={"Location": redirect_url})
     
+    if assigned_only:
+        raise HTTPException(status_code=403, detail="Application access denied")
+
     # No valid session - show login page that will redirect back after auth
     # Build the authorize URL to come back to after login
     import urllib.parse
@@ -2447,6 +2590,7 @@ async def oidc_token(app_id: str, request: Request):
     
     grant_type = data.get('grant_type')
     code = data.get('code')
+    code_verifier = data.get('code_verifier')
     redirect_uri = data.get('redirect_uri')
     client_id = data.get('client_id')
     client_secret = data.get('client_secret')
@@ -2490,6 +2634,21 @@ async def oidc_token(app_id: str, request: Request):
             status_code=400,
             media_type="application/json"
         )
+    if app.get('access_mode') == 'assigned_only' and (
+        app.get('id') != app_id or auth_code.get('app_id') != app_id
+    ):
+        raise HTTPException(status_code=400, detail="invalid_grant")
+    if auth_code.get('access_mode', 'open') != app.get('access_mode', 'open'):
+        raise HTTPException(status_code=400, detail="invalid_grant")
+    if app.get('access_mode') == 'assigned_only' and not matches_s256_verifier(
+        code_verifier, auth_code.get('code_challenge')
+    ):
+        raise HTTPException(status_code=400, detail="invalid_grant")
+    user = await db.users.find_one({"id": auth_code.get('user_id')}, {"_id": 0})
+    if (app.get('status') != 'active' or not user or user.get('status') != 'active' or
+            user.get('org_id') != auth_code.get('org_id') or
+            not await check_oidc_app_access(user, app)):
+        raise HTTPException(status_code=400, detail="invalid_grant")
     
     if auth_code.get('used'):
         return Response(
@@ -2512,7 +2671,9 @@ async def oidc_token(app_id: str, request: Request):
                 media_type="application/json"
             )
     
-    if redirect_uri and redirect_uri != auth_code.get('redirect_uri'):
+    if (app.get('access_mode') == 'assigned_only' and not redirect_uri) or (
+        redirect_uri and redirect_uri != auth_code.get('redirect_uri')
+    ):
         return Response(
             content='{"error": "invalid_grant", "error_description": "redirect_uri mismatch"}',
             status_code=400,
@@ -2520,7 +2681,12 @@ async def oidc_token(app_id: str, request: Request):
         )
     
     # Mark code as used
-    await db.oidc_auth_codes.update_one({"code": code}, {"$set": {"used": True}})
+    consumed = await db.oidc_auth_codes.update_one(
+        {"code": code, "client_id": client_id, "used": False},
+        {"$set": {"used": True}},
+    )
+    if consumed.modified_count != 1:
+        raise HTTPException(status_code=400, detail="invalid_grant")
     
     base_url = get_public_base_url(request)
     now = datetime.now(timezone.utc)
@@ -2542,7 +2708,7 @@ async def oidc_token(app_id: str, request: Request):
     id_token_payload = {
         "sub": auth_code['user_id'],
         "email": auth_code['email'],
-        "email_verified": True,
+        "email_verified": app.get('access_mode') != 'assigned_only',
         "name": auth_code.get('name', ''),
         "preferred_username": auth_code['email'],
         "iss": base_url,
@@ -2562,6 +2728,7 @@ async def oidc_token(app_id: str, request: Request):
         "name": auth_code.get('name', ''),
         "org_id": auth_code.get('org_id', ''),
         "client_id": client_id,
+        "access_mode": app.get('access_mode', 'open'),
         "scope": auth_code.get('scope', 'openid'),
         "created_at": now,
         "expires_at": now + timedelta(hours=1),
@@ -2591,10 +2758,26 @@ async def oidc_userinfo(request: Request):
         user_id = payload.get('sub')
         user = await db.users.find_one({"id": user_id}, {"_id": 0})
         if user:
+            token_app = await db.oidc_apps.find_one({"client_id": payload.get('aud')}, {"_id": 0})
+            token_record = await db.oidc_access_tokens.find_one({"access_token": access_token}, {"_id": 0})
+            if token_app and token_app.get('access_mode') == 'assigned_only' and (
+                not token_record or token_record.get('access_mode') != 'assigned_only'
+            ):
+                raise HTTPException(status_code=403, detail="Application access denied")
+            if token_record and token_record.get('access_mode') == 'assigned_only':
+                if (not token_app or token_app.get('status') != 'active' or
+                        token_app.get('access_mode') != 'assigned_only' or
+                        user.get('status') != 'active' or
+                        user.get('org_id') != token_app.get('org_id') == token_record.get('org_id') or
+                        token_record.get('user_id') != user['id'] or
+                        token_record.get('client_id') != token_app.get('client_id') or
+                        not oidc_token_unexpired(token_record, datetime.now(timezone.utc)) or
+                        not await check_oidc_app_access(user, token_app)):
+                    raise HTTPException(status_code=403, detail="Application access denied")
             response = {
                 "sub": user['id'],
                 "email": user.get('email', ''),
-                "email_verified": True,
+                "email_verified": token_app.get('access_mode') != 'assigned_only' if token_app else False,
                 "name": user.get('name', user.get('full_name', '')),
                 "preferred_username": user.get('email', ''),
             }
@@ -2612,6 +2795,8 @@ async def oidc_userinfo(request: Request):
             return response
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
+    except HTTPException:
+        raise
     except Exception:
         pass
     
@@ -2619,11 +2804,21 @@ async def oidc_userinfo(request: Request):
     token_doc = await db.oidc_access_tokens.find_one({"access_token": access_token}, {"_id": 0})
     if not token_doc:
         raise HTTPException(status_code=401, detail="Invalid access token")
+    token_app = await db.oidc_apps.find_one({"client_id": token_doc.get('client_id')}, {"_id": 0})
+    if token_doc.get('access_mode') == 'assigned_only':
+        user = await db.users.find_one({"id": token_doc.get('user_id')}, {"_id": 0})
+        if (not token_app or token_app.get('status') != 'active' or
+                token_app.get('access_mode') != 'assigned_only' or not user or
+                user.get('status') != 'active' or
+                user.get('org_id') != token_app.get('org_id') == token_doc.get('org_id') or
+                not oidc_token_unexpired(token_doc, datetime.now(timezone.utc)) or
+                not await check_oidc_app_access(user, token_app)):
+            raise HTTPException(status_code=403, detail="Application access denied")
     
     return {
         "sub": token_doc['user_id'],
         "email": token_doc.get('email', ''),
-        "email_verified": True,
+        "email_verified": token_doc.get('access_mode') != 'assigned_only',
         "name": token_doc.get('name', ''),
     }
 
@@ -2739,7 +2934,7 @@ async def get_audit_summary(user: dict = Depends(get_current_user)):
 # ===================== APP LAUNCHER / CATALOG ROUTES =====================
 
 @api_router.get("/launcher/apps")
-async def get_user_apps(request: Request, user: dict = Depends(get_current_user)):
+async def get_user_apps(request: Request, user: dict = Depends(get_local_iam_user)):
     """Get all apps the user has access to"""
     org_id = user['org_id']
     
@@ -2795,7 +2990,9 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
         })
     
     for app in oidc_apps:
-        has_access = resolve_access(app)
+        has_access = await check_oidc_app_access(user, app)
+        if app.get('access_mode') == 'assigned_only' and not has_access:
+            continue
         allowed, reason = await check_access_policies(user, app, request)
         usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
         accessible_apps.append({
@@ -2805,6 +3002,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
             "logo_url": app.get('logo_url'),
             "home_url": app.get('home_url'),
             "type": "oidc",
+            "access_mode": app.get('access_mode', 'open'),
             "launch_url": f"/api/oidc/{app['id']}/authorize",
             "has_access": has_access,
             "restricted": bool(app.get('restricted')),
@@ -2848,7 +3046,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
     return accessible_apps
 
 @api_router.get("/catalog/apps")
-async def get_app_catalog(user: dict = Depends(get_current_user)):
+async def get_app_catalog(user: dict = Depends(get_local_iam_user)):
     """Get all apps in the catalog (for requesting access)"""
     org_id = user['org_id']
     
@@ -2857,6 +3055,7 @@ async def get_app_catalog(user: dict = Depends(get_current_user)):
                                           "allowed_group_ids": 1, "allowed_role_ids": 1, "approved_user_ids": 1}).to_list(100)
     oidc_apps = await db.oidc_apps.find({"org_id": org_id, "status": "active"},
                                          {"_id": 0, "id": 1, "name": 1, "description": 1, "logo_url": 1,
+                                          "org_id": 1, "restricted": 1, "access_mode": 1,
                                           "allowed_group_ids": 1, "allowed_role_ids": 1, "approved_user_ids": 1}).to_list(100)
     
     catalog = []
@@ -2875,7 +3074,9 @@ async def get_app_catalog(user: dict = Depends(get_current_user)):
         })
     
     for app in oidc_apps:
-        has_access = await check_user_app_access(user, app)
+        has_access = await check_oidc_app_access(user, app)
+        if app.get('access_mode') == 'assigned_only' and not has_access:
+            continue
         catalog.append({
             "id": app['id'],
             "name": app['name'],
@@ -2985,7 +3186,7 @@ async def revoke_scim_token(token_id: str, user: dict = Depends(get_current_user
 # ===================== ACCESS REQUESTS =====================
 
 @api_router.post("/access-requests")
-async def create_access_request(body: dict, user: dict = Depends(get_current_user)):
+async def create_access_request(body: dict, user: dict = Depends(get_local_iam_user)):
     """User requests access to an app"""
     app_id = body.get("app_id")
     app_type = body.get("app_type", "saml")  # saml or oidc
@@ -3043,7 +3244,7 @@ async def create_access_request(body: dict, user: dict = Depends(get_current_use
 
 
 @api_router.get("/access-requests")
-async def list_access_requests(status: str = None, user: dict = Depends(get_current_user)):
+async def list_access_requests(status: str = None, user: dict = Depends(get_local_iam_user)):
     """List access requests - admins see all for org, users see their own"""
     query = {"org_id": user["org_id"]}
     if user.get("role") != "org_admin":
@@ -3056,7 +3257,7 @@ async def list_access_requests(status: str = None, user: dict = Depends(get_curr
 
 
 @api_router.put("/access-requests/{request_id}")
-async def update_access_request(request_id: str, body: dict, user: dict = Depends(get_current_user)):
+async def update_access_request(request_id: str, body: dict, user: dict = Depends(get_local_iam_user)):
     """Admin approves or rejects an access request"""
     if user.get("role") != "org_admin":
         raise HTTPException(status_code=403, detail="Only admins can approve/reject requests")

@@ -1203,6 +1203,57 @@ cd android && ./gradlew assembleRelease
 | 2.1 | Apr 30, 2026 | Refex AI Team | Manager resolution, fresh sync, rate limiting |
 | 2.2 | May 13, 2026 | Refex AI Team | Enterprise documentation package |
 
+## What we fixed today — 2026-10-08 — REX assignment-only OIDC source gate
+
+The OIDC app model now offers `access_mode=assigned_only`. This mode denies
+every user until an administrator explicitly approves the user or assigns an
+allowed group or role. It does not grant administrators an automatic bypass.
+The launcher and catalog hide an unassigned app. The authorization endpoint
+checks the authenticated, active user's current organization and assignment
+before creating a code; the token endpoint checks again before an atomic
+one-use consume. UserInfo checks current assignment for newly issued tokens.
+OIDC app management, group membership mutation, and access approvals require
+a signed local IAM session; the OIDC app's management mutations require an
+administrator. Existing OIDC apps retain `access_mode=open` semantics.
+
+For `assigned_only` OIDC apps, the authenticated launcher calls
+`POST /api/oidc/{app_id}/prepare-launch`. It stores only a digest of a random
+grant in `oidc_launch_grants`, bound to the app, Refex One user and organization,
+with a five-minute expiry. The browser receives the raw grant only in a
+`Secure`, `HttpOnly`, `SameSite=Lax`, host-only cookie. Authorize atomically
+consumes it, rechecks the current user and assignment, and denies a missing,
+expired, reused or revoked launch. The assigned-only path never uses an IAM
+token query parameter, JavaScript cookie or login redirect. It requires OIDC
+state and nonce. Its ID token and UserInfo do not assert `email_verified`;
+EIOS must use the issuer and immutable subject binding for executive identity.
+Assigned-only authorization also requires PKCE S256: authorize stores the code
+challenge, and token exchange checks the server-held verifier before the code
+is consumed. The discovery response advertises S256 for these apps.
+The Refex One launch collection needs a TTL index on `expires_at` as a
+separate, reviewed live database step before deployment. Production also
+needs a nondefault IAM signing secret and stable OIDC signing keys. The older
+open-mode app flows retain their existing token handling and require a
+separate security migration.
+
+For the pilot, register the REX OIDC app with an exact EIOS callback URI,
+`access_mode=assigned_only`, and only the verified pilot executive group or
+users. Keep its client secret in the EIOS GCP project, server side. The
+approved monogram is already in the frontend source. This source change does
+not establish the EIOS web client, live app registration, Secret Manager
+binding, Refex One host deployment, traffic, signed iPhone build, or physical
+sign-in acceptance. Those require separate exact-owner and readback gates.
+
+## What we fixed today — 2026-10-08 — REX direct OIDC pilot assignment
+
+The OIDC admin form now lists active users from a narrow, administrator-only,
+organization-scoped endpoint and saves selected immutable Refex One user IDs.
+The create and update routes check that every selected ID resolves exactly once
+to an active user in the administrator's organization. Empty assignment stays
+denied; typed names and email addresses are only search labels. For the four
+executive pilot, select exactly the four verified records and leave allowed
+groups and roles empty. Live registration and an authenticated launch remain
+separate release gates.
+
 ---
 
 *Confidential - Refex Group Internal Use Only*
