@@ -646,11 +646,23 @@ const mergeCommentRows = (...groups) => {
       const prevById = stableId ? byId.get(stableId) : null;
       const prevByText = text ? byText.get(text) : null;
       const prevTextId = String(prevByText?.id || prevByText?.recordId || '').trim();
+      const sameMinute = (() => {
+        if (!prevByText || !text) return false;
+        const a = prevByText?.dateTime ? new Date(prevByText.dateTime).getTime() : 0;
+        const b = row?.dateTime ? new Date(row.dateTime).getTime() : 0;
+        if (!a || !b || Number.isNaN(a) || Number.isNaN(b)) return true;
+        return Math.abs(a - b) < 60000;
+      })();
       const prev =
         prevById
         || (
           prevByText
-          && (!stableId || isSyntheticCommentId(prevTextId) || !prevTextId)
+          && (
+            !stableId
+            || isSyntheticCommentId(prevTextId)
+            || !prevTextId
+            || sameMinute
+          )
             ? prevByText
             : null
         );
