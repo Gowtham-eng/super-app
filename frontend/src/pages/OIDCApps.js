@@ -34,7 +34,8 @@ const OIDCApps = () => {
     name: '', description: '', redirect_uris: [], logout_uris: [],
     scopes: ['openid', 'profile', 'email'], grant_types: ['authorization_code'],
     logo_url: '', home_url: '', allowed_group_ids: [], allowed_role_ids: [],
-    category: '', sort_order: 99, is_placeholder: false, restricted: false
+    category: '', sort_order: 99, is_placeholder: false, restricted: false,
+    access_mode: 'open'
   });
 
   useEffect(() => { fetchData(); }, []);
@@ -119,7 +120,8 @@ const OIDCApps = () => {
       home_url: app.home_url || '',
       allowed_group_ids: app.allowed_group_ids || [], allowed_role_ids: app.allowed_role_ids || [],
       category: app.category || '', sort_order: app.sort_order ?? 99,
-      is_placeholder: !!app.is_placeholder, restricted: !!app.restricted
+      is_placeholder: !!app.is_placeholder, restricted: !!app.restricted,
+      access_mode: app.access_mode || 'open'
     });
     setLogoPreview(app.logo_url || null);
     setShowModal(true);
@@ -131,7 +133,8 @@ const OIDCApps = () => {
       name: '', description: '', redirect_uris: [], logout_uris: [],
       scopes: ['openid', 'profile', 'email'], grant_types: ['authorization_code'],
       logo_url: '', home_url: '', allowed_group_ids: [], allowed_role_ids: [],
-      category: '', sort_order: 99, is_placeholder: false, restricted: false
+      category: '', sort_order: 99, is_placeholder: false, restricted: false,
+      access_mode: 'open'
     });
     setNewRedirectUri('');
     setLogoPreview(null);
@@ -740,7 +743,7 @@ const OIDCApps = () => {
               </div>
               <Switch
                 checked={!!form.restricted}
-                onCheckedChange={(c) => setForm({ ...form, restricted: c })}
+                onCheckedChange={(c) => setForm({ ...form, restricted: c, access_mode: c ? 'open' : form.access_mode })}
                 data-testid="oidc-restricted-switch"
               />
             </div>
@@ -771,6 +774,17 @@ const OIDCApps = () => {
             </div>
 
             {/* Access Control */}
+            <div className="flex items-center justify-between p-3 bg-zinc-50 rounded-lg border border-zinc-200">
+              <div>
+                <Label className="text-sm font-semibold text-zinc-700">Assigned users only</Label>
+                <p className="text-xs text-zinc-400 mt-0.5">Only approved users or members of the allowed groups and roles can see or authorize this app. Empty assignments deny everyone, including admins.</p>
+              </div>
+              <Switch
+                checked={form.access_mode === 'assigned_only'}
+                onCheckedChange={(checked) => setForm({ ...form, access_mode: checked ? 'assigned_only' : 'open', restricted: checked ? false : form.restricted })}
+                data-testid="oidc-assigned-only-switch"
+              />
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label className="label-uppercase">Allowed Groups</Label>

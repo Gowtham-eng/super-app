@@ -1203,6 +1203,27 @@ cd android && ./gradlew assembleRelease
 | 2.1 | Apr 30, 2026 | Refex AI Team | Manager resolution, fresh sync, rate limiting |
 | 2.2 | May 13, 2026 | Refex AI Team | Enterprise documentation package |
 
+## What we fixed today — 2026-10-08 — REX assignment-only OIDC source gate
+
+The OIDC app model now offers `access_mode=assigned_only`. This mode denies
+every user until an administrator explicitly approves the user or assigns an
+allowed group or role. It does not grant administrators an automatic bypass.
+The launcher and catalog hide an unassigned app. The authorization endpoint
+checks the authenticated, active user's current organization and assignment
+before creating a code; the token endpoint checks again before an atomic
+one-use consume. UserInfo checks current assignment for newly issued tokens.
+OIDC app management, group membership mutation, and access approvals require
+a signed local IAM session; the OIDC app's management mutations require an
+administrator. Existing OIDC apps retain `access_mode=open` semantics.
+
+For the pilot, register the REX OIDC app with an exact EIOS callback URI,
+`access_mode=assigned_only`, and only the verified pilot executive group or
+users. Keep its client secret in the EIOS GCP project, server side. The
+approved monogram is already in the frontend source. This source change does
+not establish the EIOS web client, live app registration, Secret Manager
+binding, Refex One host deployment, traffic, signed iPhone build, or physical
+sign-in acceptance. Those require separate exact-owner and readback gates.
+
 ---
 
 *Confidential - Refex Group Internal Use Only*
