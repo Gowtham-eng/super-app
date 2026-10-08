@@ -56,6 +56,8 @@
     <false/>
     <key>NSCameraUsageDescription</key>
     <string>RefexOne uses the camera so you can take a profile photo for your account.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>RefexOne records your voice when you choose to dictate an Ask RefexOne question. EIOS transcribes and stores the recording so you can review the text before sending.</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>RefexOne needs access to your photo library so you can choose a profile photo for your account.</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
