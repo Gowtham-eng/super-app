@@ -20,7 +20,7 @@ from services.adrenalin_sync import sync_employees
 from services.kissflow_scim_client import sync_to_kissflow, push_single_user_to_kissflow, get_kissflow_scim_config, save_kissflow_scim_config, resolve_managers_in_kissflow
 from services.app_update import get_app_update_config, save_app_update_config, evaluate_update
 from services.oidc_crypto import get_jwks, sign_oidc_jwt, normalize_issuer, decode_oidc_jwt
-from services.oidc_access import OIDC_ACCESS_MODES, oidc_app_access
+from services.oidc_access import OIDC_ACCESS_MODES, oidc_app_access, oidc_token_unexpired
 from services.oidc_launch import LAUNCH_COOKIE, LAUNCH_TTL_SECONDS, create_launch_grant, consume_launch_grant
 from services.oidc_pkce import valid_s256_challenge, matches_s256_verifier
 from routes import scim as scim_router_module
@@ -2734,11 +2734,20 @@ async def oidc_userinfo(request: Request):
         if user:
             token_app = await db.oidc_apps.find_one({"client_id": payload.get('aud')}, {"_id": 0})
             token_record = await db.oidc_access_tokens.find_one({"access_token": access_token}, {"_id": 0})
-            if token_record and token_record.get('access_mode') == 'assigned_only' and (
-                not token_app or token_app.get('status') != 'active' or
-                not await check_oidc_app_access(user, token_app)
+            if token_app and token_app.get('access_mode') == 'assigned_only' and (
+                not token_record or token_record.get('access_mode') != 'assigned_only'
             ):
                 raise HTTPException(status_code=403, detail="Application access denied")
+            if token_record and token_record.get('access_mode') == 'assigned_only':
+                if (not token_app or token_app.get('status') != 'active' or
+                        token_app.get('access_mode') != 'assigned_only' or
+                        user.get('status') != 'active' or
+                        user.get('org_id') != token_app.get('org_id') == token_record.get('org_id') or
+                        token_record.get('user_id') != user['id'] or
+                        token_record.get('client_id') != token_app.get('client_id') or
+                        not oidc_token_unexpired(token_record, datetime.now(timezone.utc)) or
+                        not await check_oidc_app_access(user, token_app)):
+                    raise HTTPException(status_code=403, detail="Application access denied")
             response = {
                 "sub": user['id'],
                 "email": user.get('email', ''),
@@ -2772,7 +2781,12 @@ async def oidc_userinfo(request: Request):
     token_app = await db.oidc_apps.find_one({"client_id": token_doc.get('client_id')}, {"_id": 0})
     if token_doc.get('access_mode') == 'assigned_only':
         user = await db.users.find_one({"id": token_doc.get('user_id')}, {"_id": 0})
-        if not token_app or token_app.get('status') != 'active' or not user or not await check_oidc_app_access(user, token_app):
+        if (not token_app or token_app.get('status') != 'active' or
+                token_app.get('access_mode') != 'assigned_only' or not user or
+                user.get('status') != 'active' or
+                user.get('org_id') != token_app.get('org_id') == token_doc.get('org_id') or
+                not oidc_token_unexpired(token_doc, datetime.now(timezone.utc)) or
+                not await check_oidc_app_access(user, token_app)):
             raise HTTPException(status_code=403, detail="Application access denied")
     
     return {

@@ -1,8 +1,9 @@
 """Assignment-only OIDC access must fail closed for a pilot executive app."""
 
 import unittest
+from datetime import datetime, timedelta, timezone
 
-from services.oidc_access import oidc_app_access
+from services.oidc_access import oidc_app_access, oidc_token_unexpired
 
 
 def user(**changes):
@@ -45,6 +46,13 @@ class OidcAccessTests(unittest.TestCase):
         self.assertFalse(oidc_app_access(user(), app(access_mode="unknown")))
         self.assertFalse(oidc_app_access(user(), app(allowed_group_ids="pilot")))
         self.assertFalse(oidc_app_access(user(group_ids="pilot"), app(allowed_group_ids=["pilot"])))
+
+    def test_assigned_token_expiry_handles_mongo_utc_datetimes(self):
+        now = datetime(2026, 10, 8, tzinfo=timezone.utc)
+        self.assertTrue(oidc_token_unexpired({"expires_at": now + timedelta(minutes=1)}, now))
+        self.assertTrue(oidc_token_unexpired({"expires_at": (now + timedelta(minutes=1)).replace(tzinfo=None)}, now))
+        self.assertFalse(oidc_token_unexpired({"expires_at": now}, now))
+        self.assertFalse(oidc_token_unexpired({}, now))
 
 
 if __name__ == "__main__":

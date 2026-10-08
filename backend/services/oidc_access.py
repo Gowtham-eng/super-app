@@ -1,6 +1,18 @@
 """OIDC application access decision from authenticated server-owned records."""
 
+from datetime import datetime, timezone
+
 OIDC_ACCESS_MODES = frozenset({"open", "assigned_only"})
+
+
+def oidc_token_unexpired(record, now):
+    """MongoDB can return a stored UTC datetime without tzinfo."""
+    expires_at = record.get("expires_at") if isinstance(record, dict) else None
+    if not isinstance(expires_at, datetime) or not isinstance(now, datetime):
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at > now
 
 
 def oidc_app_access(user, app, group_role_ids=()):
