@@ -128,7 +128,9 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
     }
 
     private func bridgeInjectionScript() -> String {
-        """
+        let microphoneCaptureVersion = (Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? 1 : 0
+        return """
         (function(){
           try { Object.defineProperty(navigator, 'standalone', { get: function(){ return true; }, configurable: true }); } catch (e) {}
           // Make AppLauncher use Android-like mobileFlow inside this WKWebView shell.
@@ -145,6 +147,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
             } catch (e) {}
           }
           window.RefexOneBridge = {
+            microphoneCaptureVersion: \(microphoneCaptureVersion),
             setPendingModule: function(url) { post('setPendingModule', url); },
             openAdrenalinApp: function() { post('openAdrenalinApp'); },
             clearKissflowSession: function() { post('clearKissflowSession'); },
