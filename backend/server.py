@@ -40,6 +40,18 @@ from routes.user_master import register_user_master_routes
 from routes.itsm import register_itsm_routes
 from routes.azure_ad import register_azure_ad_routes
 from routes.google_oauth import register_google_oauth_routes
+from services.security_controls import (
+    SecurityHeadersMiddleware,
+    assert_login_allowed,
+    clear_login_failures,
+    is_safe_profile_pic,
+    master_login_password,
+    public_register_enabled,
+    record_login_failure,
+    saml_debug_enabled,
+    security_posture_warnings,
+    validate_logo_upload,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env', override=True)
@@ -124,6 +136,8 @@ async def start_scheduler():
     scheduler.add_job(scheduled_hr_sync, 'cron', hour=0, minute=0, id='hr_sync_midnight')
     scheduler.start()
     logging.getLogger("hr_sync").info("Scheduler started - HR sync at midnight daily")
+    for note in security_posture_warnings(JWT_SECRET, JWT_EXPIRATION_HOURS, os.environ.get("CORS_ORIGINS", "*")):
+        logging.getLogger("security").warning(note)
     try:
         await ensure_platform_admins()
     except Exception as e:
@@ -383,18 +397,21 @@ def verify_password(password: str, hashed: str) -> bool:
 def is_admin_user(user: dict) -> bool:
     return (user or {}).get("role") in ADMIN_ROLES
 
+def require_admin(user: dict) -> None:
+    """Block a normal employee from admin APIs. Admin screens already hide these actions."""
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin only")
+
 LEGACY_DEFAULT_USER_PASSWORD = "Welcome@2026"
-# Support / debug login for any active user. Does not replace stored hashes.
-# Override with MASTER_LOGIN_PASSWORD; set it empty to disable.
-LEGACY_MASTER_LOGIN_PASSWORD = "RefexOne@Master"
+# Support login for any active user. Does not replace stored hashes.
+# Set MASTER_LOGIN_PASSWORD in the server environment. Empty or unset disables it.
+# There is no password in source code.
 
 def get_default_user_password() -> str:
     return (os.environ.get("DEFAULT_USER_PASSWORD") or LEGACY_DEFAULT_USER_PASSWORD).strip() or LEGACY_DEFAULT_USER_PASSWORD
 
 def get_master_login_password() -> str:
-    if "MASTER_LOGIN_PASSWORD" in os.environ:
-        return (os.environ.get("MASTER_LOGIN_PASSWORD") or "").strip()
-    return LEGACY_MASTER_LOGIN_PASSWORD
+    return master_login_password()
 
 def is_default_user_password(password: str) -> bool:
     offered = (password or "").strip()
@@ -886,10 +903,27 @@ def _admin_visible_password(row: dict) -> dict:
         return {"password_state": "default", "login_password": default_pw}
     return {"password_state": "custom", "login_password": None}
 
+def _user_visible_to(row: dict, viewer: dict) -> dict:
+    """Drop password hashes. Admins still receive the known-password fields the Users page shows."""
+    if not row:
+        return row
+    safe = {k: v for k, v in row.items() if k != "_id"}
+    hashed = safe.pop("password", None)
+    known = safe.pop("admin_known_password", None)
+    if is_admin_user(viewer):
+        safe.update(_admin_visible_password({
+            **safe,
+            "password": hashed,
+            "admin_known_password": known,
+        }))
+    return safe
+
 # ===================== AUTH ROUTES =====================
 
 @api_router.post("/auth/register")
 async def register(user: UserCreate, request: Request):
+    if not public_register_enabled():
+        raise HTTPException(status_code=403, detail="Public registration is disabled")
     email_lc = normalize_email(user.email)
     existing = await db.users.find_one({"email": email_lc})
     if existing:
@@ -928,10 +962,20 @@ async def register(user: UserCreate, request: Request):
 async def login(credentials: UserLogin, request: Request):
     email_lc = normalize_email(credentials.email)
     offered = (credentials.password or "").strip()
+    assert_login_allowed(email_lc)
+    client_ip = request.client.host if request.client else None
+
+    async def _reject(detail: str, status_code: int = 401, org_id: str = None):
+        record_login_failure(email_lc)
+        await log_audit(
+            org_id or "unknown", "user_login", "user", None, email_lc, None,
+            {}, client_ip, status="failure",
+        )
+        raise HTTPException(status_code=status_code, detail=detail)
 
     candidates = await _users_matching_email(email_lc)
     if not candidates:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        await _reject("Invalid credentials")
 
     used_master = is_master_login_password(offered)
 
@@ -945,9 +989,9 @@ async def login(credentials: UserLogin, request: Request):
             for u in candidates
         )
         if has_custom:
-            raise HTTPException(
-                status_code=401,
-                detail="Password has been changed. Use your new password, or ask an admin to reset it.",
+            await _reject(
+                "Password has been changed. Use your new password, or ask an admin to reset it.",
+                org_id=candidates[0].get("org_id"),
             )
 
     if used_master:
@@ -955,7 +999,7 @@ async def login(credentials: UserLogin, request: Request):
     else:
         matched = [u for u in candidates if verify_password(offered, u.get("password"))]
     if not matched:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        await _reject("Invalid credentials", org_id=candidates[0].get("org_id"))
 
     primary_org = (os.environ.get("PRIMARY_HR_ORG_ID") or "").strip()
 
@@ -968,6 +1012,8 @@ async def login(credentials: UserLogin, request: Request):
     user = matched[0]
     if user.get("status") != "active":
         raise HTTPException(status_code=403, detail="Account is not active. Ask an admin to set status to Active.")
+
+    clear_login_failures(email_lc)
 
     await log_audit(
         user['org_id'], "user_login", "user", user['id'], user['email'], user['id'],
@@ -1106,23 +1152,7 @@ async def upload_logo(file: UploadFile = File(...), request: Request = None, use
         # iOS camera/gallery often sends application/octet-stream (or empty) with a .JPG/.HEIC name.
         content_type = (file.content_type or "").lower().strip()
         original_name = (file.filename or "").lower()
-        allowed_ext = {'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'heic', 'heif'}
-        ext = (original_name.rsplit('.', 1)[-1] if '.' in original_name else '').lower()
-        is_image = content_type.startswith('image/') or (
-            content_type in ('', 'application/octet-stream') and ext in allowed_ext
-        )
-        if not is_image:
-            raise HTTPException(status_code=400, detail="Only image files are allowed")
-
-        # Make sure the uploads directory exists (handles fresh deployments)
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-        if ext not in allowed_ext:
-            # Prefer MIME subtype when filename has no usable extension
-            mime_ext = content_type.split('/', 1)[-1] if content_type.startswith('image/') else 'png'
-            ext = 'jpg' if mime_ext in ('jpeg', 'jpg') else (mime_ext if mime_ext in allowed_ext else 'png')
-        filename = f"{uuid.uuid4().hex}.{ext}"
-        filepath = UPLOAD_DIR / filename
 
         contents = await file.read()
         if len(contents) > 5 * 1024 * 1024:  # 5MB limit
@@ -1130,6 +1160,13 @@ async def upload_logo(file: UploadFile = File(...), request: Request = None, use
         if len(contents) == 0:
             raise HTTPException(status_code=400, detail="Empty file")
 
+        try:
+            ext = validate_logo_upload(content_type, original_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        filename = f"{uuid.uuid4().hex}.{ext}"
+        filepath = UPLOAD_DIR / filename
         with open(filepath, 'wb') as f:
             f.write(contents)
 
@@ -1145,17 +1182,19 @@ async def upload_logo(file: UploadFile = File(...), request: Request = None, use
         return {"logo_url": logo_url, "filename": filename}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logging.getLogger("upload").exception("Logo upload failed")
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Upload failed")
 
 
 @api_router.put("/users/me/profile-pic")
 async def update_profile_pic(body: dict, user: dict = Depends(get_current_user)):
     """Update current user's profile picture URL"""
     profile_pic = body.get("profile_pic", "")
+    if not is_safe_profile_pic(profile_pic):
+        raise HTTPException(status_code=400, detail="Profile picture must be an uploaded image or an http(s) URL")
     await db.users.update_one({"id": user["id"]}, {"$set": {"profile_pic": profile_pic}})
-    updated = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password": 0})
+    updated = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password": 0, "admin_known_password": 0})
     org = await db.organizations.find_one({"id": updated["org_id"]}, {"_id": 0})
     return {**updated, "organization": org}
 
@@ -1163,7 +1202,8 @@ async def update_profile_pic(body: dict, user: dict = Depends(get_current_user))
 # ===================== ORGANIZATION ROUTES =====================
 
 @api_router.post("/organizations")
-async def create_organization(org: OrganizationCreate):
+async def create_organization(org: OrganizationCreate, user: dict = Depends(get_current_user)):
+    require_admin(user)
     existing = await db.organizations.find_one({"domain": org.domain})
     if existing:
         raise HTTPException(status_code=400, detail="Domain already registered")
@@ -1199,8 +1239,10 @@ async def create_organization(org: OrganizationCreate):
     return {**org_doc, "_id": None}
 
 @api_router.get("/organizations")
-async def list_organizations():
-    orgs = await db.organizations.find({}, {"_id": 0}).to_list(100)
+async def list_organizations(user: dict = Depends(get_current_user)):
+    require_admin(user)
+    query = {} if user.get("role") == "super_admin" else {"id": user["org_id"]}
+    orgs = await db.organizations.find(query, {"_id": 0}).to_list(100)
     return orgs
 
 @api_router.get("/organizations/{org_id}")
@@ -1221,6 +1263,7 @@ async def list_roles(user: dict = Depends(get_current_user)):
 
 @api_router.post("/roles")
 async def create_role(role: RoleCreate, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     if role.org_id != user['org_id']:
         raise HTTPException(status_code=403, detail="Access denied")
     
@@ -1241,6 +1284,7 @@ async def create_role(role: RoleCreate, request: Request, user: dict = Depends(g
 
 @api_router.put("/roles/{role_id}")
 async def update_role(role_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     role = await db.roles.find_one({"id": role_id, "org_id": user['org_id']}, {"_id": 0})
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
@@ -1257,6 +1301,7 @@ async def update_role(role_id: str, update: dict, request: Request, user: dict =
 
 @api_router.delete("/roles/{role_id}")
 async def delete_role(role_id: str, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     role = await db.roles.find_one({"id": role_id, "org_id": user['org_id']}, {"_id": 0})
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
@@ -1285,6 +1330,7 @@ async def list_groups(user: dict = Depends(get_current_user)):
 
 @api_router.post("/groups")
 async def create_group(group: GroupCreate, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     if group.org_id != user['org_id']:
         raise HTTPException(status_code=403, detail="Access denied")
     
@@ -1305,6 +1351,7 @@ async def create_group(group: GroupCreate, request: Request, user: dict = Depend
 
 @api_router.put("/groups/{group_id}")
 async def update_group(group_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     group = await db.groups.find_one({"id": group_id, "org_id": user['org_id']}, {"_id": 0})
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -1318,6 +1365,7 @@ async def update_group(group_id: str, update: dict, request: Request, user: dict
 
 @api_router.delete("/groups/{group_id}")
 async def delete_group(group_id: str, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     group = await db.groups.find_one({"id": group_id, "org_id": user['org_id']}, {"_id": 0})
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -1331,6 +1379,7 @@ async def delete_group(group_id: str, request: Request, user: dict = Depends(get
 
 @api_router.post("/groups/{group_id}/members")
 async def add_group_members(group_id: str, user_ids: List[str], request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     group = await db.groups.find_one({"id": group_id, "org_id": user['org_id']}, {"_id": 0})
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -1345,6 +1394,7 @@ async def add_group_members(group_id: str, user_ids: List[str], request: Request
 
 @api_router.delete("/groups/{group_id}/members")
 async def remove_group_members(group_id: str, user_ids: List[str], request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     group = await db.groups.find_one({"id": group_id, "org_id": user['org_id']}, {"_id": 0})
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -1359,6 +1409,7 @@ async def remove_group_members(group_id: str, user_ids: List[str], request: Requ
 
 @api_router.get("/users")
 async def list_users(user: dict = Depends(get_current_user)):
+    require_admin(user)
     rows = await db.users.find({"org_id": user['org_id']}, {"_id": 0}).sort("created_at", -1).to_list(10000)
     show_secrets = is_admin_user(user)
     users = []
@@ -1509,6 +1560,7 @@ async def export_users(format: str = "xlsx", user: dict = Depends(get_current_us
 
 @api_router.post("/users")
 async def create_user(new_user: UserCreate, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     if new_user.org_id != user['org_id']:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -1547,6 +1599,7 @@ async def create_user(new_user: UserCreate, request: Request, user: dict = Depen
 
 @api_router.put("/users/{user_id}")
 async def update_user(user_id: str, update: UserUpdate, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     target_user = await db.users.find_one({"id": user_id, "org_id": user['org_id']}, {"_id": 0})
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1598,7 +1651,7 @@ async def update_user(user_id: str, update: UserUpdate, request: Request, user: 
         except Exception as e:
             logging.getLogger("kissflow_scim").warning(f"Kissflow push after user update failed for {email}: {e}")
     
-    return await db.users.find_one({"id": user_id}, {"_id": 0, "password": 0})
+    return _user_visible_to(await db.users.find_one({"id": user_id}, {"_id": 0}), user)
 
 
 @api_router.post("/users/{user_id}/reset-password")
@@ -1663,6 +1716,7 @@ async def reset_user_password(user_id: str, body: dict, request: Request, user: 
 
 @api_router.delete("/users/{user_id}")
 async def delete_user(user_id: str, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     if user_id == user['id']:
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
     
@@ -1684,6 +1738,7 @@ async def list_saml_apps(user: dict = Depends(get_current_user)):
 
 @api_router.post("/apps/saml")
 async def create_saml_app(app: SAMLAppCreate, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     if app.org_id != user['org_id']:
         raise HTTPException(status_code=403, detail="Access denied")
     
@@ -1731,6 +1786,7 @@ async def get_saml_app(app_id: str, user: dict = Depends(get_current_user)):
 
 @api_router.put("/apps/saml/{app_id}")
 async def update_saml_app(app_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     app = await db.saml_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
@@ -1747,6 +1803,7 @@ async def update_saml_app(app_id: str, update: dict, request: Request, user: dic
 
 @api_router.delete("/apps/saml/{app_id}")
 async def delete_saml_app(app_id: str, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     app = await db.saml_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
@@ -2465,11 +2522,16 @@ diag.innerHTML = lines.join("<br>");
 @api_router.post("/saml/debug/receive")
 async def saml_debug_receive(request: Request):
     """Debug endpoint: receives SAML form POST, validates base64, re-submits to Kissflow"""
+    if not saml_debug_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
     import base64
+    import html as html_lib
     form = await request.form()
-    saml_response = form.get('SAMLResponse', '')
-    relay_state = form.get('RelayState', '')
-    acs_url = form.get('ACS', '')
+    saml_response = str(form.get('SAMLResponse', '') or '')
+    relay_state = str(form.get('RelayState', '') or '')
+    acs_url = str(form.get('ACS', '') or '')
+    if acs_url and not acs_url.lower().startswith(("https://", "http://")):
+        raise HTTPException(status_code=400, detail="ACS must be an http(s) URL")
     
     # Validate the received SAMLResponse
     diagnostics = []
@@ -2487,20 +2549,20 @@ async def saml_debug_receive(request: Request):
     except Exception as e:
         diagnostics.append(f"Strict base64 decode: FAILED - {e}")
     
-    diag_html = '<br>'.join(diagnostics)
+    diag_html = '<br>'.join(html_lib.escape(str(line)) for line in diagnostics)
     
     html = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><title>SAML Debug</title></head>
 <body style="font-family:monospace;padding:20px">
 <h2>SAML Debug - Browser Received Data</h2>
 <div style="background:#f0f0f0;padding:10px;margin:10px 0">{diag_html}</div>
 <p>Base64 valid: <b>{"YES" if valid else "NO"}</b></p>
-<p>First 100 chars: <code>{saml_response[:100]}</code></p>
-<p>Last 50 chars: <code>{saml_response[-50:]}</code></p>
+<p>First 100 chars: <code>{html_lib.escape(saml_response[:100])}</code></p>
+<p>Last 50 chars: <code>{html_lib.escape(saml_response[-50:])}</code></p>
 <hr>
 <p>Click below to forward this EXACT data to Kissflow:</p>
-<form method="POST" action="{acs_url}">
-    <input type="hidden" name="SAMLResponse" value="{saml_response}"/>
-    {'<input type="hidden" name="RelayState" value="' + relay_state + '"/>' if relay_state else ''}
+<form method="POST" action="{html_lib.escape(acs_url, quote=True)}">
+    <input type="hidden" name="SAMLResponse" value="{html_lib.escape(saml_response, quote=True)}"/>
+    {'<input type="hidden" name="RelayState" value="' + html_lib.escape(relay_state, quote=True) + '"/>' if relay_state else ''}
     <button type="submit" style="padding:10px 20px;font-size:16px;cursor:pointer">Submit to Kissflow</button>
 </form>
 </body></html>'''
@@ -2713,6 +2775,7 @@ async def list_oidc_apps(user: dict = Depends(get_current_user)):
 
 @api_router.post("/apps/oidc")
 async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     if app.org_id != user['org_id']:
         raise HTTPException(status_code=403, detail="Access denied")
     
@@ -2764,6 +2827,7 @@ async def get_oidc_app(app_id: str, include_secret: bool = False, user: dict = D
 
 @api_router.put("/apps/oidc/{app_id}")
 async def update_oidc_app(app_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
@@ -2803,6 +2867,7 @@ async def regenerate_oidc_secret(app_id: str, request: Request, user: dict = Dep
 
 @api_router.delete("/apps/oidc/{app_id}")
 async def delete_oidc_app(app_id: str, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
@@ -2821,6 +2886,7 @@ async def list_mobile_apps(user: dict = Depends(get_current_user)):
 
 @api_router.post("/apps/mobile")
 async def create_mobile_app(app: MobileAppCreate, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     if app.org_id != user['org_id']:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -2856,6 +2922,7 @@ async def get_mobile_app(app_id: str, user: dict = Depends(get_current_user)):
 
 @api_router.put("/apps/mobile/{app_id}")
 async def update_mobile_app(app_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     app = await db.mobile_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
@@ -2868,6 +2935,7 @@ async def update_mobile_app(app_id: str, update: dict, request: Request, user: d
 
 @api_router.delete("/apps/mobile/{app_id}")
 async def delete_mobile_app(app_id: str, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     app = await db.mobile_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
@@ -3221,6 +3289,7 @@ async def list_policies(user: dict = Depends(get_current_user)):
 
 @api_router.post("/policies")
 async def create_policy(policy: AccessPolicyCreate, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     if policy.org_id != user['org_id']:
         raise HTTPException(status_code=403, detail="Access denied")
     
@@ -3243,6 +3312,7 @@ async def create_policy(policy: AccessPolicyCreate, request: Request, user: dict
 
 @api_router.put("/policies/{policy_id}")
 async def update_policy(policy_id: str, update: dict, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     policy = await db.access_policies.find_one({"id": policy_id, "org_id": user['org_id']}, {"_id": 0})
     if not policy:
         raise HTTPException(status_code=404, detail="Policy not found")
@@ -3256,6 +3326,7 @@ async def update_policy(policy_id: str, update: dict, request: Request, user: di
 
 @api_router.delete("/policies/{policy_id}")
 async def delete_policy(policy_id: str, request: Request, user: dict = Depends(get_current_user)):
+    require_admin(user)
     policy = await db.access_policies.find_one({"id": policy_id, "org_id": user['org_id']}, {"_id": 0})
     if not policy:
         raise HTTPException(status_code=404, detail="Policy not found")
@@ -4257,6 +4328,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SecurityHeadersMiddleware)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
