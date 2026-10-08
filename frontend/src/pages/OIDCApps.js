@@ -14,6 +14,8 @@ const OIDCApps = () => {
   const [apps, setApps] = useState([]);
   const [groups, setGroups] = useState([]);
   const [roles, setRoles] = useState([]);
+  const [assignableUsers, setAssignableUsers] = useState([]);
+  const [assigneeSearch, setAssigneeSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [selectedApp, setSelectedApp] = useState(null);
@@ -35,7 +37,7 @@ const OIDCApps = () => {
     scopes: ['openid', 'profile', 'email'], grant_types: ['authorization_code'],
     logo_url: '', home_url: '', allowed_group_ids: [], allowed_role_ids: [],
     category: '', sort_order: 99, is_placeholder: false, restricted: false,
-    access_mode: 'open'
+    access_mode: 'open', approved_user_ids: []
   });
 
   useEffect(() => { fetchData(); }, []);
@@ -54,6 +56,15 @@ const OIDCApps = () => {
       toast.error('Failed to load data');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchAssignableUsers = async () => {
+    try {
+      const response = await axios.get(`${API}/apps/oidc/assignable-users`, getAuthHeader());
+      setAssignableUsers(response.data);
+    } catch (error) {
+      toast.error('Failed to load active users for app assignment');
     }
   };
 
@@ -121,8 +132,10 @@ const OIDCApps = () => {
       allowed_group_ids: app.allowed_group_ids || [], allowed_role_ids: app.allowed_role_ids || [],
       category: app.category || '', sort_order: app.sort_order ?? 99,
       is_placeholder: !!app.is_placeholder, restricted: !!app.restricted,
-      access_mode: app.access_mode || 'open'
+      access_mode: app.access_mode || 'open', approved_user_ids: app.approved_user_ids || []
     });
+    setAssigneeSearch('');
+    if (app.access_mode === 'assigned_only') fetchAssignableUsers();
     setLogoPreview(app.logo_url || null);
     setShowModal(true);
   };
@@ -134,8 +147,9 @@ const OIDCApps = () => {
       scopes: ['openid', 'profile', 'email'], grant_types: ['authorization_code'],
       logo_url: '', home_url: '', allowed_group_ids: [], allowed_role_ids: [],
       category: '', sort_order: 99, is_placeholder: false, restricted: false,
-      access_mode: 'open'
+      access_mode: 'open', approved_user_ids: []
     });
+    setAssigneeSearch('');
     setNewRedirectUri('');
     setLogoPreview(null);
   };
@@ -781,10 +795,46 @@ const OIDCApps = () => {
               </div>
               <Switch
                 checked={form.access_mode === 'assigned_only'}
-                onCheckedChange={(checked) => setForm({ ...form, access_mode: checked ? 'assigned_only' : 'open', restricted: checked ? false : form.restricted })}
+                onCheckedChange={(checked) => {
+                  setForm({ ...form, access_mode: checked ? 'assigned_only' : 'open', restricted: checked ? false : form.restricted });
+                  if (checked) fetchAssignableUsers();
+                }}
                 data-testid="oidc-assigned-only-switch"
               />
             </div>
+            {form.access_mode === 'assigned_only' && (
+              <div className="space-y-2 rounded-lg border border-zinc-200 p-3">
+                <Label className="label-uppercase">Approved users</Label>
+                <p className="text-xs text-zinc-500">Select active Refex One users. The server saves their user IDs and denies everyone when the list is empty.</p>
+                <Input
+                  value={assigneeSearch}
+                  onChange={(event) => setAssigneeSearch(event.target.value)}
+                  placeholder="Search name or work email"
+                  className="input-brutalist w-full"
+                  data-testid="oidc-assignee-search"
+                />
+                <div className="max-h-48 overflow-y-auto space-y-1" data-testid="oidc-assignee-list">
+                  {assignableUsers.filter((candidate) =>
+                    `${candidate.name || ''} ${candidate.email || ''}`.toLowerCase().includes(assigneeSearch.trim().toLowerCase())
+                  ).slice(0, 30).map((candidate) => (
+                    <label key={candidate.id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-zinc-50 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={form.approved_user_ids.includes(candidate.id)}
+                        onChange={(event) => setForm({
+                          ...form,
+                          approved_user_ids: event.target.checked
+                            ? [...form.approved_user_ids, candidate.id]
+                            : form.approved_user_ids.filter((id) => id !== candidate.id),
+                        })}
+                      />
+                      <span>{candidate.name} — {candidate.email}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-zinc-500">{form.approved_user_ids.length} users selected</p>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label className="label-uppercase">Allowed Groups</Label>

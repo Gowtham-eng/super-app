@@ -1243,6 +1243,17 @@ not establish the EIOS web client, live app registration, Secret Manager
 binding, Refex One host deployment, traffic, signed iPhone build, or physical
 sign-in acceptance. Those require separate exact-owner and readback gates.
 
+## What we fixed today — 2026-10-08 — REX direct OIDC pilot assignment
+
+The OIDC admin form now lists active users from a narrow, administrator-only,
+organization-scoped endpoint and saves selected immutable Refex One user IDs.
+The create and update routes check that every selected ID resolves exactly once
+to an active user in the administrator's organization. Empty assignment stays
+denied; typed names and email addresses are only search labels. For the four
+executive pilot, select exactly the four verified records and leave allowed
+groups and roles empty. Live registration and an authenticated launch remain
+separate release gates.
+
 ---
 
 *Confidential - Refex Group Internal Use Only*

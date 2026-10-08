@@ -3,7 +3,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from services.oidc_access import oidc_app_access, oidc_token_unexpired
+from services.oidc_access import oidc_app_access, oidc_assignee_ids_match, oidc_token_unexpired
 
 
 def user(**changes):
@@ -21,6 +21,15 @@ def app(**changes):
 
 
 class OidcAccessTests(unittest.TestCase):
+    def test_assignees_require_distinct_active_server_ids(self):
+        self.assertTrue(oidc_assignee_ids_match([], []))
+        self.assertTrue(oidc_assignee_ids_match(["anil-id", "yash-id"], ["yash-id", "anil-id"]))
+        self.assertFalse(oidc_assignee_ids_match(["anil-id", "anil-id"], ["anil-id"]))
+        self.assertFalse(oidc_assignee_ids_match(["anil-id", "missing-id"], ["anil-id"]))
+        self.assertFalse(oidc_assignee_ids_match(["anil-id", "yash-id"], ["anil-id", "yash-id", "anil-id"]))
+        self.assertFalse(oidc_assignee_ids_match([""], []))
+        self.assertFalse(oidc_assignee_ids_match("anil-id", ["anil-id"]))
+
     def test_assignment_only_denies_unassigned_and_admin(self):
         self.assertFalse(oidc_app_access(user(), app()))
         self.assertFalse(oidc_app_access(user(role="org_admin"), app()))

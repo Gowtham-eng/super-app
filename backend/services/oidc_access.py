@@ -5,6 +5,17 @@ from datetime import datetime, timezone
 OIDC_ACCESS_MODES = frozenset({"open", "assigned_only"})
 
 
+def oidc_assignee_ids_match(requested_ids, active_user_ids):
+    """Accept only distinct IDs that resolve to active users in the app's org."""
+    if not isinstance(requested_ids, list) or not isinstance(active_user_ids, list):
+        return False
+    if any(not isinstance(value, str) or not value for value in requested_ids + active_user_ids):
+        return False
+    if len(set(requested_ids)) != len(requested_ids):
+        return False
+    return len(active_user_ids) == len(requested_ids) and set(active_user_ids) == set(requested_ids)
+
+
 def oidc_token_unexpired(record, now):
     """MongoDB can return a stored UTC datetime without tzinfo."""
     expires_at = record.get("expires_at") if isinstance(record, dict) else None

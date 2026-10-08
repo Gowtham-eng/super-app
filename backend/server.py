@@ -20,7 +20,7 @@ from services.adrenalin_sync import sync_employees
 from services.kissflow_scim_client import sync_to_kissflow, push_single_user_to_kissflow, get_kissflow_scim_config, save_kissflow_scim_config, resolve_managers_in_kissflow
 from services.app_update import get_app_update_config, save_app_update_config, evaluate_update
 from services.oidc_crypto import get_jwks, sign_oidc_jwt, normalize_issuer, decode_oidc_jwt
-from services.oidc_access import OIDC_ACCESS_MODES, oidc_app_access, oidc_token_unexpired
+from services.oidc_access import OIDC_ACCESS_MODES, oidc_app_access, oidc_assignee_ids_match, oidc_token_unexpired
 from services.oidc_launch import LAUNCH_COOKIE, LAUNCH_TTL_SECONDS, create_launch_grant, consume_launch_grant
 from services.oidc_pkce import valid_s256_challenge, matches_s256_verifier
 from routes import scim as scim_router_module
@@ -255,6 +255,7 @@ class OIDCAppCreate(BaseModel):
     is_placeholder: Optional[bool] = False
     restricted: Optional[bool] = False
     access_mode: str = "open"
+    approved_user_ids: List[str] = []
 
 class MobileAppCreate(BaseModel):
     name: str
@@ -2175,10 +2176,31 @@ async def saml_test_sso(app_id: str, request: Request, user: dict = Depends(get_
 
 # ===================== OIDC APP ROUTES =====================
 
+async def validate_oidc_assignees(approved_user_ids, org_id):
+    if not oidc_assignee_ids_match(approved_user_ids, approved_user_ids):
+        raise HTTPException(status_code=400, detail="Invalid approved user IDs")
+    if not approved_user_ids:
+        return
+    users = await db.users.find(
+        {"id": {"$in": approved_user_ids}, "org_id": org_id, "status": "active"},
+        {"_id": 0, "id": 1},
+    ).to_list(len(approved_user_ids) + 1)
+    if not oidc_assignee_ids_match(approved_user_ids, [record.get("id") for record in users]):
+        raise HTTPException(status_code=400, detail="Approved users must be active in this organization")
+
 @api_router.get("/apps/oidc")
 async def list_oidc_apps(user: dict = Depends(get_local_iam_user)):
     apps = await db.oidc_apps.find({"org_id": user['org_id']}, {"_id": 0, "client_secret": 0}).to_list(100)
     return apps
+
+@api_router.get("/apps/oidc/assignable-users")
+async def list_oidc_assignable_users(user: dict = Depends(get_local_iam_user)):
+    if user.get('role') not in ('org_admin', 'owner', 'admin'):
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    return await db.users.find(
+        {"org_id": user['org_id'], "status": "active"},
+        {"_id": 0, "id": 1, "name": 1, "email": 1},
+    ).to_list(10000)
 
 @api_router.post("/apps/oidc")
 async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Depends(get_local_iam_user)):
@@ -2190,6 +2212,7 @@ async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Dep
         raise HTTPException(status_code=400, detail="Invalid access mode")
     if app.access_mode == 'assigned_only' and app.restricted:
         raise HTTPException(status_code=400, detail="Restricted and assigned-only modes cannot be combined")
+    await validate_oidc_assignees(app.approved_user_ids, user['org_id'])
     
     app_id = str(uuid.uuid4())
     client_id = f"oidc_{str(uuid.uuid4()).replace('-', '')[:16]}"
@@ -2220,6 +2243,7 @@ async def create_oidc_app(app: OIDCAppCreate, request: Request, user: dict = Dep
         "is_placeholder": bool(app.is_placeholder),
         "restricted": bool(app.restricted),
         "access_mode": app.access_mode,
+        "approved_user_ids": app.approved_user_ids,
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -2259,6 +2283,8 @@ async def update_oidc_app(app_id: str, update: dict, request: Request, user: dic
         update.get('restricted', app.get('restricted', False))
     ):
         raise HTTPException(status_code=400, detail="Restricted and assigned-only modes cannot be combined")
+    if 'approved_user_ids' in update:
+        await validate_oidc_assignees(update['approved_user_ids'], user['org_id'])
 
     # If client_id is being changed, validate uniqueness across the org
     new_client_id = update.get('client_id')
@@ -2460,7 +2486,7 @@ async def oidc_authorize(
         raise HTTPException(status_code=400, detail="state and nonce are required")
     if app.get('access_mode') == 'assigned_only' and not valid_s256_challenge(code_challenge, code_challenge_method):
         raise HTTPException(status_code=400, detail="S256 PKCE is required")
-    
+
     # Assigned-only launches use only an opaque HttpOnly grant prepared by the
     # authenticated launcher. Legacy apps retain their existing IAM path.
     assigned_only = app.get('access_mode') == 'assigned_only'
