@@ -30,6 +30,16 @@ const ITSM_VIRTUAL_APP = {
   logo_url: '',
 };
 
+// The REX tile is still supplied by the authenticated OIDC app catalog. Keep
+// the approved monogram in this host so it renders consistently on mobile and
+// desktop without changing which users can see or launch the app.
+const REX_APP_NAME = 'REX - Refex Executive Agent';
+const tileLogoFor = (app) => (
+  app.type === 'oidc' && app.name === REX_APP_NAME
+    ? '/rex-monogram.png'
+    : app.logo_url
+);
+
 /** One shared browser tab for all desktop app launches (reused instead of new tabs). */
 const DESKTOP_APP_WINDOW = 'refexone_app';
 
@@ -579,6 +589,8 @@ const AppLauncher = () => {
                 <div className="sm:hidden grid grid-cols-4 gap-3">
                   {catApps.map((app) => {
                     const c = APP_COLORS[hashString(app.id || app.name) % APP_COLORS.length];
+                    const tileLogo = tileLogoFor(app);
+                    const isRex = app.type === 'oidc' && app.name === REX_APP_NAME;
                     const mNoAccess = app.has_access === false && !app.is_placeholder;
                     const mBlocked = app.policy_blocked && !app.is_placeholder && !mNoAccess;
                     const mRestricted = mNoAccess || mBlocked;
@@ -594,8 +606,8 @@ const AppLauncher = () => {
                         }`}
                       >
                         <div className={`w-12 h-12 rounded-xl ${c.bg} ${c.border} border flex items-center justify-center mb-1.5`}>
-                          {app.logo_url ? (
-                            <img src={app.logo_url} alt={app.name} className={`w-7 h-7 object-contain ${mRestricted ? 'grayscale-[40%]' : ''}`} />
+                          {tileLogo ? (
+                            <img src={tileLogo} alt={app.name} className={`${isRex ? 'w-10 h-10 rounded-lg object-cover' : 'w-7 h-7 object-contain'} ${mRestricted ? 'grayscale-[40%]' : ''}`} />
                           ) : (
                             <span className={`font-heading font-bold text-base ${c.text}`}>
                               {app.name.charAt(0).toUpperCase()}
@@ -617,6 +629,8 @@ const AppLauncher = () => {
                   {catApps.map((app) => {
                     const pal = getTilePalette(app);
                     const AppIcon = pickAppIcon(app.name);
+                    const tileLogo = tileLogoFor(app);
+                    const isRex = app.type === 'oidc' && app.name === REX_APP_NAME;
                     const catMeta = CATEGORY_META[app.category] || meta;
                     const noAccess = app.has_access === false && !app.is_placeholder;
                     const blocked = app.policy_blocked && !app.is_placeholder && !noAccess;
@@ -643,8 +657,8 @@ const AppLauncher = () => {
                             restricted ? 'bg-white border border-slate-200' :
                             'bg-white shadow-sm border border-slate-200 group-hover:scale-110'
                           }`}>
-                            {app.logo_url ? (
-                              <img src={app.logo_url} alt={app.name} className={`w-8 h-8 object-contain ${restricted ? 'grayscale-[40%]' : ''}`} />
+                            {tileLogo ? (
+                              <img src={tileLogo} alt={app.name} className={`${isRex ? 'w-12 h-12 rounded-xl object-cover' : 'w-8 h-8 object-contain'} ${restricted ? 'grayscale-[40%]' : ''}`} />
                             ) : (
                               <AppIcon size={26} strokeWidth={2} className={app.is_placeholder || restricted ? 'text-slate-400' : 'text-slate-600'} />
                             )}
