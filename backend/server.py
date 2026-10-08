@@ -21,6 +21,7 @@ from services.kissflow_scim_client import sync_to_kissflow, push_single_user_to_
 from services.app_update import get_app_update_config, save_app_update_config, evaluate_update
 from services.oidc_crypto import get_jwks, sign_oidc_jwt, normalize_issuer, decode_oidc_jwt
 from services.oidc_access import OIDC_ACCESS_MODES, oidc_app_access
+from services.oidc_launch import LAUNCH_COOKIE, LAUNCH_TTL_SECONDS, create_launch_grant, consume_launch_grant
 from routes import scim as scim_router_module
 from routes.itsm import register_itsm_routes
 from routes.azure_ad import register_azure_ad_routes
@@ -2398,6 +2399,28 @@ async def oidc_jwks():
 
 # ===================== OIDC PROVIDER FLOW =====================
 
+@api_router.post("/oidc/{app_id}/prepare-launch")
+async def oidc_prepare_launch(app_id: str, request: Request, user: dict = Depends(get_local_iam_user)):
+    """Exchange the existing signed IAM session for an HttpOnly one-use launch grant."""
+    if JWT_SECRET == 'kissflow-iam-secret-key-2024':
+        raise HTTPException(status_code=503, detail="OIDC launch configuration unavailable")
+    app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app or app.get('status') != 'active' or app.get('access_mode') != 'assigned_only':
+        raise HTTPException(status_code=404, detail="Application unavailable")
+    if not await check_oidc_app_access(user, app):
+        raise HTTPException(status_code=403, detail="Application access denied")
+    allowed, _ = await check_access_policies(user, app, request)
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Application access denied")
+    raw, grant = create_launch_grant(user, app, datetime.now(timezone.utc))
+    await db.oidc_launch_grants.insert_one(grant)
+    result = Response(status_code=204, headers={"Cache-Control": "no-store"})
+    result.set_cookie(
+        LAUNCH_COOKIE, raw, max_age=LAUNCH_TTL_SECONDS,
+        httponly=True, secure=True, samesite="lax", path="/",
+    )
+    return result
+
 @api_router.get("/oidc/{app_id}/authorize")
 async def oidc_authorize(
     app_id: str,
@@ -2432,60 +2455,65 @@ async def oidc_authorize(
     if app.get('access_mode') == 'assigned_only' and (not state or not nonce):
         raise HTTPException(status_code=400, detail="state and nonce are required")
     
-    # Check if user has an active session (IAM token cookie or query param)
-    token = request.query_params.get('token') or request.cookies.get('iam_token')
-    if not token:
+    # Assigned-only launches use only an opaque HttpOnly grant prepared by the
+    # authenticated launcher. Legacy apps retain their existing IAM path.
+    assigned_only = app.get('access_mode') == 'assigned_only'
+    token = None if assigned_only else (request.query_params.get('token') or request.cookies.get('iam_token'))
+    if not token and not assigned_only:
         auth_header = request.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
             token = auth_header[7:]
     
     base_url = get_public_base_url(request)
     
-    if token:
+    if assigned_only:
+        grant = await consume_launch_grant(
+            db.oidc_launch_grants, request.cookies.get(LAUNCH_COOKIE), app_id, datetime.now(timezone.utc)
+        )
+        if grant is None:
+            raise HTTPException(status_code=403, detail="Start from the assigned app launcher")
+        payload = {"user_id": grant['user_id'], "org_id": grant['org_id']}
+    elif token:
         try:
             payload = decode_token(token)
         except HTTPException:
             payload = None
-        if payload and isinstance(payload.get('user_id'), str):
-            user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0})
-            if (user and user.get('status') == 'active' and
-                    user.get('org_id') == payload.get('org_id') == app.get('org_id')):
-                if not await check_oidc_app_access(user, app):
-                    raise HTTPException(status_code=403, detail="Application access denied")
-                allowed, _ = await check_access_policies(user, app, request)
-                if not allowed:
-                    raise HTTPException(status_code=403, detail="Application access denied")
-                # User is authenticated - generate authorization code
-                auth_code = str(uuid.uuid4()).replace('-', '')
-                
-                # Store auth code in DB with expiry
-                await db.oidc_auth_codes.insert_one({
-                    "code": auth_code,
-                    "client_id": client_id,
-                    "app_id": app.get('id'),
-                    "user_id": user['id'],
-                    "email": user['email'],
-                    "name": user.get('name', user.get('full_name', '')),
-                    "org_id": user.get('org_id', ''),
-                    "redirect_uri": redirect_uri,
-                    "scope": scope,
-                    "nonce": nonce,
-                    "created_at": datetime.now(timezone.utc),
-                    "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
-                    "used": False,
-                })
-                
-                # Redirect back to the app with authorization code
-                separator = '&' if '?' in redirect_uri else '?'
-                redirect_url = f"{redirect_uri}{separator}code={auth_code}"
-                if state:
-                    redirect_url += f"&state={state}"
-                
-                return Response(
-                    status_code=302,
-                    headers={"Location": redirect_url}
-                )
+    else:
+        payload = None
+    if payload and isinstance(payload.get('user_id'), str):
+        user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0})
+        if (user and user.get('status') == 'active' and
+                user.get('org_id') == payload.get('org_id') == app.get('org_id')):
+            if not await check_oidc_app_access(user, app):
+                raise HTTPException(status_code=403, detail="Application access denied")
+            allowed, _ = await check_access_policies(user, app, request)
+            if not allowed:
+                raise HTTPException(status_code=403, detail="Application access denied")
+            auth_code = str(uuid.uuid4()).replace('-', '')
+            await db.oidc_auth_codes.insert_one({
+                "code": auth_code,
+                "client_id": client_id,
+                "app_id": app.get('id'),
+                "user_id": user['id'],
+                "email": user['email'],
+                "name": user.get('name', user.get('full_name', '')),
+                "org_id": user.get('org_id', ''),
+                "redirect_uri": redirect_uri,
+                "scope": scope,
+                "nonce": nonce,
+                "created_at": datetime.now(timezone.utc),
+                "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+                "used": False,
+            })
+            separator = '&' if '?' in redirect_uri else '?'
+            redirect_url = f"{redirect_uri}{separator}code={auth_code}"
+            if state:
+                redirect_url += f"&state={state}"
+            return Response(status_code=302, headers={"Location": redirect_url})
     
+    if assigned_only:
+        raise HTTPException(status_code=403, detail="Application access denied")
+
     # No valid session - show login page that will redirect back after auth
     # Build the authorize URL to come back to after login
     import urllib.parse
@@ -2639,7 +2667,7 @@ async def oidc_token(app_id: str, request: Request):
     id_token_payload = {
         "sub": auth_code['user_id'],
         "email": auth_code['email'],
-        "email_verified": True,
+        "email_verified": app.get('access_mode') != 'assigned_only',
         "name": auth_code.get('name', ''),
         "preferred_username": auth_code['email'],
         "iss": base_url,
@@ -2699,7 +2727,7 @@ async def oidc_userinfo(request: Request):
             response = {
                 "sub": user['id'],
                 "email": user.get('email', ''),
-                "email_verified": True,
+                "email_verified": token_app.get('access_mode') != 'assigned_only' if token_app else False,
                 "name": user.get('name', user.get('full_name', '')),
                 "preferred_username": user.get('email', ''),
             }
@@ -2735,7 +2763,7 @@ async def oidc_userinfo(request: Request):
     return {
         "sub": token_doc['user_id'],
         "email": token_doc.get('email', ''),
-        "email_verified": True,
+        "email_verified": token_doc.get('access_mode') != 'assigned_only',
         "name": token_doc.get('name', ''),
     }
 
@@ -2919,6 +2947,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_local_iam_use
             "logo_url": app.get('logo_url'),
             "home_url": app.get('home_url'),
             "type": "oidc",
+            "access_mode": app.get('access_mode', 'open'),
             "launch_url": f"/api/oidc/{app['id']}/authorize",
             "has_access": has_access,
             "restricted": bool(app.get('restricted')),

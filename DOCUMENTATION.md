@@ -1216,6 +1216,22 @@ OIDC app management, group membership mutation, and access approvals require
 a signed local IAM session; the OIDC app's management mutations require an
 administrator. Existing OIDC apps retain `access_mode=open` semantics.
 
+For `assigned_only` OIDC apps, the authenticated launcher calls
+`POST /api/oidc/{app_id}/prepare-launch`. It stores only a digest of a random
+grant in `oidc_launch_grants`, bound to the app, Refex One user and organization,
+with a five-minute expiry. The browser receives the raw grant only in a
+`Secure`, `HttpOnly`, `SameSite=Lax`, host-only cookie. Authorize atomically
+consumes it, rechecks the current user and assignment, and denies a missing,
+expired, reused or revoked launch. The assigned-only path never uses an IAM
+token query parameter, JavaScript cookie or login redirect. It requires OIDC
+state and nonce. Its ID token and UserInfo do not assert `email_verified`;
+EIOS must use the issuer and immutable subject binding for executive identity.
+The Refex One launch collection needs a TTL index on `expires_at` as a
+separate, reviewed live database step before deployment. Production also
+needs a nondefault IAM signing secret and stable OIDC signing keys. The older
+open-mode app flows retain their existing token handling and require a
+separate security migration.
+
 For the pilot, register the REX OIDC app with an exact EIOS callback URI,
 `access_mode=assigned_only`, and only the verified pilot executive group or
 users. Keep its client secret in the EIOS GCP project, server side. The

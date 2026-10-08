@@ -363,11 +363,28 @@ const AppLauncher = () => {
         openDesktopAppTab(completeUrl);
       }
     } else if (app.type === 'oidc') {
+      if (app.access_mode === 'assigned_only') {
+        // The Refex One session prepares a one-use, HttpOnly launch grant.
+        // REX then starts its own OIDC code flow.
+        if (!app.id || !app.home_url || !app.home_url.startsWith('https://')) {
+          toast.error('Application launch is not configured');
+          return;
+        }
+        axios.post(`${API}/oidc/${encodeURIComponent(app.id)}/prepare-launch`, {}, {
+          ...getAuthHeader(), withCredentials: true,
+        }).then(() => {
+          window.location.href = app.home_url;
+        }).catch(() => {
+          toast.error('Unable to start the application. Please try again.');
+        });
+        return;
+      }
       // Feast/QR: open home_url so the RP starts OIDC with its own state.
       // Session continues via iam_token cookie / Login?oidc_redirect resume (mobile).
       const launchPath = app.launch_url || '';
       let targetUrl = app.home_url || `${baseUrl}${launchPath}`;
-      if (token && launchPath.includes('/oidc/') && launchPath.includes('/authorize')) {
+      if (app.access_mode !== 'assigned_only' && token &&
+          launchPath.includes('/oidc/') && launchPath.includes('/authorize')) {
         const authorizeUrl = `${baseUrl}${launchPath}${launchPath.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
         // When home_url is set (Feast/QR), open the app; it will call authorize itself.
         // If no home_url, start authorize directly with token.
