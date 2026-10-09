@@ -1150,9 +1150,16 @@ def _public_shared(shared: Dict[str, Any]) -> Dict[str, Any]:
     refex = merged.get("refex") if isinstance(merged.get("refex"), dict) else {}
     extrovis = merged.get("extrovis") if isinstance(merged.get("extrovis"), dict) else {}
     policy_key = (merged.get("refexions_policy_api_key") or "").strip()
+    from services.itsm_ticket_attachments import public_gcs_credentials_status
+
+    gcs_status = public_gcs_credentials_status(
+        merged.get("gcs_service_account"),
+        str(merged.get("gcs_credentials_filename") or ""),
+    )
     return {
         "application_id": merged.get("application_id") or "",
         "approval_matrix_id": merged.get("approval_matrix_id") or "",
+        **gcs_status,
         "refexions_policy_api_key": policy_key,
         "has_refexions_policy_api_key": bool(policy_key),
         "refexions_ml_url": (merged.get("refexions_ml_url") or DEFAULT_REFEXIONS_ML_URL),
@@ -1221,6 +1228,17 @@ def _merge_shared(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, A
     policy_url = str(incoming.get("refexions_policy_service_url") or "").strip()
     if policy_url:
         out["refexions_policy_service_url"] = policy_url
+    incoming_sa = incoming.get("gcs_service_account")
+    if isinstance(incoming_sa, dict) and incoming_sa.get("private_key"):
+        out["gcs_service_account"] = incoming_sa
+        filename = str(incoming.get("gcs_credentials_filename") or "").strip()
+        email = str(incoming.get("gcs_credentials_email") or incoming_sa.get("client_email") or "").strip()
+        if filename:
+            out["gcs_credentials_filename"] = filename
+        if email:
+            out["gcs_credentials_email"] = email
+    elif isinstance(out.get("gcs_service_account"), dict):
+        pass
     for slice_key in ("refex", "extrovis"):
         cur = dict(out.get(slice_key) or {})
         nxt = incoming.get(slice_key) if isinstance(incoming.get(slice_key), dict) else {}
@@ -1654,7 +1672,8 @@ def _collect_multipart_files(form: Any) -> List[Any]:
             if marker in seen_ids:
                 continue
             filename = str(getattr(item, "filename", "") or "").strip()
-            if not filename:
+            mime = str(getattr(item, "content_type", "") or "").lower()
+            if not filename and not mime.startswith("image/"):
                 continue
             seen_ids.add(marker)
             out.append(item)
@@ -5204,6 +5223,10 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         global _ENV_RUNTIME
         _ENV_RUNTIME = dict(doc)
         _write_env_runtime_file(doc)
+        shared = doc.get("shared") if isinstance(doc.get("shared"), dict) else {}
+        from services.itsm_ticket_attachments import set_gcs_service_account_info
+
+        set_gcs_service_account_info(shared.get("gcs_service_account"))
 
     async def _persist_environment_doc(doc: Dict[str, Any]) -> str:
         """Write Setup env to Mongo; fall back to process memory if DB is down."""
@@ -5927,7 +5950,13 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             upload_ticket_attachment_files,
         )
 
-        urls = await upload_ticket_attachment_files(uploads)
+        try:
+            urls = await upload_ticket_attachment_files(uploads)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("ITSM ticket attachment upload failed")
+            raise HTTPException(status_code=502, detail="Could not upload the attachment.")
         return {
             "success": True,
             "urls": urls,
@@ -6239,6 +6268,55 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
     ):
         _require_admin(user)
         return await _upsert_environments(body, user)
+
+    @api_router.post("/itsm/admin/gcs-credentials")
+    async def admin_upload_gcs_credentials(
+        request: Request,
+        user: dict = Depends(get_current_user),
+    ):
+        """Store the GCS service-account JSON in ITSM Setup (Mongo). Never return the private key."""
+        _require_admin(user)
+        content_type = (request.headers.get("content-type") or "").lower()
+        if "multipart/form-data" not in content_type:
+            raise HTTPException(status_code=400, detail="Send the JSON key as multipart form-data.")
+        form = await request.form()
+        uploads = _collect_multipart_files(form)
+        if not uploads:
+            raise HTTPException(status_code=400, detail="Choose the Google Cloud service-account JSON file.")
+        item = uploads[0]
+        filename = str(getattr(item, "filename", "") or "gcs-itsm-attachments.json").strip()
+        raw = await item.read()
+        from services.itsm_ticket_attachments import (
+            parse_gcs_service_account_json,
+            persist_gcs_credentials_file,
+            public_gcs_credentials_status,
+            set_gcs_service_account_info,
+        )
+
+        info = parse_gcs_service_account_json(raw)
+        set_gcs_service_account_info(info)
+        persist_gcs_credentials_file(info)
+        existing = (await _load_environment_doc()) or {"scope": "global", "org_id": user.get("org_id") or ""}
+        shared = dict(existing.get("shared") or {})
+        shared["gcs_service_account"] = info
+        shared["gcs_credentials_filename"] = filename
+        shared["gcs_credentials_email"] = str(info.get("client_email") or "")
+        existing["shared"] = shared
+        existing["updated_at"] = datetime.now(timezone.utc).isoformat()
+        existing["updated_by"] = user.get("email")
+        persisted = await _persist_environment_doc(existing)
+        status = public_gcs_credentials_status(info, filename)
+        logger.info(
+            "ITSM GCS credentials saved by=%s persist=%s email=%s",
+            user.get("email"),
+            persisted,
+            status.get("gcs_credentials_email") or "",
+        )
+        return {
+            "ok": True,
+            "persisted": persisted,
+            **status,
+        }
 
     @api_router.post("/itsm/admin/entities")
     async def admin_create_entity(

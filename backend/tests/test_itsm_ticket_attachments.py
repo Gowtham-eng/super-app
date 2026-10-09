@@ -1,17 +1,25 @@
+import json
+
 from fastapi import HTTPException
 import pytest
 
 from routes.itsm import (
     _development_submit_webhook_url,
+    _merge_shared,
     _pin_development_submit_config,
+    _public_shared,
     _resolve_webhook_path,
     _ticket_webhook_body,
     _webhook_belongs_to_account,
 )
 from services.itsm_ticket_attachments import (
     TICKET_ATTACHMENT_MAX_FILE_BYTES,
+    _gcs_access_token,
+    gcs_credentials_path,
     normalize_attachment_urls,
+    parse_gcs_service_account_json,
     public_attachment_url,
+    resolve_upload_filename,
     validate_ticket_attachment_batch,
 )
 
@@ -100,6 +108,89 @@ def test_public_attachment_url():
     assert public_attachment_url("refexone-itsm-ticket-attachments", "tickets/a.png").endswith(
         "/tickets/a.png"
     )
+
+
+def test_resolve_upload_filename_for_ios_images():
+    assert resolve_upload_filename("IMG_0001.HEIC", "image/heic") == "IMG_0001.HEIC"
+    assert resolve_upload_filename("photo.HEIC", "") == "photo.HEIC"
+    assert resolve_upload_filename("image", "image/jpeg") == "image.jpg"
+    assert resolve_upload_filename("", "image/heic") == "image.heic"
+    assert resolve_upload_filename("shot.png", "image/png") == "shot.png"
+
+
+def test_gcs_credentials_path_uses_explicit_file(tmp_path, monkeypatch):
+    key = tmp_path / "gcs-itsm-attachments.json"
+    key.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("ITSM_GCS_CREDENTIALS_FILE", str(key))
+    assert gcs_credentials_path() == str(key)
+
+
+def test_gcs_credentials_path_ignores_missing_explicit_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("ITSM_GCS_CREDENTIALS_FILE", str(tmp_path / "missing.json"))
+    assert gcs_credentials_path() == ""
+
+
+def test_gcs_access_token_requires_service_account_json(monkeypatch):
+    monkeypatch.setattr(
+        "services.itsm_ticket_attachments.gcs_service_account_info",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "services.itsm_ticket_attachments.gcs_credentials_path",
+        lambda: "",
+    )
+    with pytest.raises(HTTPException) as exc:
+        _gcs_access_token()
+    assert exc.value.status_code == 502
+
+
+def test_parse_gcs_service_account_json_rejects_non_sa():
+    with pytest.raises(HTTPException) as exc:
+        parse_gcs_service_account_json("{}")
+    assert exc.value.status_code == 400
+    info = parse_gcs_service_account_json(
+        json.dumps(
+            {
+                "type": "service_account",
+                "client_email": "sa@example.iam.gserviceaccount.com",
+                "private_key": "-----BEGIN PRIVATE KEY-----\\nABC\\n-----END PRIVATE KEY-----\\n",
+            }
+        )
+    )
+    assert info["client_email"] == "sa@example.iam.gserviceaccount.com"
+
+
+def test_public_shared_redacts_gcs_private_key():
+    payload = _public_shared(
+        {
+            "gcs_service_account": {
+                "type": "service_account",
+                "client_email": "sa@example.iam.gserviceaccount.com",
+                "private_key": "SECRET-PRIVATE-KEY",
+            },
+            "gcs_credentials_filename": "gcs-itsm-attachments.json",
+        }
+    )
+    dumped = json.dumps(payload)
+    assert "SECRET-PRIVATE-KEY" not in dumped
+    assert "gcs_service_account" not in payload
+    assert payload["gcs_credentials_configured"] is True
+    assert payload["gcs_credentials_email"] == "sa@example.iam.gserviceaccount.com"
+
+
+def test_merge_shared_keeps_existing_gcs_key():
+    merged = _merge_shared(
+        {
+            "gcs_service_account": {
+                "type": "service_account",
+                "client_email": "sa@example.iam.gserviceaccount.com",
+                "private_key": "KEEP-KEY",
+            },
+            "application_id": "IT_Service_Management_A00",
+        },
+        {"application_id": "IT_Service_Management_A00"},
+    )
+    assert merged["gcs_service_account"]["private_key"] == "KEEP-KEY"
 
 
 def test_submit_pins_builtin_development_webhook_not_live_token():

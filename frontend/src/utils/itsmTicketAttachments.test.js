@@ -7,6 +7,8 @@ const file = (name, size) => ({ name, size });
 
 test('accepts one allowed file under 10 MB', () => {
   expect(validateTicketAttachments([file('shot.png', 1024)])).toBe('');
+  expect(validateTicketAttachments([{ name: 'IMG_1.HEIC', size: 1024 }])).toBe('');
+  expect(validateTicketAttachments([{ name: 'image', size: 1024, type: 'image/jpeg' }])).toBe('');
 });
 
 test('rejects disallowed type, oversized file, and a second file', () => {

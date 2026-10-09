@@ -652,6 +652,12 @@ def test_collect_multipart_files_single_or_list():
     assert [item.filename for item in _collect_multipart_files(_Form(files=two))] == ["a.png", "b.pdf"]
     assert _collect_multipart_files(_Form()) == []
 
+    class _Image:
+        filename = ""
+        content_type = "image/jpeg"
+
+    assert [item.content_type for item in _collect_multipart_files(_Form(files=_Image()))] == ["image/jpeg"]
+
 
 def test_kissflow_headers_include_key_id_and_secret():
     cfg = {

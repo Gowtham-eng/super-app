@@ -14,6 +14,7 @@ import {
   Plus,
   RefreshCw,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react';
 
@@ -179,6 +180,12 @@ const ITSMSetup = () => {
     development: emptyConnection(),
     live: emptyConnection(),
   });
+  const [gcsCreds, setGcsCreds] = useState({
+    configured: false,
+    email: '',
+    filename: '',
+  });
+  const [gcsUploading, setGcsUploading] = useState(false);
 
   const fetchEnvironments = async () => {
     setEnvLoading(true);
@@ -192,6 +199,11 @@ const ITSMSetup = () => {
       };
       setActiveEnv(active);
       setEnvForm(nextForm);
+      setGcsCreds({
+        configured: Boolean(res.data.shared?.gcs_credentials_configured),
+        email: String(res.data.shared?.gcs_credentials_email || ''),
+        filename: String(res.data.shared?.gcs_credentials_filename || ''),
+      });
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Failed to load Kissflow environments'));
     } finally {
@@ -318,6 +330,11 @@ const ITSMSetup = () => {
         development: hydrateConnection(res.data.development),
         live: hydrateConnection(res.data.live),
       });
+      setGcsCreds({
+        configured: Boolean(res.data.shared?.gcs_credentials_configured),
+        email: String(res.data.shared?.gcs_credentials_email || ''),
+        filename: String(res.data.shared?.gcs_credentials_filename || ''),
+      });
       const host = String(res.data[savedActive]?.kissflow_base_url || '').replace(/\/$/, '');
       toast.success(
         `Active: ${savedActive === 'live' ? 'Live' : 'Development'}${host ? ` — ${host}` : ''}. All Kissflow APIs now use this host, account, keys, and webhooks.`
@@ -337,6 +354,28 @@ const ITSMSetup = () => {
   const resolveWebhookPath = () => {
     const parsed = splitWebhookInput(form.webhook_input);
     return parsed.path || form._parsed_webhook_path || '';
+  };
+
+  const uploadGcsCredentials = async (file) => {
+    if (!file) return;
+    setGcsUploading(true);
+    try {
+      const data = new FormData();
+      data.append('file', file);
+      const res = await axios.post(`${itsmApi}/itsm/admin/gcs-credentials`, data, getAuthHeader());
+      setGcsCreds({
+        configured: Boolean(res.data.gcs_credentials_configured),
+        email: String(res.data.gcs_credentials_email || ''),
+        filename: String(res.data.gcs_credentials_filename || file.name || ''),
+      });
+      toast.success(
+        `Ticket image uploads will use ${res.data.gcs_credentials_email || 'the uploaded service account'}.`
+      );
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Failed to save GCS credentials'));
+    } finally {
+      setGcsUploading(false);
+    }
   };
 
   const saveEntity = async () => {
@@ -574,6 +613,40 @@ const ITSMSetup = () => {
     const shared = envForm.shared || emptyShared();
     return (
       <div className="space-y-4">
+        <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-4 space-y-3">
+          <h4 className="text-sm font-semibold text-slate-800">Ticket image storage (GCS)</h4>
+          <p className="text-[11px] text-slate-500">
+            Upload the Google Cloud service-account JSON here. It is saved in ITSM Setup (production
+            Mongo) — not GitHub, and not the server .env. Use this page on live Refex One so image
+            upload works for Refex, Non-Refex, and Refexions.
+          </p>
+          {gcsCreds.configured ? (
+            <p className="text-xs text-emerald-700" data-testid="itsm-gcs-configured">
+              Configured{gcsCreds.email ? `: ${gcsCreds.email}` : ''}
+              {gcsCreds.filename ? ` (${gcsCreds.filename})` : ''}
+            </p>
+          ) : (
+            <p className="text-xs text-amber-700" data-testid="itsm-gcs-missing">
+              Not configured — ticket image upload will fail until this JSON is uploaded.
+            </p>
+          )}
+          <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer disabled:opacity-50">
+            {gcsUploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+            {gcsCreds.configured ? 'Replace JSON key' : 'Upload JSON key'}
+            <input
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              disabled={gcsUploading}
+              data-testid="itsm-gcs-credentials-file"
+              onChange={(e) => {
+                const file = e.target.files && e.target.files[0];
+                e.target.value = '';
+                uploadGcsCredentials(file);
+              }}
+            />
+          </label>
+        </div>
         <p className="text-sm font-semibold text-slate-800">Process IDs (same names in Development and Live)</p>
         <div className="grid sm:grid-cols-2 gap-4">
           <Field label="Application ID">
