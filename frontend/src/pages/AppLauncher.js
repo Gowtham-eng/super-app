@@ -19,6 +19,8 @@ import {
   shouldHijackPmTrackerLaunch,
   filterReportsForUser,
   isReportsLauncherApp,
+  launcherAppDisplayName,
+  userCanSeeAgenticAi,
   userCanSeeReports,
   PM_TRACKER_FALLBACK_URL,
 } from '../utils/launcherApps';
@@ -547,7 +549,7 @@ const AppLauncher = () => {
     }
 
     if (app.is_placeholder) {
-      toast.info(`${app.name} is coming soon`);
+      toast.info(`${launcherAppDisplayName(app)} is coming soon`);
       return;
     }
     if (app.has_access === false) {
@@ -827,6 +829,7 @@ const AppLauncher = () => {
                 {/* Mobile: 4-col grid */}
                 <div className="sm:hidden grid grid-cols-4 gap-3">
                   {section.apps.map((app) => {
+                    const appLabel = launcherAppDisplayName(app);
                     const c = APP_COLORS[hashString(app.id || app.name) % APP_COLORS.length];
                     const mNoAccess = app.has_access === false && !app.is_placeholder;
                     const mBlocked = app.policy_blocked && !app.is_placeholder && !mNoAccess;
@@ -844,15 +847,15 @@ const AppLauncher = () => {
                       >
                         <div className={`w-12 h-12 rounded-xl ${c.bg} ${c.border} border flex items-center justify-center mb-1.5`}>
                           {app.logo_url ? (
-                            <img src={app.logo_url} alt={app.name} className={`w-7 h-7 object-contain ${mRestricted ? 'grayscale-[40%]' : ''}`} />
+                            <img src={app.logo_url} alt={appLabel} className={`w-7 h-7 object-contain ${mRestricted ? 'grayscale-[40%]' : ''}`} />
                           ) : (
                             <span className={`font-heading font-bold text-base ${c.text}`}>
-                              {app.name.charAt(0).toUpperCase()}
+                              {appLabel.charAt(0).toUpperCase()}
                             </span>
                           )}
                         </div>
                         <span className={`text-[10px] font-medium text-center leading-tight line-clamp-2 break-words w-full ${mRestricted ? 'text-slate-500' : 'text-slate-700'}`}>
-                          {app.name}
+                          {appLabel}
                         </span>
                         {mNoAccess && <Lock size={10} className="absolute top-1 right-1 text-slate-500" />}
                         {mBlocked && <Lock size={10} className="absolute top-1 right-1 text-red-400" />}
@@ -864,6 +867,7 @@ const AppLauncher = () => {
                 {/* Desktop: Vibrant gradient tile grid (matches mockup) */}
                 <div className="hidden sm:grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 3xl:grid-cols-7 gap-4">
                   {section.apps.map((app) => {
+                    const appLabel = launcherAppDisplayName(app);
                     const pal = getTilePalette(app);
                     const AppIcon = pickAppIcon(app.name);
                     const catMeta = CATEGORY_META[app.category] || meta;
@@ -893,7 +897,7 @@ const AppLauncher = () => {
                             'bg-white shadow-sm border border-slate-200 group-hover:scale-110'
                           }`}>
                             {app.logo_url ? (
-                              <img src={app.logo_url} alt={app.name} className={`w-8 h-8 object-contain ${restricted ? 'grayscale-[40%]' : ''}`} />
+                              <img src={app.logo_url} alt={appLabel} className={`w-8 h-8 object-contain ${restricted ? 'grayscale-[40%]' : ''}`} />
                             ) : (
                               <AppIcon size={26} strokeWidth={2} className={app.is_placeholder || restricted ? 'text-slate-400' : 'text-slate-600'} />
                             )}
@@ -925,7 +929,7 @@ const AppLauncher = () => {
                         {/* Bottom white section with name + category pill */}
                         <div className="flex-1 px-4 py-4 flex flex-col items-center justify-between gap-2 min-h-[100px]">
                           <h3 className={`text-sm font-semibold text-center leading-snug line-clamp-2 tracking-tight ${restricted ? 'text-slate-600' : 'text-slate-900'}`}>
-                            {app.name}
+                            {appLabel}
                           </h3>
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold tracking-wide bg-slate-100 text-slate-600">
                             <span className="w-1 h-1 rounded-full bg-slate-500" />
@@ -944,9 +948,11 @@ const AppLauncher = () => {
         </div>
       )}
 
-      <div className="fixed right-4 z-50 safe-fixed-bottom bottom-4 sm:right-6 sm:bottom-6" data-testid="refexions-chatbot">
-        <RefexionsChat />
-      </div>
+      {userCanSeeAgenticAi(user) ? (
+        <div className="fixed right-4 z-50 safe-fixed-bottom bottom-4 sm:right-6 sm:bottom-6" data-testid="refexions-chatbot">
+          <RefexionsChat />
+        </div>
+      ) : null}
     </div>
   );
 };

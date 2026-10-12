@@ -103,6 +103,16 @@ const RMC_P2P_EMAILS = [
   'mounesh.r@refex.co.in',
 ];
 
+export const AGENTIC_AI_LABEL = 'agentic AI';
+
+const AGENTIC_AI_EMAILS = [
+  'aniljain@refex.co.in',
+  'yash@refex.co.in',
+  'srivaths.varadharajan@refex.co.in',
+  'gowtham.s@refex.co.in',
+  'aravind.srinivasan@refex.co.in',
+];
+
 const compactAppName = (value = '') => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 export function isRmcP2pApp(app = {}) {
@@ -117,6 +127,17 @@ export function isProcure2PayApp(app = {}) {
   return compact.includes('procure2pay') || compact.includes('procurementtopay');
 }
 
+/** Launcher tile stored as Rex. Display name is agentic AI. */
+export function isRexApp(app = {}) {
+  const name = String(app.name || '').trim().toLowerCase();
+  return name === 'rex' || name === AGENTIC_AI_LABEL.toLowerCase();
+}
+
+export function launcherAppDisplayName(app = {}) {
+  if (isRexApp(app)) return AGENTIC_AI_LABEL;
+  return app.name || '';
+}
+
 function userEmail(user = {}) {
   return String(user?.email || '').trim().toLowerCase();
 }
@@ -128,6 +149,11 @@ export function userCanSeeRmcP2p(user = {}) {
 
 export function userCanSeeProcure2Pay(user = {}) {
   return !RMC_P2P_EMAILS.includes(userEmail(user));
+}
+
+export function userCanSeeAgenticAi(user = {}) {
+  const email = userEmail(user);
+  return Boolean(email) && AGENTIC_AI_EMAILS.includes(email);
 }
 
 /** Reports stay on the Reports tab — never mix them into All Apps. */
@@ -176,6 +202,7 @@ export function filterLauncherAppsForUser(apps, user) {
     if (isReportsLauncherApp(app) && !userCanSeeReports(user)) return false;
     if (isRmcP2pApp(app) && !userCanSeeRmcP2p(user)) return false;
     if (isProcure2PayApp(app) && !userCanSeeProcure2Pay(user)) return false;
+    if (isRexApp(app) && !userCanSeeAgenticAi(user)) return false;
     return true;
   });
 }

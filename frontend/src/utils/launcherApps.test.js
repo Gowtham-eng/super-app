@@ -19,6 +19,9 @@ import {
   isProcure2PayApp,
   userCanSeeRmcP2p,
   userCanSeeProcure2Pay,
+  userCanSeeAgenticAi,
+  isRexApp,
+  launcherAppDisplayName,
   isAdrenalinApp,
   PM_TRACKER_FALLBACK_URL,
 } from './launcherApps';
@@ -159,6 +162,29 @@ describe('RMC P2P vs Procure2Pay visibility', () => {
     const otherIds = filterLauncherAppsForUser([EMS, rmc, p2p], other).map((a) => a.id);
     expect(deepaIds).toEqual(['saml-ems', 'rmc-p2p']);
     expect(otherIds).toEqual(['saml-ems', 'procure2pay']);
+  });
+});
+
+describe('Rex / agentic AI visibility', () => {
+  const rex = { id: 'rex', name: 'Rex', type: 'saml', has_access: true };
+  const allowed = { email: 'aniljain@refex.co.in' };
+  const other = { email: 'anyone@refex.co.in' };
+
+  it('renames Rex to agentic AI and shows it only to the allowlisted accounts', () => {
+    expect(isRexApp(rex)).toBe(true);
+    expect(isRexApp({ name: 'Refexions' })).toBe(false);
+    expect(launcherAppDisplayName(rex)).toBe('agentic AI');
+    expect(userCanSeeAgenticAi(allowed)).toBe(true);
+    expect(userCanSeeAgenticAi({ email: 'yash@refex.co.in' })).toBe(true);
+    expect(userCanSeeAgenticAi({ email: 'srivaths.varadharajan@refex.co.in' })).toBe(true);
+    expect(userCanSeeAgenticAi({ email: 'gowtham.s@refex.co.in' })).toBe(true);
+    expect(userCanSeeAgenticAi({ email: 'aravind.srinivasan@refex.co.in' })).toBe(true);
+    expect(userCanSeeAgenticAi(other)).toBe(false);
+    expect(userCanSeeAgenticAi({ email: 'AnilJain@refex.co.in' })).toBe(true);
+    const allowedIds = filterLauncherAppsForUser([EMS, rex], allowed).map((a) => a.id);
+    const otherIds = filterLauncherAppsForUser([EMS, rex], other).map((a) => a.id);
+    expect(allowedIds).toEqual(['saml-ems', 'rex']);
+    expect(otherIds).toEqual(['saml-ems']);
   });
 });
 

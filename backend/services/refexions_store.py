@@ -183,9 +183,12 @@ DEFAULT_FAQS: List[Dict[str, Any]] = [
     },
     {
         "id": "faq-what-is-refexions",
-        "question": "What can Refexions help me with?",
+        "question": "What can agentic AI help me with?",
         "keywords": [
             "refexions",
+            "rex",
+            "agentic ai",
+            "agentic",
             "what can you do",
             "help",
             "assistant",
@@ -193,7 +196,7 @@ DEFAULT_FAQS: List[Dict[str, Any]] = [
             "personal assistant",
         ],
         "answer": (
-            "I am Refexions, your workplace assistant. I can raise an IT ticket, "
+            "I am agentic AI, your workplace assistant. I can raise an IT ticket, "
             "email a company policy, and answer FAQ questions saved by Admin. "
             "I do not invent answers — if I do not know, I send you back to the menu."
         ),
