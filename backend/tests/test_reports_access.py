@@ -8,7 +8,10 @@ from services.launcher_access import (
     is_chief_position,
     is_procure2pay_app,
     is_reports_app,
+    is_rex_app,
     is_rmc_p2p_app,
+    launcher_app_display_name,
+    user_can_see_agentic_ai,
     user_can_see_launcher_app,
     user_can_see_procure2pay,
     user_can_see_reports,
@@ -81,4 +84,24 @@ def test_rmc_p2p_allowlist_and_procure2pay_denylist(monkeypatch):
     assert user_can_see_launcher_app(DEEPA, P2P) is False
     assert user_can_see_launcher_app(OTHER, P2P) is True
     assert user_can_see_launcher_app(DEEPA, EMS) is True
+    assert user_can_see_launcher_app(OTHER, EMS) is True
+
+
+REX = {"id": "rex", "name": "Rex refex executive agent"}
+ANIL = {"email": "aniljain@refex.co.in"}
+
+
+def test_rex_renamed_and_allowlisted(monkeypatch):
+    monkeypatch.delenv("AGENTIC_AI_ALLOWED_EMAILS", raising=False)
+    assert is_rex_app(REX) is True
+    assert is_rex_app({"name": "Refexions"}) is False
+    assert launcher_app_display_name(REX) == "agentic AI"
+    assert user_can_see_agentic_ai(ANIL) is True
+    assert user_can_see_agentic_ai({"email": "yash@refex.co.in"}) is True
+    assert user_can_see_agentic_ai({"email": "srivaths.varadharajan@refex.co.in"}) is True
+    assert user_can_see_agentic_ai({"email": "gowtham.s@refex.co.in"}) is True
+    assert user_can_see_agentic_ai({"email": "aravind.srinivasan@refex.co.in"}) is True
+    assert user_can_see_agentic_ai(OTHER) is False
+    assert user_can_see_launcher_app(ANIL, REX) is True
+    assert user_can_see_launcher_app(OTHER, REX) is False
     assert user_can_see_launcher_app(OTHER, EMS) is True

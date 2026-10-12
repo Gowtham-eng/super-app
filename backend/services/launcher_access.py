@@ -6,7 +6,8 @@ RMC P2P is shown only to a fixed email allowlist.
 Procure2Pay is hidden from that same list.
 
 Override with env:
-  REPORTS_ALLOWED_EMAILS, RMC_P2P_ALLOWED_EMAILS, PROCURE2PAY_HIDDEN_EMAILS
+  REPORTS_ALLOWED_EMAILS, RMC_P2P_ALLOWED_EMAILS, PROCURE2PAY_HIDDEN_EMAILS,
+  AGENTIC_AI_ALLOWED_EMAILS
   (comma-separated).
 """
 from __future__ import annotations
@@ -47,6 +48,18 @@ DEFAULT_RMC_P2P_EMAILS = (
     "mounesh.r@refex.co.in",
 )
 
+AGENTIC_AI_LABEL = "agentic AI"
+
+DEFAULT_AGENTIC_AI_EMAILS = (
+    "aniljain@refex.co.in",
+    "yash@refex.co.in",
+    "srivaths.varadharajan@refex.co.in",
+    "gowtham.s@refex.co.in",
+    "aravind.srinivasan@refex.co.in",
+)
+
+_REX_WORD_RE = re.compile(r"\brex\b", re.I)
+
 
 def reports_allowed_emails() -> set[str]:
     return _email_set("REPORTS_ALLOWED_EMAILS", DEFAULT_REPORTS_ALLOWED_EMAILS)
@@ -58,6 +71,10 @@ def rmc_p2p_allowed_emails() -> set[str]:
 
 def procure2pay_hidden_emails() -> set[str]:
     return _email_set("PROCURE2PAY_HIDDEN_EMAILS", DEFAULT_RMC_P2P_EMAILS)
+
+
+def agentic_ai_allowed_emails() -> set[str]:
+    return _email_set("AGENTIC_AI_ALLOWED_EMAILS", DEFAULT_AGENTIC_AI_EMAILS)
 
 
 def _compact_name(value: str) -> str:
@@ -161,6 +178,31 @@ def user_can_see_procure2pay(user: Optional[dict] = None) -> bool:
     return email not in procure2pay_hidden_emails()
 
 
+def is_rex_app(app: Optional[dict] = None) -> bool:
+    """Rex / Refex Executive Agent. Not the Refexions admin setup page."""
+    app = app or {}
+    app_id = str(app.get("id") or "").strip().lower()
+    if app_id == "rex":
+        return True
+    name = str(app.get("name") or "")
+    if _REX_WORD_RE.search(name):
+        return True
+    compact = _compact_name(f"{name} {app.get('description') or ''}")
+    return "refexexecutiveagent" in compact
+
+
+def user_can_see_agentic_ai(user: Optional[dict] = None) -> bool:
+    email = _user_email(user)
+    return bool(email) and email in agentic_ai_allowed_emails()
+
+
+def launcher_app_display_name(app: Optional[dict] = None) -> str:
+    app = app or {}
+    if is_rex_app(app):
+        return AGENTIC_AI_LABEL
+    return str(app.get("name") or "")
+
+
 def user_can_see_kissflow(user: Optional[dict] = None) -> bool:
     return True
 
@@ -174,4 +216,6 @@ def user_can_see_launcher_app(user: Optional[dict], app: Optional[dict]) -> bool
         return user_can_see_rmc_p2p(user)
     if is_procure2pay_app(app):
         return user_can_see_procure2pay(user)
+    if is_rex_app(app):
+        return user_can_see_agentic_ai(user)
     return True

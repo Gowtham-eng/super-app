@@ -21,7 +21,9 @@ from services.adrenalin_sync import sync_employees, resolve_hr_sync_org_id, hr_t
 from services.launcher_access import (
     is_procure2pay_app,
     is_reports_app,
+    is_rex_app,
     is_rmc_p2p_app,
+    launcher_app_display_name,
     user_can_see_launcher_app,
     user_can_see_reports,
 )
@@ -678,7 +680,7 @@ async def check_user_app_access(user: dict, app: dict) -> bool:
     - restricted=False → all users
     approved_user_ids / group assignments are NOT consulted for launch or SSO.
     """
-    if is_reports_app(app) or is_rmc_p2p_app(app) or is_procure2pay_app(app):
+    if is_reports_app(app) or is_rmc_p2p_app(app) or is_procure2pay_app(app) or is_rex_app(app):
         return user_can_see_launcher_app(user, app)
     is_admin_role = user.get('role') in ('org_admin', 'owner', 'admin')
     if app.get('restricted'):
@@ -2045,7 +2047,7 @@ async def saml_complete_sso(
     # check if they have access to any sibling app sharing the same ACS URL.
     # Kissflow (SP) only knows about one SAML connection, but we may have 
     # multiple sub-apps (Expense Mgmt, Travel Mgmt, etc.) pointing to the same SP.
-    if not has_access and not is_rmc_p2p_app(app) and not is_procure2pay_app(app):
+    if not has_access and not is_rmc_p2p_app(app) and not is_procure2pay_app(app) and not is_rex_app(app):
         acs_url = app.get('acs_url', '')
         if acs_url:
             sibling_apps = await db.saml_apps.find(
@@ -3447,7 +3449,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
     can_see_reports = user_can_see_reports(user)
 
     def resolve_access(app_doc):
-        if is_reports_app(app_doc) or is_rmc_p2p_app(app_doc) or is_procure2pay_app(app_doc):
+        if is_reports_app(app_doc) or is_rmc_p2p_app(app_doc) or is_procure2pay_app(app_doc) or is_rex_app(app_doc):
             return user_can_see_launcher_app(user, app_doc)
         if app_doc.get('restricted'):
             return is_admin_role  # only admins can launch restricted apps
@@ -3463,7 +3465,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
             return False
         if is_reports_app(app_doc) and not can_see_reports:
             return False
-        if is_rmc_p2p_app(app_doc) or is_procure2pay_app(app_doc):
+        if is_rmc_p2p_app(app_doc) or is_procure2pay_app(app_doc) or is_rex_app(app_doc):
             if not user_can_see_launcher_app(user, app_doc):
                 return False
         seen_ids.add(app_id)
@@ -3477,7 +3479,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
         usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
         accessible_apps.append({
             "id": app['id'],
-            "name": app['name'],
+            "name": launcher_app_display_name(app),
             "description": app.get('description'),
             "logo_url": app.get('logo_url'),
             "home_url": app.get('home_url'),
@@ -3504,7 +3506,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
         usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
         accessible_apps.append({
             "id": app['id'],
-            "name": app['name'],
+            "name": launcher_app_display_name(app),
             "description": app.get('description'),
             "logo_url": app.get('logo_url'),
             "home_url": app.get('home_url'),
@@ -3529,7 +3531,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
         usage = usage_map.get(app["id"], {"count": 0, "last_used": ""})
         accessible_apps.append({
             "id": app['id'],
-            "name": app['name'],
+            "name": launcher_app_display_name(app),
             "description": app.get('description'),
             "logo_url": app.get('logo_url'),
             "type": "mobile",
@@ -3656,13 +3658,13 @@ async def get_app_catalog(user: dict = Depends(get_current_user)):
     for app in saml_apps:
         if is_reports_app(app) and not can_see_reports:
             continue
-        if (is_rmc_p2p_app(app) or is_procure2pay_app(app)) and not user_can_see_launcher_app(user, app):
+        if (is_rmc_p2p_app(app) or is_procure2pay_app(app) or is_rex_app(app)) and not user_can_see_launcher_app(user, app):
             continue
         has_access = await check_user_app_access(user, app)
         # requires_approval is always true - explicit assignment needed
         catalog.append({
             "id": app['id'],
-            "name": app['name'],
+            "name": launcher_app_display_name(app),
             "description": app.get('description'),
             "logo_url": app.get('logo_url'),
             "type": "saml",
@@ -3673,12 +3675,12 @@ async def get_app_catalog(user: dict = Depends(get_current_user)):
     for app in oidc_apps:
         if is_reports_app(app) and not can_see_reports:
             continue
-        if (is_rmc_p2p_app(app) or is_procure2pay_app(app)) and not user_can_see_launcher_app(user, app):
+        if (is_rmc_p2p_app(app) or is_procure2pay_app(app) or is_rex_app(app)) and not user_can_see_launcher_app(user, app):
             continue
         has_access = await check_user_app_access(user, app)
         catalog.append({
             "id": app['id'],
-            "name": app['name'],
+            "name": launcher_app_display_name(app),
             "description": app.get('description'),
             "logo_url": app.get('logo_url'),
             "type": "oidc",

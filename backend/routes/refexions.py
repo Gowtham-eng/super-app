@@ -280,6 +280,13 @@ def register_refexions_routes(
         if user.get("role") not in ("org_admin", "admin", "super_admin", "owner"):
             raise HTTPException(status_code=403, detail="Admin only")
 
+    def _require_agentic_ai(user: dict = Depends(get_current_user)):
+        from services.launcher_access import user_can_see_agentic_ai
+
+        if not user_can_see_agentic_ai(user):
+            raise HTTPException(status_code=403, detail="agentic AI is not enabled for this account")
+        return user
+
     def _legacy_settings() -> Dict[str, str]:
         from routes.itsm import (
             resolve_refexions_ml_url,
@@ -330,7 +337,7 @@ def register_refexions_routes(
         return []
 
     @api_router.get("/refexions/main-menu")
-    async def main_menu(user: dict = Depends(get_current_user)):
+    async def main_menu(user: dict = Depends(_require_agentic_ai)):
         void = user
         del void
         doc = await load_setup(db, _legacy_settings())
@@ -339,7 +346,7 @@ def register_refexions_routes(
     @api_router.get("/refexions/sub-menu")
     async def sub_menu(
         main: str = Query(..., min_length=1),
-        user: dict = Depends(get_current_user),
+        user: dict = Depends(_require_agentic_ai),
     ):
         void = user
         del void
@@ -347,14 +354,14 @@ def register_refexions_routes(
         return chat_sub_menu(doc, main)
 
     @api_router.get("/refexions/policies")
-    async def list_policies(user: dict = Depends(get_current_user)):
+    async def list_policies(user: dict = Depends(_require_agentic_ai)):
         void = user  # auth required
         del void
         doc = await load_setup(db, _legacy_settings())
         return chat_policies(doc)
 
     @api_router.get("/refexions/faq")
-    async def list_faq(user: dict = Depends(get_current_user)):
+    async def list_faq(user: dict = Depends(_require_agentic_ai)):
         void = user
         del void
         doc = await load_setup(db, _legacy_settings())
@@ -375,7 +382,7 @@ def register_refexions_routes(
     @api_router.post("/refexions/faq/match")
     async def match_faq_route(
         body: FaqMatchRequest,
-        user: dict = Depends(get_current_user),
+        user: dict = Depends(_require_agentic_ai),
     ):
         void = user
         del void
@@ -488,7 +495,7 @@ def register_refexions_routes(
     @api_router.post("/refexions/it/match")
     async def match_it_subtype(
         body: ItMatchRequest,
-        user: dict = Depends(get_current_user),
+        user: dict = Depends(_require_agentic_ai),
     ):
         text = (body.mail_body or "").strip()
         if not text:
@@ -531,7 +538,7 @@ def register_refexions_routes(
     @api_router.post("/refexions/app-support")
     async def create_app_support(
         body: AppSupportRequest,
-        user: dict = Depends(get_current_user),
+        user: dict = Depends(_require_agentic_ai),
     ):
         from services.refexions_store import DEFAULT_APP_SUPPORT_WEBHOOK, load_setup
 
@@ -569,7 +576,7 @@ def register_refexions_routes(
     @api_router.post("/refexions/it/create")
     async def create_it_ticket(
         body: ItCreateRequest,
-        user: dict = Depends(get_current_user),
+        user: dict = Depends(_require_agentic_ai),
     ):
         name = (body.name or user.get("name") or "").strip()
         email = _policy_recipient_email(body.email, user.get("email"))
@@ -679,7 +686,7 @@ def register_refexions_routes(
     @api_router.post("/refexions/policies/send")
     async def send_policy(
         body: PolicySendRequest,
-        user: dict = Depends(get_current_user),
+        user: dict = Depends(_require_agentic_ai),
     ):
         setup_doc = await load_setup(db, _legacy_settings())
         policy = policy_by_id(body.document_id, setup_doc) or _policy_by_id(body.document_id)

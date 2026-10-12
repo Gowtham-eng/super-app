@@ -172,7 +172,9 @@ describe('Rex / agentic AI visibility', () => {
 
   it('renames Rex to agentic AI and shows it only to the allowlisted accounts', () => {
     expect(isRexApp(rex)).toBe(true);
+    expect(isRexApp({ name: 'Rex refex executive agent' })).toBe(true);
     expect(isRexApp({ name: 'Refexions' })).toBe(false);
+    expect(launcherAppDisplayName({ name: 'Rex refex executive agent' })).toBe('agentic AI');
     expect(launcherAppDisplayName(rex)).toBe('agentic AI');
     expect(userCanSeeAgenticAi(allowed)).toBe(true);
     expect(userCanSeeAgenticAi({ email: 'yash@refex.co.in' })).toBe(true);

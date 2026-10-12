@@ -127,17 +127,6 @@ export function isProcure2PayApp(app = {}) {
   return compact.includes('procure2pay') || compact.includes('procurementtopay');
 }
 
-/** Launcher tile stored as Rex. Display name is agentic AI. */
-export function isRexApp(app = {}) {
-  const name = String(app.name || '').trim().toLowerCase();
-  return name === 'rex' || name === AGENTIC_AI_LABEL.toLowerCase();
-}
-
-export function launcherAppDisplayName(app = {}) {
-  if (isRexApp(app)) return AGENTIC_AI_LABEL;
-  return app.name || '';
-}
-
 function userEmail(user = {}) {
   return String(user?.email || '').trim().toLowerCase();
 }
@@ -149,6 +138,21 @@ export function userCanSeeRmcP2p(user = {}) {
 
 export function userCanSeeProcure2Pay(user = {}) {
   return !RMC_P2P_EMAILS.includes(userEmail(user));
+}
+
+/** Rex / Refex Executive Agent tile. Not the Refexions admin setup page. */
+export function isRexApp(app = {}) {
+  const id = String(app.id || '').trim().toLowerCase();
+  if (id === 'rex') return true;
+  const name = String(app.name || '').trim();
+  if (/\brex\b/i.test(name)) return true;
+  const compact = compactAppName(`${name} ${app.description || ''}`);
+  return compact.includes('refexexecutiveagent');
+}
+
+export function launcherAppDisplayName(app = {}) {
+  if (isRexApp(app)) return AGENTIC_AI_LABEL;
+  return app.name || '';
 }
 
 export function userCanSeeAgenticAi(user = {}) {
