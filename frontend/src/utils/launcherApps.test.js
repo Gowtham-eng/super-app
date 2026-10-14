@@ -185,8 +185,6 @@ describe('Rex / agentic AI visibility', () => {
     expect(isRexApp(rex)).toBe(true);
     expect(isRexApp({ name: 'Rex refex executive agent' })).toBe(true);
     expect(isRexApp({ name: 'Refexions' })).toBe(false);
-    // Refexions chat stays on the launcher for every signed-in user.
-    // Only the Rex / agentic AI tile uses this allowlist.
     expect(launcherAppDisplayName({ name: 'Rex refex executive agent' })).toBe('agentic AI');
     expect(launcherAppDisplayName(rex)).toBe('agentic AI');
     expect(userCanSeeAgenticAi(allowed)).toBe(true);
