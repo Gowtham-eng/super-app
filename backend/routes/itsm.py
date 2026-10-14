@@ -98,8 +98,12 @@ ENTITY_WEBHOOK_PATHS = {
 }
 ENTITY_OPTIONS_FALLBACK = ["Refex", "Extrovis", "ModePro", "Kavis", "Pharma Pack"]
 NON_REFEX_LOCATION_DATAFORM_ID = "Non_Refex_Location_Dataform_A00"
+SAP_MODULE_LIST_ID = "List_SAP_Module_A00"
+SAP_MODULE_FALLBACK = ["PP/QM", "MM", "PM", "SD", "BASIS", "FI", "Security", "WM", "CO", "PS"]
 _LOCATION_CACHE: Dict[str, Tuple[float, List[Dict[str, str]]]] = {}
 _LOCATION_CACHE_TTL_SEC = 10 * 60
+_SAP_MODULE_CACHE: Dict[str, Tuple[float, List[str]]] = {}
+_SAP_MODULE_CACHE_TTL_SEC = 10 * 60
 
 
 def normalize_non_refex_entity_key(value: str) -> str:
@@ -445,11 +449,13 @@ class TicketSubmitRequest(BaseModel):
     email: EmailStr
     entity: str = Field(..., min_length=1)
     location: str = Field(..., min_length=1)
-    sub_type: str = Field(..., min_length=1)
-    criticality: str = Field(..., min_length=1)
+    sub_type: str = ""
+    criticality: str = ""
     description: str = Field(..., min_length=1)
     subject: str = ""
     attachments: List[str] = Field(default_factory=list)
+    sap: bool = False
+    sap_module: str = ""
 
 
 class EntityConfigUpsert(BaseModel):
@@ -557,6 +563,13 @@ def _response_is_kissflow_challenge(response: Any) -> bool:
     return False
 
 
+def _as_bool_flag(value: Any) -> bool:
+    if value is True or value == 1:
+        return True
+    text = str(value or "").strip().lower()
+    return text in ("true", "yes", "1")
+
+
 def _as_string(value: Any) -> str:
     if value is None:
         return ""
@@ -573,6 +586,38 @@ def _as_string(value: Any) -> str:
     if isinstance(value, list) and value:
         return _as_string(value[0])
     return str(value).strip()
+
+
+def parse_sap_module_list(payload: Any) -> List[str]:
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        rows = payload.get("Data") or payload.get("data") or payload.get("Items") or payload.get("items") or []
+    else:
+        rows = []
+    seen: Set[str] = set()
+    out: List[str] = []
+    for row in rows:
+        if isinstance(row, str):
+            name = row.strip()
+        elif isinstance(row, dict):
+            name = _as_string(
+                row.get("Name")
+                or row.get("name")
+                or row.get("SAP_Module")
+                or row.get("Module")
+                or row.get("Value")
+            )
+        else:
+            name = ""
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out or list(SAP_MODULE_FALLBACK)
 
 
 def _field_text(value: Any) -> str:
@@ -749,6 +794,8 @@ def _ticket_webhook_body(
     description: str,
     subject: str = "",
     attachments: Optional[List[str]] = None,
+    sap: bool = False,
+    sap_module: str = "",
 ) -> Dict[str, Any]:
     """Kissflow create webhook JSON. Non-Refex includes mandatory Subject after Location_user."""
     if _uses_extrovis_flow(entity):
@@ -760,9 +807,11 @@ def _ticket_webhook_body(
             "Entity": entity,
             "Location_user": location,
             "Subject": subject,
-            "Sub_Type": sub_type,
-            "Criticality": criticality,
+            "Sub_Type": "" if sap else sub_type,
+            "Criticality": "" if sap else criticality,
             "Description": description,
+            "SAP": bool(sap),
+            "Sap_Module": (sap_module or "").strip() if sap else "",
         }
     else:
         body = {
@@ -2377,6 +2426,8 @@ REPORT_FIELD_IDS = {
         "solution_table_comments_type": ["Column_x6WUN8QD4O", "Comments_2"],
         "solution_table_attachments": ["Attachments", "attachments", "Column_zXMX1EDrCx"],
         "subject": ["Column_HEiwMtIBBO", "Subject"],
+        "sap": ["Column_l8-JThY4eN", "SAP"],
+        "sap_module": ["Column_xAD9rXgk8-", "SAP_Module", "Sap_Module"],
         "stages": ["Status", "Column_JUGHj6d2Xj", "Stages"],
     },
 }
@@ -4695,6 +4746,15 @@ def _parse_report_ticket(
             *field_ids.get("subject", []),
             "Subject",
         )
+    sap = _as_bool_flag(
+        _raw_field(data, *field_ids.get("sap", []), "SAP", "Column_l8-JThY4eN")
+    )
+    sap_module = _lookup_field(
+        data,
+        *field_ids.get("sap_module", []),
+        "SAP_Module",
+        "Column_xAD9rXgk8-",
+    ) if sap else ""
     item_status = _lookup_field(
         data,
         *field_ids["item_status"],
@@ -4823,6 +4883,8 @@ def _parse_report_ticket(
         "id": instance_id,
         "requestId": request_id or "—",
         "subject": subject,
+        "sap": sap,
+        "sapModule": sap_module,
         "description": description,
         "ticketType": _lookup_field(
             data,
@@ -4953,6 +5015,8 @@ def _public_local_ticket(doc: Dict[str, Any]) -> Dict[str, Any]:
         "localId": doc.get("id"),
         "requestId": doc.get("kissflow_request_id") or "—",
         "subject": doc.get("subject") or "",
+        "sap": bool(doc.get("sap")),
+        "sapModule": doc.get("sap_module") or "",
         "description": doc.get("description") or "",
         "ticketType": doc.get("ticket_type") or "",
         "category": doc.get("category") or "",
@@ -5161,6 +5225,7 @@ class TicketCommentRequest(BaseModel):
     category: Optional[str] = None
     subject: Optional[str] = None
     requester_name: Optional[str] = None
+    assigned_to: Optional[str] = None
 
 
 class KissflowEntityApis(BaseModel):
@@ -5948,6 +6013,56 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
         }
 
+    async def _fetch_sap_modules(cfg: Dict[str, Any]) -> List[str]:
+        account_id = (cfg.get("account_id") or "").strip()
+        app_id = (cfg.get("application_id") or "IT_Service_Management_A00").strip()
+        base = (cfg.get("kissflow_base_url") or "").rstrip("/")
+        cache_key = f"{base}|{account_id}|{SAP_MODULE_LIST_ID}|{app_id}"
+        cached = _SAP_MODULE_CACHE.get(cache_key)
+        if cached and (time.monotonic() - cached[0]) < _SAP_MODULE_CACHE_TTL_SEC:
+            return list(cached[1])
+        path = (
+            f"/flow/2/{account_id}/list/{SAP_MODULE_LIST_ID}/items"
+            f"?_application_id={app_id}"
+        )
+        url = f"{base}{path}"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=_kissflow_headers(cfg))
+            if response.status_code >= 400:
+                logger.warning(
+                    "SAP module list HTTP %s url=%s",
+                    response.status_code,
+                    url,
+                )
+                return list(SAP_MODULE_FALLBACK)
+            modules = parse_sap_module_list(response.json())
+            _SAP_MODULE_CACHE[cache_key] = (time.monotonic(), modules)
+            return list(modules)
+        except Exception as exc:
+            logger.warning("SAP module list skipped: %s", exc)
+            return list(SAP_MODULE_FALLBACK)
+
+    @api_router.get("/itsm/sap-modules")
+    async def get_sap_modules(
+        entity: Optional[str] = Query(None),
+        environment: Optional[str] = Query(None),
+        user: dict = Depends(get_current_user),
+    ):
+        """SAP module list — same Kissflow keys as Quick Search / approval matrix."""
+        org_id = user.get("org_id") or ""
+        cfg = await _resolve_config(
+            org_id,
+            entity,
+            force_env=_client_env_name(environment),
+        )
+        modules = await _fetch_sap_modules(cfg)
+        return {
+            "modules": modules,
+            "resolved_entity": entity,
+            "kissflowBaseUrl": cfg.get("kissflow_base_url") or "",
+        }
+
     @api_router.get("/itsm/approval-matrix")
     async def get_approval_matrix(
         entity: Optional[str] = Query(None),
@@ -6016,21 +6131,31 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         sub_type = body.sub_type.strip()
         criticality = body.criticality.strip()
         description = body.description.strip()
+        sap = bool(body.sap)
+        sap_module = (body.sap_module or "").strip()
 
         if not entity:
             raise HTTPException(status_code=400, detail="Entity is required")
         if not location:
             raise HTTPException(status_code=400, detail="Location is required")
-        if criticality not in CRITICALITY_OPTIONS:
-            raise HTTPException(status_code=400, detail="Invalid criticality")
         if not description:
             raise HTTPException(status_code=400, detail="Description is required")
         if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
             raise HTTPException(status_code=400, detail="Invalid email")
+        if sap and not _uses_extrovis_flow(entity):
+            raise HTTPException(status_code=400, detail="SAP tickets are only supported for Non-Refex.")
+        if sap and not sap_module:
+            raise HTTPException(status_code=400, detail="SAP Module is required.")
+        if not sap and criticality not in CRITICALITY_OPTIONS:
+            raise HTTPException(status_code=400, detail="Invalid criticality")
+        if not sap and not sub_type:
+            raise HTTPException(status_code=400, detail="Please select a service from Quick Search")
 
         from services.itsm_ticket_attachments import normalize_attachment_urls
 
         attachment_urls = normalize_attachment_urls(body.attachments)
+        if sap and not attachment_urls:
+            raise HTTPException(status_code=400, detail="Attachment is required for SAP tickets.")
         cfg = await _resolve_config(user.get("org_id") or "", entity)
         if not cfg.get("webhook_path") or not cfg.get("access_key_secret"):
             raise HTTPException(
@@ -6053,6 +6178,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             description=description,
             subject=subject,
             attachments=attachment_urls,
+            sap=sap,
+            sap_module=sap_module,
         )
 
         now = datetime.now(timezone.utc).isoformat()
@@ -6068,6 +6195,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             "sub_type": sub_type,
             "criticality": criticality,
             "subject": subject,
+            "sap": sap,
+            "sap_module": sap_module,
             "description": description,
             "local_status": "pending",
             "kissflow_env": active_env,
@@ -7146,6 +7275,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             category=(body.category or "").strip(),
             subject=(body.subject or "").strip(),
             ticket_requester_name=(body.requester_name or "").strip(),
+            assigned_to=(body.assigned_to or "").strip(),
             files=[],
         )
 
@@ -7165,6 +7295,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         category: str = "",
         subject: str = "",
         ticket_requester_name: str = "",
+        assigned_to: str = "",
         files: Optional[List[UploadFile]] = None,
     ) -> Dict[str, Any]:
         uploads = [item for item in (files or []) if item is not None]
@@ -7354,6 +7485,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                         ticket_type=ticket_type,
                         category=category,
                         subject=subject,
+                        assigned_to=(assigned_to if assigned_to and assigned_to != "—" else live_assignee),
                     )
                 except Exception as exc:
                     logger.warning("ITSM comment notify schedule failed instance=%s: %s", instance_id, exc)
@@ -7480,6 +7612,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             category=str(form.get("category") or "").strip(),
             subject=str(form.get("subject") or "").strip(),
             ticket_requester_name=str(form.get("requester_name") or "").strip(),
+            assigned_to=str(form.get("assigned_to") or "").strip(),
             files=uploads,
         )
 

@@ -294,6 +294,10 @@ const TicketDetailsPanel = ({
   const ticketType = firstTicketText(ticket, ['ticketType', 'Ticket_Type', 'requestType']);
   const category = firstTicketText(ticket, ['category', 'Category']);
   const subCategory = firstTicketText(ticket, ['subCategory', 'SubCategory', 'sub_category']);
+  const sapModule = firstTicketText(ticket, ['sapModule', 'SAP_Module', 'sap_module']);
+  const sapTicket = ticket?.sap === true
+    || ticket?.sap === 1
+    || /^(true|yes|1)$/i.test(String(ticket?.sap ?? '').trim());
   const description = firstTicketText(ticket, ['description', 'Description']);
   return (
     <aside
@@ -302,18 +306,33 @@ const TicketDetailsPanel = ({
     >
       <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Ticket details</p>
       <dl className="mt-2 space-y-2.5">
-        <div>
-          <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Ticket Type</dt>
-          <dd className="mt-0.5 text-sm font-medium text-slate-800">{ticketType || '—'}</dd>
-        </div>
-        <div>
-          <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Category</dt>
-          <dd className="mt-0.5 text-sm font-medium text-slate-800">{category || '—'}</dd>
-        </div>
-        <div>
-          <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Sub Category</dt>
-          <dd className="mt-0.5 text-sm font-medium text-slate-800">{subCategory || '—'}</dd>
-        </div>
+        {sapTicket ? (
+          <>
+            <div>
+              <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">SAP</dt>
+              <dd className="mt-0.5 text-sm font-medium text-slate-800">Yes</dd>
+            </div>
+            <div>
+              <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">SAP Module</dt>
+              <dd className="mt-0.5 text-sm font-medium text-slate-800">{sapModule || '—'}</dd>
+            </div>
+          </>
+        ) : (
+          <>
+            <div>
+              <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Ticket Type</dt>
+              <dd className="mt-0.5 text-sm font-medium text-slate-800">{ticketType || '—'}</dd>
+            </div>
+            <div>
+              <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Category</dt>
+              <dd className="mt-0.5 text-sm font-medium text-slate-800">{category || '—'}</dd>
+            </div>
+            <div>
+              <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Sub Category</dt>
+              <dd className="mt-0.5 text-sm font-medium text-slate-800">{subCategory || '—'}</dd>
+            </div>
+          </>
+        )}
         <div>
           <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Description</dt>
           <dd className="mt-0.5 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{description || '—'}</dd>
@@ -1943,6 +1962,7 @@ const ITSMDashboard = () => {
         if (ticket.category) form.append('category', ticket.category);
         if (ticket.subject) form.append('subject', ticket.subject);
         if (ticket.requesterName) form.append('requester_name', ticket.requesterName);
+        if (ticket.assignedTo) form.append('assigned_to', ticket.assignedTo);
         fileList.forEach((file) => form.append('files', file));
         res = await axios.post(`${ITSM_API}/itsm/reports/comment-with-files`, form, {
           headers: { Authorization: auth.headers?.Authorization },
@@ -1965,6 +1985,7 @@ const ITSMDashboard = () => {
             category: ticket.category || undefined,
             subject: ticket.subject || undefined,
             requester_name: ticket.requesterName || undefined,
+            assigned_to: ticket.assignedTo || undefined,
           },
           auth
         );

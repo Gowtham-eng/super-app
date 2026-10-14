@@ -11,6 +11,7 @@ from routes.itsm import (
     _resolve_webhook_path,
     _ticket_webhook_body,
     _webhook_belongs_to_account,
+    parse_sap_module_list,
 )
 from services.itsm_ticket_attachments import (
     TICKET_ATTACHMENT_MAX_FILE_BYTES,
@@ -77,6 +78,37 @@ def test_non_refex_webhook_includes_attachment_array():
     )
     assert body["Attachment"] == ["https://example.com/a.png"]
     assert body["Subject"] == "Laptop"
+    assert body["SAP"] is False
+    assert body["Sap_Module"] == ""
+    assert body["Sub_Type"] == "Hardware"
+    assert body["Criticality"] == "Low"
+
+
+def test_non_refex_sap_webhook_uses_module_not_catalog():
+    body = _ticket_webhook_body(
+        process_id="Live_IT_Service_Request_Extrovis_A00",
+        name="A",
+        email="a@extrovis.com",
+        entity="Extrovis",
+        location="EPL-I",
+        sub_type="Access Permission Denied",
+        criticality="Medium",
+        description="SAP dump failed",
+        subject="SD dump",
+        attachments=["https://example.com/dump.png"],
+        sap=True,
+        sap_module="SD",
+    )
+    assert body["SAP"] is True
+    assert body["Sap_Module"] == "SD"
+    assert body["Sub_Type"] == ""
+    assert body["Criticality"] == ""
+    assert body["Subject"] == "SD dump"
+
+
+def test_parse_sap_module_list_accepts_array_or_data_rows():
+    assert parse_sap_module_list(["PP/QM", "MM", "SD"]) == ["PP/QM", "MM", "SD"]
+    assert parse_sap_module_list({"Data": [{"Name": "FI"}, {"Name": "CO"}]}) == ["FI", "CO"]
 
 
 def test_normalize_attachment_urls_list_and_string():

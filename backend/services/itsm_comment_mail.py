@@ -30,6 +30,45 @@ def comment_mail_subject(request_id: str) -> str:
     return f"Tech Help Desk - New Comment Added | Ticket {ticket}"
 
 
+def assigned_greeting_name(*values: Any) -> str:
+    """First human assignee first name — Dear Vishnu, not Dear IT Support."""
+    for value in values:
+        name = _first_human_assignee_name(value)
+        if name:
+            return name
+    return "IT Support"
+
+
+def _first_human_assignee_name(value: Any) -> str:
+    if value is None or value == "" or value == "—":
+        return ""
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            name = _first_human_assignee_name(item)
+            if name:
+                return name
+        return ""
+    if isinstance(value, dict):
+        kind = str(value.get("Kind") or value.get("kind") or "").strip().lower()
+        if kind in ("approle", "role"):
+            return ""
+        return _first_human_assignee_name(value.get("Name") or value.get("name") or "")
+    text = str(value).strip()
+    if "," in text:
+        for part in text.split(","):
+            name = _first_human_assignee_name(part.strip())
+            if name:
+                return name
+        return ""
+    text = text.replace(" (user)", "").replace(" (role)", "").strip()
+    low = text.lower()
+    if not text or "it agent" in low or "itsm bot" in low or low == "bot":
+        return ""
+    if "@" in text:
+        return text.split("@", 1)[0].split(".")[0].split("_")[0].capitalize()
+    return text.split()[0]
+
+
 def _display(value: Any, fallback: str = "—") -> str:
     text = str(value or "").strip()
     return text or fallback
@@ -86,6 +125,7 @@ def build_employee_comment_mail_payload(
     ticket_type: str = "",
     category: str = "",
     subject: str = "",
+    assigned_to: str = "",
 ) -> Dict[str, Any]:
     return {
         "to": list(SUPPORT_TO),
@@ -94,7 +134,7 @@ def build_employee_comment_mail_payload(
         "html": build_comment_mail_html(
             request_id=request_id,
             requester_name=requester_name,
-            greeting_name="IT Support",
+            greeting_name=assigned_greeting_name(assigned_to),
             ticket_type=ticket_type,
             category=category,
             subject=subject,
@@ -117,6 +157,7 @@ async def queue_employee_comment_mail(
     ticket_type: str = "",
     category: str = "",
     subject: str = "",
+    assigned_to: str = "",
 ) -> Optional[Dict[str, Any]]:
     payload = build_employee_comment_mail_payload(
         request_id=request_id,
@@ -127,6 +168,7 @@ async def queue_employee_comment_mail(
         ticket_type=ticket_type,
         category=category,
         subject=subject,
+        assigned_to=assigned_to,
     )
     url = f"{comment_mail_url()}/v1/send"
     try:

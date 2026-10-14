@@ -41,6 +41,7 @@ import {
 } from '../utils/itsmTicketAttachments';
 
 const MANUAL_CRITICALITY = ['Low', 'Medium', 'High'];
+const SAP_MODULE_FALLBACK = ['PP/QM', 'MM', 'PM', 'SD', 'BASIS', 'FI', 'Security', 'WM', 'CO', 'PS'];
 
 /** Create form catalog: Incident + Service Request only (no Change Request). */
 const ALLOWED_TICKET_TYPES = ['incident', 'service request'];
@@ -180,6 +181,11 @@ const CreateITRequest = () => {
   const [isListening, setIsListening] = useState(false);
   const [isSearchPending, setIsSearchPending] = useState(false);
 
+  /** Non-Refex only: SAP ticket skips catalog; default No. */
+  const [isSapTicket, setIsSapTicket] = useState(false);
+  const [sapModule, setSapModule] = useState('');
+  const [sapModules, setSapModules] = useState(SAP_MODULE_FALLBACK);
+  const [loadingSapModules, setLoadingSapModules] = useState(false);
   /** Non-Refex only: No = quick search; Yes = cascade from matrix. */
   const [manualEdit, setManualEdit] = useState(false);
   const [cascade, setCascade] = useState({
@@ -200,7 +206,7 @@ const CreateITRequest = () => {
   const micStopRequestedRef = useRef(false);
 
   const isRefex = isRefexEntity(profile.entity);
-  const useManualCascade = !isRefex && manualEdit;
+  const useManualCascade = !isRefex && !isSapTicket && manualEdit;
   const locationOptions = useMemo(() => {
     if (isRefex) return LOCATION_OPTIONS;
     return locationCatalog
@@ -314,14 +320,24 @@ const CreateITRequest = () => {
     profile.entity.trim() &&
     profile.location.trim();
 
-  const canSubmit =
-    !!selectedMatrix &&
-    (!isRefex || !!selectedSubType.trim()) &&
-    !!criticality &&
-    description.trim().length > 0 &&
-    (isRefex || subject.trim().length > 0) &&
-    profileComplete &&
-    !submitting;
+  const canSubmit = isSapTicket
+    ? Boolean(
+      profileComplete
+      && sapModule.trim()
+      && subject.trim()
+      && description.trim()
+      && attachments.length
+      && !submitting
+    )
+    : (
+      !!selectedMatrix &&
+      (!isRefex || !!selectedSubType.trim()) &&
+      !!criticality &&
+      description.trim().length > 0 &&
+      (isRefex || subject.trim().length > 0) &&
+      profileComplete &&
+      !submitting
+    );
 
   const filteredOptions = useMemo(() => {
     const q = debouncedQuery.trim().toLowerCase();
@@ -457,6 +473,36 @@ const CreateITRequest = () => {
   useEffect(() => {
     if (!profile.entity.trim()) return;
     fetchMatrix(profile.entity.trim());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile.entity]);
+
+  useEffect(() => {
+    const entity = profile.entity.trim();
+    if (!entity || isRefexEntity(entity)) {
+      setSapModules(SAP_MODULE_FALLBACK);
+      return;
+    }
+    let cancelled = false;
+    const loadSapModules = async () => {
+      setLoadingSapModules(true);
+      try {
+        const res = await axios.get(`${itsmApi}/itsm/sap-modules`, {
+          ...getAuthHeader(),
+          params: { entity },
+        });
+        if (cancelled) return;
+        const next = Array.isArray(res.data?.modules) ? res.data.modules.filter(Boolean) : [];
+        setSapModules(next.length ? next : SAP_MODULE_FALLBACK);
+      } catch {
+        if (!cancelled) setSapModules(SAP_MODULE_FALLBACK);
+      } finally {
+        if (!cancelled) setLoadingSapModules(false);
+      }
+    };
+    loadSapModules();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile.entity]);
 
@@ -730,6 +776,8 @@ const CreateITRequest = () => {
     setSubmitted(false);
     setSubmitStatus('created');
     setManualEdit(false);
+    setIsSapTicket(false);
+    setSapModule('');
     setCascade({ ticketType: '', category: '', subCategory: '', subType: '', type: '' });
     setManualCriticality('Medium');
     setAttachments([]);
@@ -756,17 +804,24 @@ const CreateITRequest = () => {
   };
 
   const handleSubmit = async () => {
-    if (!selectedMatrix) {
-      return toast.error(
-        useManualCascade
-          ? 'Please complete ticket type, category, and related fields'
-          : 'Please select a service from Quick Search'
-      );
-    }
-    if (!criticality) return toast.error('Criticality is required.');
-    if (!isRefex && !subject.trim()) return toast.error('Subject is required');
-    if (!description.trim()) return toast.error('Description is required');
     if (!profileComplete) return toast.error('Please complete your personal details first.');
+    if (isSapTicket) {
+      if (!sapModule.trim()) return toast.error('SAP Module is required.');
+      if (!subject.trim()) return toast.error('Subject is required');
+      if (!description.trim()) return toast.error('Description is required');
+      if (!attachments.length) return toast.error('Attachment is required for SAP tickets.');
+    } else {
+      if (!selectedMatrix) {
+        return toast.error(
+          useManualCascade
+            ? 'Please complete ticket type, category, and related fields'
+            : 'Please select a service from Quick Search'
+        );
+      }
+      if (!criticality) return toast.error('Criticality is required.');
+      if (!isRefex && !subject.trim()) return toast.error('Subject is required');
+      if (!description.trim()) return toast.error('Description is required');
+    }
 
     setSubmitting(true);
     try {
@@ -795,9 +850,13 @@ const CreateITRequest = () => {
           email: profile.email.trim(),
           entity: profile.entity.trim(),
           location: profile.location.trim(),
-          sub_type: recordServiceLabel(selectedMatrix) || selectedSubType || cascade.subType,
-          criticality,
+          sub_type: isSapTicket
+            ? ''
+            : (recordServiceLabel(selectedMatrix) || selectedSubType || cascade.subType),
+          criticality: isSapTicket ? '' : criticality,
           description: description.trim(),
+          sap: isSapTicket,
+          sap_module: isSapTicket ? sapModule.trim() : '',
           ...(isRefex ? {} : { subject: subject.trim() }),
           ...(attachmentUrls.length ? { attachments: attachmentUrls } : {}),
         },
@@ -820,6 +879,7 @@ const CreateITRequest = () => {
 
   const showSuggestions =
     profileComplete &&
+    !isSapTicket &&
     !useManualCascade &&
     !loadingMatrix &&
     debouncedQuery.trim().length > 0 &&
@@ -1004,6 +1064,72 @@ const CreateITRequest = () => {
 
           {!isRefex && (
             <section className="form-section !mb-0 lg:col-span-12">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <h2 className="form-section-title !mb-1">Is a SAP Ticket <span className="text-red-500">*</span></h2>
+                  <p className="text-xs text-slate-500">
+                    Default is No. Choose Yes to pick a SAP module instead of Quick Search.
+                  </p>
+                </div>
+                <div className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSapTicket(false);
+                      setSapModule('');
+                    }}
+                    className={`px-4 py-2 rounded-lg text-sm font-semibold ${
+                      !isSapTicket ? 'bg-white text-emerald-800 shadow-sm border border-emerald-100' : 'text-slate-500'
+                    }`}
+                    data-testid="itsm-sap-ticket-no"
+                  >
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSapTicket(true);
+                      setManualEdit(false);
+                      setSearchQuery('');
+                      setDebouncedQuery('');
+                      setSelectedSubType('');
+                      setSelectedMatrix(null);
+                      setCascade({ ticketType: '', category: '', subCategory: '', subType: '', type: '' });
+                    }}
+                    className={`px-4 py-2 rounded-lg text-sm font-semibold ${
+                      isSapTicket ? 'bg-white text-emerald-800 shadow-sm border border-emerald-100' : 'text-slate-500'
+                    }`}
+                    data-testid="itsm-sap-ticket-yes"
+                  >
+                    Yes
+                  </button>
+                </div>
+              </div>
+              {isSapTicket && (
+                <div className="mt-4">
+                  <h3 className="text-sm font-semibold text-slate-700 mb-1">
+                    SAP Module <span className="text-red-500">*</span>
+                  </h3>
+                  <select
+                    value={sapModule}
+                    onChange={(e) => setSapModule(e.target.value)}
+                    className="input-brutalist w-full"
+                    data-testid="itsm-sap-module"
+                    required
+                    disabled={loadingSapModules}
+                  >
+                    <option value="">{loadingSapModules ? 'Loading modules…' : 'Select SAP module'}</option>
+                    {sapModules.map((opt) => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </section>
+          )}
+
+          {!isRefex && (
+            <section className="form-section !mb-0 lg:col-span-12">
               <h2 className="form-section-title">Subject <span className="text-red-500">*</span></h2>
               <p className="text-xs text-slate-500 mb-2">Short title for this request. Required before you can submit.</p>
               <input
@@ -1019,7 +1145,7 @@ const CreateITRequest = () => {
             </section>
           )}
 
-          {!isRefex && (
+          {!isRefex && !isSapTicket && (
             <section className="form-section !mb-0 lg:col-span-12">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div>
@@ -1065,7 +1191,7 @@ const CreateITRequest = () => {
             </section>
           )}
 
-          {!useManualCascade ? (
+          {!isSapTicket && !useManualCascade ? (
             <section className="form-section !mb-0 lg:col-span-7">
               <h2 className="form-section-title">
                 Quick Search{isRefex ? ' *' : ''}
@@ -1123,7 +1249,7 @@ const CreateITRequest = () => {
                 </div>
               )}
             </section>
-          ) : (
+          ) : !isSapTicket ? (
             <section className="form-section !mb-0 lg:col-span-7 space-y-3">
               <h2 className="form-section-title">Service details</h2>
               {loadingMatrix ? (
@@ -1217,16 +1343,28 @@ const CreateITRequest = () => {
                 </div>
               )}
             </section>
-          )}
+          ) : null}
 
           <aside
             className={`${
-              selectedMatrix || (useManualCascade && cascade.ticketType)
+              isSapTicket || selectedMatrix || (useManualCascade && cascade.ticketType)
                 ? 'flex'
                 : 'hidden lg:flex'
             } form-section !mb-0 lg:col-span-5 lg:row-span-3 lg:sticky lg:top-6 flex-col`}
           >
-            {selectedMatrix ? (
+            {isSapTicket ? (
+              <>
+                <div className="flex items-center gap-2 mb-4">
+                  <ClipboardList className="text-emerald-600" size={18} />
+                  <h2 className="form-section-title !mb-0">SAP request</h2>
+                </div>
+                <div className="grid grid-cols-1 gap-3">
+                  <InfoBlock label="SAP" value="Yes" highlight />
+                  <InfoBlock label="SAP Module" value={sapModule} />
+                  <InfoBlock label="Subject" value={subject} />
+                </div>
+              </>
+            ) : selectedMatrix ? (
               <>
                 <div className="flex items-center justify-between gap-3 mb-4">
                   <div className="flex items-center gap-2">
@@ -1339,8 +1477,12 @@ const CreateITRequest = () => {
           </section>
 
           <section className="form-section !mb-0 lg:col-span-7" data-testid="itsm-attachments">
-              <h2 className="form-section-title">Supporting Documents</h2>
-              <p className="text-xs text-slate-500 mb-3">Optional. {TICKET_ATTACHMENT_HINT}</p>
+              <h2 className="form-section-title">
+                Supporting Documents{isSapTicket ? <span className="text-red-500"> *</span> : ''}
+              </h2>
+              <p className="text-xs text-slate-500 mb-3">
+                {isSapTicket ? `Required for SAP tickets. ${TICKET_ATTACHMENT_HINT}` : `Optional. ${TICKET_ATTACHMENT_HINT}`}
+              </p>
               <input
                 ref={fileInputRef}
                 type="file"

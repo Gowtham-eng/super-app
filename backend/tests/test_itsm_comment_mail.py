@@ -2,6 +2,7 @@ from services.itsm_comment_mail import (
     REFEXONE_LOGO_URL,
     SUPPORT_CC,
     SUPPORT_TO,
+    assigned_greeting_name,
     build_comment_mail_html,
     build_employee_comment_mail_payload,
     comment_mail_subject,
@@ -18,12 +19,25 @@ def test_employee_payload_goes_to_support_list():
         request_id="EXT-1042",
         author_name="Aasik",
         comment="Please check this",
+        assigned_to="Vishnu Kumar",
     )
     assert payload["to"] == SUPPORT_TO
     assert payload["cc"] == SUPPORT_CC
     assert payload["from"] == "itsupport@extrovis.com"
     assert "EXT-1042" in payload["subject"]
     assert "Please check this" in payload["html"]
+    assert "Dear<strong" in payload["html"]
+    assert "Vishnu" in payload["html"]
+    assert "Dear IT Support" not in payload["html"]
+
+
+def test_assigned_greeting_uses_human_not_approle():
+    assert assigned_greeting_name("Vishnu (user)") == "Vishnu"
+    assert assigned_greeting_name([{"Kind": "AppRole", "Name": "IT Agents Extrovis"}]) == "IT Support"
+    assert assigned_greeting_name(
+        [{"Kind": "AppRole", "Name": "IT Agents Extrovis"}, {"Kind": "User", "Name": "Vishnu"}],
+    ) == "Vishnu"
+    assert assigned_greeting_name("Vishnu Kumar (user), IT Agents Extrovis (role)") == "Vishnu"
 
 
 def test_html_escapes_comment_text():

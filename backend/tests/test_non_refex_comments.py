@@ -742,7 +742,11 @@ def test_non_refex_webhook_includes_subject():
         "Sub_Type",
         "Criticality",
         "Description",
+        "SAP",
+        "Sap_Module",
     ]
+    assert body["SAP"] is False
+    assert body["Sap_Module"] == ""
     assert body["Subject"] == "Laptop is not working"
     assert body["Source"] == "Mobile"
     refex = _ticket_webhook_body(
