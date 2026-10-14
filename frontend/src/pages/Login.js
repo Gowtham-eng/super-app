@@ -239,10 +239,6 @@ const Login = ({ allowPasswordLogin = false }) => {
   useEffect(() => {
     if (!token) return undefined;
     if (!user) return undefined;
-    if (user.must_change_password) {
-      navigate('/', { replace: true });
-      return undefined;
-    }
 
     // Already logged in — resume pending app SSO (P2P email View, Feast/QR, etc.)
     if (resumePendingAppSso()) {
@@ -348,12 +344,7 @@ const Login = ({ allowPasswordLogin = false }) => {
         relayState: searchParams.get('relay_state') || existing.relayState,
         oidcRedirect: searchParams.get('oidc_redirect') || existing.oidcRedirect,
       });
-      const me = await login(email, password);
-      if (me?.must_change_password) {
-        toast.warning('Please set a new password before continuing');
-        navigate('/', { replace: true });
-        return;
-      }
+      await login(email, password);
       toast.success('Welcome back!');
       // Critical: resume P2P/SAML/OIDC immediately (don't rely only on useEffect)
       if (resumePendingAppSso()) {
@@ -373,7 +364,7 @@ const Login = ({ allowPasswordLogin = false }) => {
   const ssoPending = !!(ssoAppId || pendingSso.ssoApp || oidcRedirectPending);
 
   // Already signed in + app SSO resume: never flash the login form
-  if (token && ssoPending && !user?.must_change_password) {
+  if (token && ssoPending) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white" data-testid="login-oidc-resume">
         <div className="spinner" />

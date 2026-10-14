@@ -1031,12 +1031,11 @@ async def login(credentials: UserLogin, request: Request):
         # Master login is for support/debug only — never rewrite stored hashes or flags.
         pass
     elif is_default_user_password(offered):
-        must_change = True
-        # Default password login (admin reset / first-time HR password only).
+        # Welcome@2026 is allowed. Do not force a password-change popup.
         await db.users.update_many(
             email_filter,
             {"$set": {
-                "must_change_password": True,
+                "must_change_password": False,
                 "password_is_default": True,
                 "admin_known_password": offered,
             }},
@@ -1069,7 +1068,7 @@ async def get_me(user: dict = Depends(get_current_user)):
         **user,
         "organization": org,
         "rmc_p2p_access": user_can_see_rmc_p2p(user),
-        "must_change_password": bool(user.get("must_change_password")),
+        "must_change_password": False,
     }
 
 class ChangePasswordRequest(BaseModel):
@@ -1679,7 +1678,7 @@ async def reset_user_password(user_id: str, body: dict, request: Request, user: 
     update_fields = {
         "password": hashed,
         "password_changed_at": now,
-        "must_change_password": is_default_user_password(new_password),
+        "must_change_password": False,
         "password_is_default": is_default_user_password(new_password),
         "admin_known_password": new_password,
     }
