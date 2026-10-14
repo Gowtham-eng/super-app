@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import secrets
 import urllib.parse
 import uuid
@@ -49,14 +50,16 @@ class AzureADConfigUpdate(BaseModel):
 
 
 def _normalize_domains(domains: Optional[List[str]]) -> List[str]:
+    """Split comma-separated domains and drop the space after each comma."""
     out: List[str] = []
     seen = set()
-    for d in domains or []:
-        dom = (d or "").strip().lower().lstrip("@")
-        if not dom or dom in seen:
-            continue
-        seen.add(dom)
-        out.append(dom)
+    for raw in domains or []:
+        for piece in re.split(r"[,;\s]+", str(raw or "")):
+            dom = piece.strip().lower().lstrip("@")
+            if not dom or dom in seen:
+                continue
+            seen.add(dom)
+            out.append(dom)
     return out
 
 
@@ -463,8 +466,8 @@ def register_azure_ad_routes(
         if not email or "@" not in email:
             return fail("Microsoft account did not return an email address")
 
-        domain = email.split("@")[-1]
-        allowed = cfg.get("email_domains") or []
+        domain = email.split("@")[-1].strip().lower()
+        allowed = _normalize_domains(cfg.get("email_domains") or [])
         if allowed and domain not in allowed:
             return fail(f"Email domain @{domain} is not allowed for this Azure AD")
 

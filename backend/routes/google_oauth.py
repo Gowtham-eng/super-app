@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import secrets
 import urllib.parse
 import uuid
@@ -52,14 +53,16 @@ class GoogleOAuthConfigUpdate(BaseModel):
 
 
 def _normalize_domains(domains: Optional[List[str]]) -> List[str]:
+    """Split comma-separated domains and drop the space after each comma."""
     out: List[str] = []
     seen = set()
-    for d in domains or []:
-        dom = (d or "").strip().lower().lstrip("@")
-        if not dom or dom in seen:
-            continue
-        seen.add(dom)
-        out.append(dom)
+    for raw in domains or []:
+        for piece in re.split(r"[,;\s]+", str(raw or "")):
+            dom = piece.strip().lower().lstrip("@")
+            if not dom or dom in seen:
+                continue
+            seen.add(dom)
+            out.append(dom)
     return out
 
 
@@ -360,7 +363,9 @@ def register_google_oauth_routes(
             "prompt": "select_account",
         }
         hosted = (cfg.get("hosted_domain") or "").strip()
-        if hosted:
+        allowed_domains = _normalize_domains(cfg.get("email_domains") or [])
+        # hd locks the Google picker to one workspace. Skip it when several domains share this login.
+        if hosted and (not allowed_domains or allowed_domains == [hosted.lower()]):
             params["hd"] = hosted
 
         auth_url = GOOGLE_AUTH_URL + "?" + urllib.parse.urlencode(params)
@@ -450,14 +455,15 @@ def register_google_oauth_routes(
         if claims.get("email_verified") is False:
             return fail("Google email is not verified")
 
-        domain = email.split("@")[-1]
-        allowed = cfg.get("email_domains") or []
+        domain = email.split("@")[-1].strip().lower()
+        allowed = _normalize_domains(cfg.get("email_domains") or [])
         if allowed and domain not in allowed:
             return fail(f"Email domain @{domain} is not allowed for this Google login")
 
         hosted = (cfg.get("hosted_domain") or "").strip().lower()
         token_hd = (claims.get("hd") or "").strip().lower()
-        if hosted and token_hd and token_hd != hosted:
+        # A listed domain such as omegahires.com must still sign in when Hosted domain is refex.co.in.
+        if hosted and token_hd and token_hd != hosted and domain == hosted:
             return fail(f"Google account is not from workspace @{hosted}")
 
         import re as _re
