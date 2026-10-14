@@ -211,10 +211,12 @@ def _normalized_sa_info(info: Any) -> Optional[dict]:
     if not isinstance(info, Mapping):
         return None
     email = str(info.get("client_email") or "").strip()
-    key = str(info.get("private_key") or "").strip()
+    key = str(info.get("private_key") or "").strip().replace("\\n", "\n")
     if str(info.get("type") or "").strip() != "service_account" or not email or not key:
         return None
-    return dict(info)
+    out = dict(info)
+    out["private_key"] = key
+    return out
 
 
 def parse_gcs_service_account_json(raw: Any) -> dict:
@@ -239,9 +241,22 @@ def parse_gcs_service_account_json(raw: Any) -> dict:
 
 
 def set_gcs_service_account_info(info: Any) -> Optional[dict]:
+    """Keep the last good key. Empty Setup payloads must not wipe a working SA."""
     global _SA_INFO
-    _SA_INFO = _normalized_sa_info(info)
-    return _SA_INFO
+    parsed = _normalized_sa_info(info)
+    if parsed:
+        _SA_INFO = parsed
+        persist_gcs_credentials_file(parsed)
+    return _SA_INFO or parsed
+
+
+def apply_gcs_service_account_from_env_doc(doc: Any) -> Optional[dict]:
+    """Hydrate in-memory + disk SA from ITSM Setup / Mongo. Never clears a good key."""
+    if not isinstance(doc, Mapping):
+        return gcs_service_account_info()
+    shared = doc.get("shared") if isinstance(doc.get("shared"), Mapping) else {}
+    set_gcs_service_account_info(shared.get("gcs_service_account"))
+    return gcs_service_account_info()
 
 
 def public_gcs_credentials_status(

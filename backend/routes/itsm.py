@@ -1411,6 +1411,30 @@ def _is_comment_nested_table_step(name: str) -> bool:
     )
 
 
+def _live_comment_activity_ids(progress: Any, instance_id: str = "") -> List[str]:
+    """In-progress Solution / Dependency ids from already-loaded progress. Never Pickup."""
+    ids: List[str] = []
+    steps = _current_branch_steps(progress) or _iter_progress_steps(progress)
+    for step in steps or []:
+        token = _status_token(str(step.get("_status") or step.get("Status") or ""))
+        if token != "inprogress":
+            continue
+        name = _as_string(step.get("Name") or step.get("ActivityName")).strip()
+        if _is_pickup_step(name):
+            continue
+        lowered = name.lower()
+        if not (
+            _is_comment_nested_table_step(name)
+            or "dependenc" in lowered
+            or "solution" in lowered
+        ):
+            continue
+        for aid in _step_activity_ids(step, instance_id):
+            if aid and aid not in ids:
+                ids.append(aid)
+    return ids
+
+
 def _activity_instance_from_item(item: Dict[str, Any], instance_id: str = "") -> str:
     return _usable_activity_id(
         item.get("_activity_instance_id")
@@ -5132,6 +5156,11 @@ class TicketCommentRequest(BaseModel):
     commenter_name: Optional[str] = None
     environment: Optional[str] = None
     reopened: Optional[bool] = None
+    request_id: Optional[str] = None
+    ticket_type: Optional[str] = None
+    category: Optional[str] = None
+    subject: Optional[str] = None
+    requester_name: Optional[str] = None
 
 
 class KissflowEntityApis(BaseModel):
@@ -5203,30 +5232,36 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 doc = await db[ENV_COLLECTION].find_one({"scope": "global"}, {"_id": 0})
                 if doc:
                     _ENV_RUNTIME = dict(doc)
+                    _apply_gcs_from_env_doc(doc)
                     return doc
                 docs = await db[ENV_COLLECTION].find({}, {"_id": 0}).sort("updated_at", -1).to_list(20)
                 if docs:
                     _ENV_RUNTIME = dict(docs[0])
+                    _apply_gcs_from_env_doc(docs[0])
                     return docs[0]
             except Exception as exc:
                 _trip_itsm_db_circuit(exc)
                 logger.warning("ITSM env doc skipped (DB unavailable): %s", exc)
         if _ENV_RUNTIME:
+            _apply_gcs_from_env_doc(_ENV_RUNTIME)
             return dict(_ENV_RUNTIME)
         stored = _read_env_runtime_file()
         if stored:
             _ENV_RUNTIME = dict(stored)
+            _apply_gcs_from_env_doc(stored)
             return dict(stored)
         return None
+
+    def _apply_gcs_from_env_doc(doc: Optional[Dict[str, Any]]) -> None:
+        from services.itsm_ticket_attachments import apply_gcs_service_account_from_env_doc
+
+        apply_gcs_service_account_from_env_doc(doc)
 
     def _cache_environment_doc(doc: Dict[str, Any]) -> None:
         global _ENV_RUNTIME
         _ENV_RUNTIME = dict(doc)
         _write_env_runtime_file(doc)
-        shared = doc.get("shared") if isinstance(doc.get("shared"), dict) else {}
-        from services.itsm_ticket_attachments import set_gcs_service_account_info
-
-        set_gcs_service_account_info(shared.get("gcs_service_account"))
+        _apply_gcs_from_env_doc(doc)
 
     async def _persist_environment_doc(doc: Dict[str, Any]) -> str:
         """Write Setup env to Mongo; fall back to process memory if DB is down."""
@@ -5950,6 +5985,12 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             upload_ticket_attachment_files,
         )
 
+        try:
+            env_doc = await _load_environment_doc()
+            if env_doc:
+                _apply_gcs_from_env_doc(env_doc)
+        except Exception as exc:
+            logger.warning("ITSM attachment GCS refresh skipped: %s", exc)
         try:
             urls = await upload_ticket_attachment_files(uploads)
         except HTTPException:
@@ -7100,6 +7141,11 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             commenter_name=body.commenter_name,
             solution_row_id=(body.solution_row_id or "").strip(),
             reopened=bool(body.reopened),
+            request_id=(body.request_id or "").strip(),
+            ticket_type=(body.ticket_type or "").strip(),
+            category=(body.category or "").strip(),
+            subject=(body.subject or "").strip(),
+            ticket_requester_name=(body.requester_name or "").strip(),
             files=[],
         )
 
@@ -7114,6 +7160,11 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         commenter_name: Optional[str],
         solution_row_id: str = "",
         reopened: bool = False,
+        request_id: str = "",
+        ticket_type: str = "",
+        category: str = "",
+        subject: str = "",
+        ticket_requester_name: str = "",
         files: Optional[List[UploadFile]] = None,
     ) -> Dict[str, Any]:
         uploads = [item for item in (files or []) if item is not None]
@@ -7157,7 +7208,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         # Do not replace the ticket's activity_instance_id with progress `_id`
         # (that produced .../PkEJUG_Vzjom/PkEJVQcVrFhR instead of PkEJUNkehEhn).
         if _uses_extrovis_flow(entity):
-            activity_candidates = _prefer_comment_activity_ids(
+            live_ids = _live_comment_activity_ids(progress, instance_id)
+            activity_candidates = live_ids or _prefer_comment_activity_ids(
                 activity_instance_id_hint, [], instance_id
             )
         else:
@@ -7289,6 +7341,22 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 _ledger_comments(env_name, instance_id),
             )
             visible = _employee_visible_comments(merged, entity)
+            if comments_type == "User":
+                try:
+                    from services.itsm_comment_mail import schedule_employee_comment_mail
+
+                    schedule_employee_comment_mail(
+                        request_id=request_id or instance_id,
+                        author_name=requester_name,
+                        comment=comment_text,
+                        attachment_count=len(attachments),
+                        requester_name=ticket_requester_name,
+                        ticket_type=ticket_type,
+                        category=category,
+                        subject=subject,
+                    )
+                except Exception as exc:
+                    logger.warning("ITSM comment notify schedule failed instance=%s: %s", instance_id, exc)
             return {
                 "success": True,
                 "message": message,
@@ -7407,6 +7475,11 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             comment=str(form.get("comment") or ""),
             commenter_name=str(commenter) if commenter not in (None, "") else None,
             reopened=reopened_raw in ("1", "true", "yes"),
+            request_id=str(form.get("request_id") or "").strip(),
+            ticket_type=str(form.get("ticket_type") or "").strip(),
+            category=str(form.get("category") or "").strip(),
+            subject=str(form.get("subject") or "").strip(),
+            ticket_requester_name=str(form.get("requester_name") or "").strip(),
             files=uploads,
         )
 

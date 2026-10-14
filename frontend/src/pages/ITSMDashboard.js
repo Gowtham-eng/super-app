@@ -1938,6 +1938,11 @@ const ITSMDashboard = () => {
         if (viewerName) form.append('commenter_name', viewerName);
         if (helpdeskEnv) form.append('environment', helpdeskEnv);
         if (ticket.reopened) form.append('reopened', 'true');
+        if (ticket.requestId) form.append('request_id', ticket.requestId);
+        if (ticket.ticketType) form.append('ticket_type', ticket.ticketType);
+        if (ticket.category) form.append('category', ticket.category);
+        if (ticket.subject) form.append('subject', ticket.subject);
+        if (ticket.requesterName) form.append('requester_name', ticket.requesterName);
         fileList.forEach((file) => form.append('files', file));
         res = await axios.post(`${ITSM_API}/itsm/reports/comment-with-files`, form, {
           headers: { Authorization: auth.headers?.Authorization },
@@ -1955,6 +1960,11 @@ const ITSMDashboard = () => {
             commenter_name: viewerName || undefined,
             environment: helpdeskEnv || undefined,
             reopened: Boolean(ticket.reopened) || undefined,
+            request_id: ticket.requestId || undefined,
+            ticket_type: ticket.ticketType || undefined,
+            category: ticket.category || undefined,
+            subject: ticket.subject || undefined,
+            requester_name: ticket.requesterName || undefined,
           },
           auth
         );
