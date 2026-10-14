@@ -54,5 +54,7 @@ def test_html_escapes_comment_text():
     assert "#315E89" in html_body
     assert "#EEF4FA" in html_body
     assert "Ticket Details" in html_body
+    assert "Ticket Type" not in html_body
+    assert ">Category<" not in html_body
     assert "Latest Comment" in html_body
     assert "#222831" in html_body
