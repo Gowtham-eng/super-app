@@ -209,37 +209,21 @@ const GoogleSetup = () => {
 
       <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-4">
         <div>
-          <p className="text-sm font-medium text-slate-800 mb-1">Google SSO and user sync</p>
+          <p className="text-sm font-medium text-slate-800 mb-1">Google SSO</p>
           <p className="text-xs text-slate-500">
-            Sign-in with Google does not import a company directory. Create the OAuth client, then
-            add each Google user in RefexOne. A space after a comma in Email domains is ignored.
+            Create the OAuth client, then save it here. A space after a comma in Email domains is ignored.
+            The same email must already exist in User Management and be Active.
           </p>
         </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="bg-white border border-slate-200 rounded-lg p-3">
-            <p className="text-xs font-semibold text-slate-800 mb-2">1. Google SSO</p>
-            <ol className="list-decimal pl-4 space-y-1 text-xs text-slate-600">
-              <li>In Google Cloud, create an OAuth client of type Web application.</li>
-              <li>Scopes: openid, profile, email.</li>
-              <li>Add the redirect URI below on that client.</li>
-              <li>Paste Client ID, Client Secret, and email domains here. Example: refex.co.in, modepro.com, omegahires.com.</li>
-              <li>Set Hosted domain only for a single workspace, such as refex.co.in. Leave it blank when one login covers several companies.</li>
-              <li>Save, then test Sign in with Google. The same email must already exist in User Management and be Active.</li>
-            </ol>
-          </div>
-          <div className="bg-white border border-slate-200 rounded-lg p-3">
-            <p className="text-xs font-semibold text-slate-800 mb-2">2. Sync users from a Google admin</p>
-            <ol className="list-decimal pl-4 space-y-1 text-xs text-slate-600">
-              <li>Sign in at admin.google.com as that company’s super admin. For ModePro use an @modepro.com admin. A Refex admin cannot see ModePro users.</li>
-              <li>Open Directory, then Users, then Download users. Save the CSV.</li>
-              <li>In RefexOne User Management, add each person: Google email, name, company (ModePro), status Active, password Welcome@2026.</li>
-              <li>Skip suspended Google accounts.</li>
-              <li>Ask one user to open the login page and choose Sign in with Google.</li>
-            </ol>
-            <p className="text-[11px] text-slate-400 mt-2">
-              “No RefexOne account” means that email is not in User Management. “Domain is not allowed” means the domain is missing or misspelled in Email domains.
-            </p>
-          </div>
+        <div className="bg-white border border-slate-200 rounded-lg p-3">
+          <ol className="list-decimal pl-4 space-y-1 text-xs text-slate-600">
+            <li>In Google Cloud, create an OAuth client of type Web application.</li>
+            <li>Scopes: openid, profile, email.</li>
+            <li>Add the redirect URI below on that client.</li>
+            <li>Paste Client ID, Client Secret, and email domains here. Example: refex.co.in, modepro.com, omegahires.com.</li>
+            <li>Set Hosted domain only for a single workspace, such as refex.co.in. Leave it blank when one login covers several companies.</li>
+            <li>Save, then test Sign in with Google.</li>
+          </ol>
         </div>
         <div className="space-y-2 text-sm">
           <div className="flex flex-wrap items-center gap-2">
