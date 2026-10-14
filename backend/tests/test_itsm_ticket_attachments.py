@@ -15,11 +15,14 @@ from routes.itsm import (
 from services.itsm_ticket_attachments import (
     TICKET_ATTACHMENT_MAX_FILE_BYTES,
     _gcs_access_token,
+    apply_gcs_service_account_from_env_doc,
     gcs_credentials_path,
+    gcs_service_account_info,
     normalize_attachment_urls,
     parse_gcs_service_account_json,
     public_attachment_url,
     resolve_upload_filename,
+    set_gcs_service_account_info,
     validate_ticket_attachment_batch,
 )
 
@@ -128,6 +131,29 @@ def test_gcs_credentials_path_uses_explicit_file(tmp_path, monkeypatch):
 def test_gcs_credentials_path_ignores_missing_explicit_file(tmp_path, monkeypatch):
     monkeypatch.setenv("ITSM_GCS_CREDENTIALS_FILE", str(tmp_path / "missing.json"))
     assert gcs_credentials_path() == ""
+
+
+def test_set_gcs_service_account_info_does_not_wipe_working_key(monkeypatch, tmp_path):
+    import services.itsm_ticket_attachments as attach
+
+    monkeypatch.setattr(attach, "DEFAULT_GCS_CREDENTIALS_FILE", str(tmp_path / "gcs-itsm-attachments.json"))
+    attach._SA_INFO = None
+    info = {
+        "type": "service_account",
+        "client_email": "sa@example.iam.gserviceaccount.com",
+        "private_key": "-----BEGIN PRIVATE KEY-----\\nABC\\n-----END PRIVATE KEY-----\\n",
+    }
+    try:
+        set_gcs_service_account_info(info)
+        assert gcs_service_account_info()["client_email"] == "sa@example.iam.gserviceaccount.com"
+        assert "\n" in gcs_service_account_info()["private_key"]
+        set_gcs_service_account_info(None)
+        set_gcs_service_account_info({})
+        assert gcs_service_account_info()["client_email"] == "sa@example.iam.gserviceaccount.com"
+        apply_gcs_service_account_from_env_doc({"shared": {"refexions_policy_api_key": "x"}})
+        assert gcs_service_account_info()["client_email"] == "sa@example.iam.gserviceaccount.com"
+    finally:
+        attach._SA_INFO = None
 
 
 def test_gcs_access_token_requires_service_account_json(monkeypatch):
