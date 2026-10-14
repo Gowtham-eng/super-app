@@ -132,11 +132,15 @@ function userEmail(user = {}) {
 }
 
 export function userCanSeeRmcP2p(user = {}) {
+  if (user?.rmc_p2p_access === true) return true;
+  if (user?.rmc_p2p_access === false) return false;
   const email = userEmail(user);
   return Boolean(email) && RMC_P2P_EMAILS.includes(email);
 }
 
 export function userCanSeeProcure2Pay(user = {}) {
+  if (user?.rmc_p2p_access === true) return false;
+  if (user?.rmc_p2p_access === false) return true;
   return !RMC_P2P_EMAILS.includes(userEmail(user));
 }
 

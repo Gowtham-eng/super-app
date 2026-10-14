@@ -169,11 +169,25 @@ def user_can_see_reports(user: Optional[dict] = None) -> bool:
 
 
 def user_can_see_rmc_p2p(user: Optional[dict] = None) -> bool:
+    """Explicit User Management toggle wins. Otherwise the built-in email list."""
+    user = user or {}
+    flag = user.get("rmc_p2p_access")
+    if flag is True:
+        return True
+    if flag is False:
+        return False
     email = _user_email(user)
     return bool(email) and email in rmc_p2p_allowed_emails()
 
 
 def user_can_see_procure2pay(user: Optional[dict] = None) -> bool:
+    """RMC P2P and Procure2Pay are mutually exclusive."""
+    user = user or {}
+    flag = user.get("rmc_p2p_access")
+    if flag is True:
+        return False
+    if flag is False:
+        return True
     email = _user_email(user)
     return email not in procure2pay_hidden_emails()
 

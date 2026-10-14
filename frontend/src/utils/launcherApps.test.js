@@ -163,6 +163,17 @@ describe('RMC P2P vs Procure2Pay visibility', () => {
     expect(deepaIds).toEqual(['saml-ems', 'rmc-p2p']);
     expect(otherIds).toEqual(['saml-ems', 'procure2pay']);
   });
+
+  it('lets User Management toggle RMC P2P on or off', () => {
+    const granted = { email: 'new.user@refex.co.in', rmc_p2p_access: true };
+    const revoked = { email: 'deepa.murthy@refex.co.in', rmc_p2p_access: false };
+    expect(userCanSeeRmcP2p(granted)).toBe(true);
+    expect(userCanSeeProcure2Pay(granted)).toBe(false);
+    expect(userCanSeeRmcP2p(revoked)).toBe(false);
+    expect(userCanSeeProcure2Pay(revoked)).toBe(true);
+    expect(filterLauncherAppsForUser([EMS, rmc, p2p], granted).map((a) => a.id)).toEqual(['saml-ems', 'rmc-p2p']);
+    expect(filterLauncherAppsForUser([EMS, rmc, p2p], revoked).map((a) => a.id)).toEqual(['saml-ems', 'procure2pay']);
+  });
 });
 
 describe('Rex / agentic AI visibility', () => {

@@ -26,6 +26,7 @@ from services.launcher_access import (
     launcher_app_display_name,
     user_can_see_launcher_app,
     user_can_see_reports,
+    user_can_see_rmc_p2p,
 )
 from services.kissflow_scim_client import (
     sync_to_kissflow,
@@ -260,6 +261,7 @@ class UserUpdate(BaseModel):
     l2_manager_name: Optional[str] = None
     l2_manager_email: Optional[str] = None
     l2_manager_employee_code: Optional[str] = None
+    rmc_p2p_access: Optional[bool] = None
     employee_status_description: Optional[str] = None
     employment_status_description: Optional[str] = None
     joining_date: Optional[str] = None
@@ -1057,6 +1059,7 @@ async def login(credentials: UserLogin, request: Request):
     token = create_token(user['id'], user['email'], user['org_id'], user['role'])
     return {"token": token, "user": {"id": user['id'], "email": user['email'], "name": user['name'],
                                       "role": user['role'], "org_id": user['org_id'],
+                                      "rmc_p2p_access": user_can_see_rmc_p2p(user),
                                       "must_change_password": must_change}}
 
 @api_router.get("/auth/me")
@@ -1065,6 +1068,7 @@ async def get_me(user: dict = Depends(get_current_user)):
     return {
         **user,
         "organization": org,
+        "rmc_p2p_access": user_can_see_rmc_p2p(user),
         "must_change_password": bool(user.get("must_change_password")),
     }
 

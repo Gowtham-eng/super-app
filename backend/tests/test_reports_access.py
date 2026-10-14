@@ -87,6 +87,19 @@ def test_rmc_p2p_allowlist_and_procure2pay_denylist(monkeypatch):
     assert user_can_see_launcher_app(OTHER, EMS) is True
 
 
+def test_rmc_p2p_toggle_overrides_the_email_list():
+    granted = {"email": "new.user@refex.co.in", "rmc_p2p_access": True}
+    revoked = {"email": "deepa.murthy@refex.co.in", "rmc_p2p_access": False}
+    assert user_can_see_rmc_p2p(granted) is True
+    assert user_can_see_procure2pay(granted) is False
+    assert user_can_see_launcher_app(granted, RMC) is True
+    assert user_can_see_launcher_app(granted, P2P) is False
+    assert user_can_see_rmc_p2p(revoked) is False
+    assert user_can_see_procure2pay(revoked) is True
+    assert user_can_see_launcher_app(revoked, RMC) is False
+    assert user_can_see_launcher_app(revoked, P2P) is True
+
+
 REX = {"id": "rex", "name": "Rex refex executive agent"}
 ANIL = {"email": "aniljain@refex.co.in"}
 

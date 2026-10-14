@@ -3,6 +3,8 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
+import { Switch } from '../components/ui/switch';
+import { userCanSeeRmcP2p } from '../utils/launcherApps';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
@@ -468,6 +470,25 @@ const UsersPage = () => {
     setDetailForm((prev) => ({ ...prev, [key]: value }));
   };
 
+  const toggleRmcP2p = async (target, event) => {
+    event?.stopPropagation?.();
+    if (!target?.id || !isAdmin) return;
+    const next = !userCanSeeRmcP2p(target);
+    try {
+      const res = await axios.put(
+        `${API}/users/${target.id}`,
+        { rmc_p2p_access: next },
+        getAuthHeader()
+      );
+      const updated = res.data || { ...target, rmc_p2p_access: next };
+      setUsers((prev) => prev.map((row) => (row.id === target.id ? { ...row, ...updated } : row)));
+      if (detailUser?.id === target.id) setDetailUser((prev) => ({ ...prev, ...updated }));
+      toast.success(next ? 'RMC P2P turned on. Procure2Pay is hidden.' : 'RMC P2P turned off. Procure2Pay is shown.');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Could not update RMC P2P access');
+    }
+  };
+
   const handleDetailSave = async () => {
     if (!detailUser || !detailForm) return;
     if (!detailForm.email?.trim()) {
@@ -712,13 +733,14 @@ const UsersPage = () => {
                 <th className="hidden lg:table-cell" style={{ width: '160px' }}>Department</th>
                 <th className="hidden xl:table-cell" style={{ width: '180px' }}>Company</th>
                 {isAdmin && <th className="hidden md:table-cell" style={{ width: '160px' }}>Password</th>}
+                {isAdmin && <th style={{ width: '120px' }}>RMC P2P</th>}
                 <th className="text-right sticky right-0 bg-white shadow-[-6px_0_8px_-8px_rgba(15,23,42,0.08)]" style={{ width: '120px' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {paginatedUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={isAdmin ? 6 : 5} className="py-16 text-center">
+                  <td colSpan={isAdmin ? 7 : 5} className="py-16 text-center">
                     <div className="inline-flex flex-col items-center">
                       <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center mb-3">
                         <Users size={22} className="text-slate-400" />
@@ -794,6 +816,21 @@ const UsersPage = () => {
                     {isAdmin && (
                       <td className="hidden md:table-cell">
                         <PasswordCell user={user} />
+                      </td>
+                    )}
+                    {isAdmin && (
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            checked={userCanSeeRmcP2p(user)}
+                            onCheckedChange={() => toggleRmcP2p(user)}
+                            aria-label={`RMC P2P for ${user.email}`}
+                            data-testid={`rmc-p2p-toggle-${user.id}`}
+                          />
+                          <span className="text-[11px] font-medium text-slate-500">
+                            {userCanSeeRmcP2p(user) ? 'On' : 'Off'}
+                          </span>
+                        </div>
                       </td>
                     )}
                     <td className="sticky right-0 bg-white group-hover:bg-slate-50/70 shadow-[-6px_0_8px_-8px_rgba(15,23,42,0.08)] transition-colors">
@@ -933,6 +970,24 @@ const UsersPage = () => {
             </div>
 
             <div className="px-6 py-5 space-y-6">
+              {isAdmin && (
+                <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-900">RMC P2P</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      {userCanSeeRmcP2p(detailUser)
+                        ? 'This user sees RMC P2P. Procure2Pay is hidden.'
+                        : 'This user sees Procure2Pay. RMC P2P is hidden.'}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={userCanSeeRmcP2p(detailUser)}
+                    onCheckedChange={() => toggleRmcP2p(detailUser)}
+                    aria-label={`RMC P2P for ${detailUser.email}`}
+                    data-testid="detail-rmc-p2p-toggle"
+                  />
+                </div>
+              )}
               {detailEditing && detailForm ? (
                 <>
                   <Section icon={BadgeCheck} title="Identity" forceShow>
