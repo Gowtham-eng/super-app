@@ -16,19 +16,19 @@
   </style>
 </head>
 <body>
-  <h1>Google Workspace OAuth for RefexOne</h1>
+  <h1>Google SSO and user sync for RefexOne</h1>
   <p>Give this page to your Google Workspace / Google Cloud admin.</p>
 
   <div class="note">
-    <strong>Important:</strong> RefexOne does not store Google passwords. Users sign in with Google;
-    their RefexOne account must already exist (HR sync or admin-created).
+    <strong>Important:</strong> RefexOne does not store Google passwords and does not import a
+    Google directory automatically. Sign-in works only after that email exists in RefexOne.
   </div>
 
-  <h2>1. Google Cloud Console</h2>
+  <h2>1. Google Cloud Console (SSO)</h2>
   <ol>
     <li>Open <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a>.</li>
     <li>Create or select a project for RefexOne.</li>
-    <li>Go to <strong>APIs &amp; Services → OAuth consent screen</strong> → Internal (Workspace) or External.</li>
+    <li>Go to <strong>APIs &amp; Services → OAuth consent screen</strong>. Use External if more than one company (ModePro, Omegahires) will sign in.</li>
     <li>Go to <strong>Credentials → Create credentials → OAuth client ID</strong> → <strong>Web application</strong>.</li>
   </ol>
 
@@ -39,7 +39,7 @@
   <pre>http://localhost:8000/api/auth/google/callback</pre>
 
   <h2>3. Scopes</h2>
-  <p>RefexOne uses OpenID Connect scopes only:</p>
+  <p>RefexOne sign-in uses OpenID Connect scopes only:</p>
   <ul>
     <li><code>openid</code></li>
     <li><code>profile</code></li>
@@ -49,17 +49,27 @@
   <h2>4. Return to RefexOne admin</h2>
   <p>In RefexOne → <strong>Google Login</strong> (<code>/settings/google</code>), add:</p>
   <ul>
-    <li>Label (e.g. Refex Google Workspace)</li>
+    <li>Label (e.g. RefexOne)</li>
     <li>OAuth Client ID</li>
     <li>OAuth Client Secret</li>
-    <li>Email domains: <code>refex.co.in</code></li>
-    <li>Hosted domain (optional): <code>refex.co.in</code></li>
+    <li>Email domains, comma-separated. A space after the comma is ignored. Example: <code>refex.co.in, modepro.com, omegahires.com</code></li>
+    <li>Hosted domain: set <code>refex.co.in</code> only when this login is for one workspace. Leave it blank when several companies share the login.</li>
   </ul>
 
-  <h2>5. Test</h2>
+  <h2>5. Sync users from Google Admin</h2>
+  <p>There is no Sync users button. A super admin of that company exports the directory, then you create the RefexOne accounts.</p>
   <ol>
-    <li>Ensure the user exists in RefexOne with the same Google email.</li>
+    <li>Sign in at <a href="https://admin.google.com/" target="_blank" rel="noopener">admin.google.com</a> as that company’s super admin. ModePro must be an <code>@modepro.com</code> admin. A Refex admin cannot see ModePro users.</li>
+    <li>Open <strong>Directory → Users → Download users</strong> and save the CSV.</li>
+    <li>In RefexOne <strong>User Management</strong>, add each active person: Google email, name, company (for example ModePro), status Active, password <code>Welcome@2026</code>.</li>
+    <li>Skip suspended accounts.</li>
+  </ol>
+
+  <h2>6. Test</h2>
+  <ol>
+    <li>Confirm the user exists in RefexOne with the same Google email and status Active.</li>
     <li>Open RefexOne login → <strong>Sign in with Google</strong>.</li>
+    <li>“No RefexOne account” means the email was not created in User Management. “Domain is not allowed” means the domain is missing or misspelled in Email domains.</li>
   </ol>
 </body>
 </html>
