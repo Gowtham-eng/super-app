@@ -108,6 +108,7 @@ def test_rex_renamed_and_allowlisted(monkeypatch):
     monkeypatch.delenv("AGENTIC_AI_ALLOWED_EMAILS", raising=False)
     assert is_rex_app(REX) is True
     assert is_rex_app({"name": "Refexions"}) is False
+    # Refexions chat is not this tile; every signed-in user should still see the chatbot.
     assert launcher_app_display_name(REX) == "agentic AI"
     assert user_can_see_agentic_ai(ANIL) is True
     assert user_can_see_agentic_ai({"email": "yash@refex.co.in"}) is True

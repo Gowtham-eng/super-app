@@ -26,6 +26,14 @@ from services.refexions_store import (
 )
 
 
+def test_chat_apis_are_not_gated_to_agentic_ai():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "routes" / "refexions.py").read_text()
+    assert "_require_agentic_ai" not in src
+    assert "agentic AI is not enabled" not in src
+
+
 def test_policy_payload_matches_sender_schema():
     payload = _policy_send_payload("it_policy", "test.automate@extrovis.com")
     assert payload == {

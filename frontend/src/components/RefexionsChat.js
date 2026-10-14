@@ -5,10 +5,8 @@ import { Loader2, MessageCircle, Paperclip, Send, Upload, X } from 'lucide-react
 import { useAuth } from '../context/AuthContext';
 import { API, BACKEND_ORIGIN, ITSM_API } from '../config/api';
 import {
-  AGENTIC_AI_LABEL,
   isItsmNamedApp,
   resolveItsmLaunchFromKissflowStatus,
-  userCanSeeAgenticAi,
 } from '../utils/launcherApps';
 import {
   isRefexEntity,
@@ -25,6 +23,7 @@ import {
   validateTicketAttachments,
 } from '../utils/itsmTicketAttachments';
 
+const CHAT_NAME = 'Refexions';
 const FALLBACK_MAIN = ['Expense', 'Travel', 'Tech Helpdesk', 'Policies', 'App Support'];
 const APP_SUPPORT_APPS = [
   'Tech Helpdesk',
@@ -133,7 +132,7 @@ const RefexionsChat = () => {
     setChips(mainChipList(opts));
     setMessages([
       botMsg(
-        `Hi ${firstName}! I'm ${AGENTIC_AI_LABEL}. ${greeting}`,
+        `Hi ${firstName}! I'm ${CHAT_NAME}. ${greeting}`,
         opts,
       ),
     ]);
@@ -150,7 +149,7 @@ const RefexionsChat = () => {
       if (first?.role !== 'bot') return prev;
       return [{
         ...first,
-        text: `Hi ${firstName}! I'm ${AGENTIC_AI_LABEL}. ${greeting}`,
+        text: `Hi ${firstName}! I'm ${CHAT_NAME}. ${greeting}`,
         chips: options,
       }];
     });
@@ -715,8 +714,6 @@ const RefexionsChat = () => {
     handleChoice(text);
   };
 
-  if (!userCanSeeAgenticAi(user)) return null;
-
   if (!open) {
     return (
       <button
@@ -726,7 +723,7 @@ const RefexionsChat = () => {
         data-testid="open-chat"
       >
         <MessageCircle size={20} />
-        <span className="text-sm font-medium">{AGENTIC_AI_LABEL}</span>
+        <span className="text-sm font-medium">{CHAT_NAME}</span>
       </button>
     );
   }
@@ -738,7 +735,7 @@ const RefexionsChat = () => {
       <button
         type="button"
         className="fixed inset-0 z-[60] bg-black/40 sm:hidden"
-        aria-label={`Close ${AGENTIC_AI_LABEL}`}
+        aria-label={`Close ${CHAT_NAME}`}
         onClick={() => setOpen(false)}
       />
       <div className="fixed inset-x-0 bottom-0 z-[61] flex h-[min(92dvh,720px)] w-full flex-col overflow-hidden rounded-t-2xl border border-slate-200 bg-white shadow-2xl sm:relative sm:inset-auto sm:h-[480px] sm:w-96 sm:rounded-2xl">
@@ -748,7 +745,7 @@ const RefexionsChat = () => {
               <MessageCircle size={18} className="text-white" />
             </div>
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-white">{AGENTIC_AI_LABEL}</h3>
+              <h3 className="text-sm font-semibold text-white">{CHAT_NAME}</h3>
               <p className="truncate text-[11px] text-emerald-100">
                 {busy ? 'Working…' : profile.entity ? `${profile.entity} assistant` : 'Workplace assistant'}
               </p>

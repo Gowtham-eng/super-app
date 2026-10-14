@@ -20,7 +20,6 @@ import {
   filterReportsForUser,
   isReportsLauncherApp,
   launcherAppDisplayName,
-  userCanSeeAgenticAi,
   userCanSeeReports,
   PM_TRACKER_FALLBACK_URL,
 } from '../utils/launcherApps';
@@ -948,11 +947,9 @@ const AppLauncher = () => {
         </div>
       )}
 
-      {userCanSeeAgenticAi(user) ? (
-        <div className="fixed right-4 z-50 safe-fixed-bottom bottom-4 sm:right-6 sm:bottom-6" data-testid="refexions-chatbot">
-          <RefexionsChat />
-        </div>
-      ) : null}
+      <div className="fixed right-4 z-50 safe-fixed-bottom bottom-4 sm:right-6 sm:bottom-6" data-testid="refexions-chatbot">
+        <RefexionsChat />
+      </div>
     </div>
   );
 };
