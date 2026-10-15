@@ -10,6 +10,12 @@ from typing import Dict, List
 from fastapi import HTTPException
 
 
+# microphone=(self) — ITSM voice input and device mic prompts. camera/geo stay off.
+PERMISSIONS_POLICY = b"camera=(), microphone=(self), geolocation=()"
+# Older Android WebViews still read Feature-Policy.
+FEATURE_POLICY = b"microphone 'self'"
+
+
 class SecurityHeadersMiddleware:
     """Add browser hardening headers without changing JSON bodies or cookies."""
 
@@ -29,7 +35,8 @@ class SecurityHeadersMiddleware:
                     (b"x-content-type-options", b"nosniff"),
                     (b"x-frame-options", b"SAMEORIGIN"),
                     (b"referrer-policy", b"strict-origin-when-cross-origin"),
-                    (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+                    (b"permissions-policy", PERMISSIONS_POLICY),
+                    (b"feature-policy", FEATURE_POLICY),
                     (b"x-permitted-cross-domain-policies", b"none"),
                 ]
                 if scope.get("scheme") == "https":

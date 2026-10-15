@@ -39,6 +39,14 @@ import {
   formatTicketAttachmentSize,
   validateTicketAttachments,
 } from '../utils/itsmTicketAttachments';
+import {
+  getSpeechRecognitionCtor,
+  isMobileVoiceClient,
+  isSecureVoiceContext,
+  micPermissionMessage,
+  preferredVoiceLanguage,
+  requestMicrophoneAccess,
+} from '../utils/voiceInput';
 
 const MANUAL_CRITICALITY = ['Low', 'Medium', 'High'];
 const SAP_MODULE_FALLBACK = ['PP/QM', 'MM', 'PM', 'SD', 'BASIS', 'FI', 'Security', 'WM', 'CO', 'PS'];
@@ -200,10 +208,12 @@ const CreateITRequest = () => {
   const fileInputRef = useRef(null);
 
   const recognitionRef = useRef(null);
+  const descriptionFieldRef = useRef(null);
   const descriptionBeforeListen = useRef('');
   const debounceRef = useRef(null);
   const matrixAbortRef = useRef(null);
   const micStopRequestedRef = useRef(false);
+  const micStartingRef = useRef(false);
 
   const isRefex = isRefexEntity(profile.entity);
   const useManualCascade = !isRefex && !isSapTicket && manualEdit;
@@ -665,13 +675,8 @@ const CreateITRequest = () => {
     });
   };
 
-  const toggleMic = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      toast.error('Voice input is not supported in this browser. Please type the description.');
-      return;
-    }
-    if (!window.isSecureContext && window.location.hostname !== 'localhost') {
+  const toggleMic = async () => {
+    if (!isSecureVoiceContext()) {
       toast.error('Voice input needs a secure (HTTPS) connection.');
       return;
     }
@@ -687,10 +692,27 @@ const CreateITRequest = () => {
       return;
     }
 
-    const isMobile =
-      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') ||
-      (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform || ''));
+    if (micStartingRef.current) return;
+    micStartingRef.current = true;
 
+    try {
+      // Android/iOS WebViews do not prompt for mic from SpeechRecognition alone.
+      await requestMicrophoneAccess();
+    } catch (err) {
+      micStartingRef.current = false;
+      toast.error(micPermissionMessage(err));
+      return;
+    }
+
+    const SpeechRecognition = getSpeechRecognitionCtor();
+    if (!SpeechRecognition) {
+      micStartingRef.current = false;
+      descriptionFieldRef.current?.focus();
+      toast.message('Microphone is allowed. Use the keyboard microphone to dictate, or type the description.');
+      return;
+    }
+
+    const isMobile = isMobileVoiceClient();
     descriptionBeforeListen.current = description;
     micStopRequestedRef.current = false;
 
@@ -699,10 +721,7 @@ const CreateITRequest = () => {
     recognition.continuous = !isMobile;
     recognition.interimResults = !isMobile;
     recognition.maxAlternatives = 1;
-    // en-IN is missing on some mobile engines; prefer device language then en-US.
-    const preferredLang = (navigator.language || '').trim();
-    recognition.lang =
-      preferredLang && /^en([-_]|$)/i.test(preferredLang) ? preferredLang : 'en-US';
+    recognition.lang = preferredVoiceLanguage();
 
     recognition.onresult = (event) => {
       let transcript = '';
@@ -763,6 +782,8 @@ const CreateITRequest = () => {
         return;
       }
       toast.error('Unable to start voice input. Please try again.');
+    } finally {
+      micStartingRef.current = false;
     }
   };
 
@@ -1454,6 +1475,7 @@ const CreateITRequest = () => {
             <h2 className="form-section-title">Description</h2>
             <div className="relative">
               <textarea
+                ref={descriptionFieldRef}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 rows={6}

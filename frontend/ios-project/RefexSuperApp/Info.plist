@@ -73,6 +73,8 @@
     </array>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>RefexOne uses the microphone so you can dictate the description when creating an IT ticket.</string>
     <key>NSCameraUsageDescription</key>
     <string>RefexOne uses the camera so you can take a profile photo for your account.</string>
     <key>NSPhotoLibraryUsageDescription</key>

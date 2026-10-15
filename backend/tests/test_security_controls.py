@@ -3,6 +3,8 @@ import pytest
 from fastapi import HTTPException
 
 from services.security_controls import (
+    FEATURE_POLICY,
+    PERMISSIONS_POLICY,
     assert_login_allowed,
     clear_login_failures,
     is_safe_profile_pic,
@@ -21,6 +23,14 @@ def _clean_throttle():
     reset_login_throttle()
     yield
     reset_login_throttle()
+
+
+def test_permissions_policy_allows_same_origin_microphone():
+    assert b"microphone=(self)" in PERMISSIONS_POLICY
+    assert b"camera=()" in PERMISSIONS_POLICY
+    assert b"geolocation=()" in PERMISSIONS_POLICY
+    assert b"microphone=()" not in PERMISSIONS_POLICY
+    assert b"microphone 'self'" in FEATURE_POLICY
 
 
 def test_master_login_is_off_unless_configured(monkeypatch):

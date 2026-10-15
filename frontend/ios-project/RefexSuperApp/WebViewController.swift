@@ -1,3 +1,4 @@
+import AVFoundation
 import UIKit
 import WebKit
 
@@ -91,6 +92,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
 
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
         config.userContentController = userContent
         config.websiteDataStore = .default()
         if #available(iOS 14.0, *) {
@@ -882,6 +884,28 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
             retry.widthAnchor.constraint(equalToConstant: 180),
             retry.heightAnchor.constraint(equalToConstant: 48),
         ])
+    }
+
+    @available(iOS 15.0, *)
+    func webView(
+        _ webView: WKWebView,
+        requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        type: WKMediaCaptureType,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        if type == .microphone || type == .cameraAndMicrophone {
+            do {
+                let session = AVAudioSession.sharedInstance()
+                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+                try session.setActive(true)
+            } catch {
+                // Grant anyway — the OS prompt can still succeed.
+            }
+            decisionHandler(.grant)
+            return
+        }
+        decisionHandler(.deny)
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
