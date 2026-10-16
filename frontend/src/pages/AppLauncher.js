@@ -13,7 +13,7 @@ import {
   isKissflowApiOk,
   isNeEmbedApp,
   itsmKissflowFallbackReason,
-  resolveKissflowLaunchApp,
+  resolveItsmLaunchFromKissflowStatus,
   resolvePmTrackerLaunchFromKissflowStatus,
   shouldHijackItsmLaunch,
   shouldHijackPmTrackerLaunch,
@@ -474,8 +474,6 @@ const AppLauncher = () => {
     toast.message('Kissflow account may not be synced. If login fails, contact IT.', { duration: 5000 });
   };
 
-  const pickKissflowLaunchApp = (tappedApp, list = apps) => resolveKissflowLaunchApp(list, tappedApp);
-
   const launchKissflowApp = (app) => {
     const token = localStorage.getItem('iam_token');
 
@@ -518,42 +516,36 @@ const AppLauncher = () => {
       return;
     }
 
-    const tryLaunchKissflow = (list = apps) => {
-      const target = pickKissflowLaunchApp(app, list);
-      if (target) {
-        launchKissflowApp(target);
-        return true;
-      }
-      return false;
-    };
-
     setItsmChecking(true);
     try {
       const res = await axios.get(`${ITSM_API}/itsm/kissflow-status`, getAuthHeader());
-      const kissflowOk = isKissflowApiOk(res);
-      const userInKissflow = res.data?.user_in_kissflow === true;
-
-      if (kissflowOk && userInKissflow) {
-        if (tryLaunchKissflow()) return;
+      let list = apps;
+      let decision = resolveItsmLaunchFromKissflowStatus(res, list, app);
+      if (decision.mode === 'kissflow' && decision.app) {
+        launchKissflowApp(decision.app);
+        return;
+      }
+      if (isKissflowApiOk(res) && res.data?.user_in_kissflow === true) {
         try {
           const appsRes = await axios.get(`${API}/launcher/apps`, getAuthHeader());
-          const list = Array.isArray(appsRes.data) ? appsRes.data : [];
-          const withoutDup = list.filter((a) => a.id !== ITSM_VIRTUAL_APP.id);
+          const raw = Array.isArray(appsRes.data) ? appsRes.data : [];
+          const withoutDup = raw.filter((a) => a.id !== ITSM_VIRTUAL_APP.id);
           const hasItsm = withoutDup.some(isItsmApp);
-          const refreshed = hasItsm ? withoutDup : [...withoutDup, ITSM_VIRTUAL_APP];
-          setApps(refreshed);
-          if (tryLaunchKissflow(refreshed)) return;
+          list = hasItsm ? withoutDup : [...withoutDup, ITSM_VIRTUAL_APP];
+          setApps(list);
         } catch (e) {
           // ignore reload errors
         }
-        navigate('/itsm', { state: { kissflowFallback: true, reason: 'no_sso_target' } });
-        return;
+        decision = resolveItsmLaunchFromKissflowStatus(res, list, app);
+        if (decision.mode === 'kissflow' && decision.app) {
+          launchKissflowApp(decision.app);
+          return;
+        }
       }
-
       navigate('/itsm', {
         state: {
           kissflowFallback: true,
-          reason: itsmKissflowFallbackReason(res, userInKissflow),
+          reason: decision.reason || itsmKissflowFallbackReason(res, res.data?.user_in_kissflow === true),
         },
       });
     } catch (err) {

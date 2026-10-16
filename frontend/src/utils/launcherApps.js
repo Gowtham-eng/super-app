@@ -9,9 +9,13 @@ export function isNeEmbedApp(app = {}) {
   return url.includes(NE_EMBED_HOST) && (url.includes('embed=1') || url.includes('/applications/') || url.includes('/dashboard'));
 }
 
+export function isSamlLauncherApp(app = {}) {
+  return String(app?.type || '').trim().toLowerCase() === 'saml';
+}
+
 export function isKissflowApp(app = {}) {
   const blob = `${app.name || ''} ${app.description || ''} ${app.home_url || ''} ${app.acs_url || ''} ${app.entity_id || ''}`.toLowerCase();
-  return /kissflow/.test(blob);
+  return /kissflow|it_service_management/.test(blob);
 }
 
 export function isAdrenalinApp(app = {}) {
@@ -251,14 +255,19 @@ export function resolveItsmLaunchFromKissflowStatus(res, apps = [], tappedApp = 
 
 export function resolveKissflowLaunchApp(list, tappedApp) {
   const rows = Array.isArray(list) ? list : [];
-  if (tappedApp && usableLauncherApp(tappedApp) && tappedApp.type === 'saml' && isKissflowApp(tappedApp)) {
-    return tappedApp;
+  // Tech Helpdesk / ITSM SAML must win even when the tile name has no "kissflow".
+  if (tappedApp && usableLauncherApp(tappedApp) && isSamlLauncherApp(tappedApp)) {
+    if (isKissflowApp(tappedApp) || isItsmNamedApp(tappedApp)) return tappedApp;
   }
+  const itsmSaml = rows.find(
+    (a) => usableLauncherApp(a) && isSamlLauncherApp(a) && isItsmNamedApp(a),
+  );
+  if (itsmSaml) return itsmSaml;
   const itsmKissflow = rows.find(
-    (a) => usableLauncherApp(a) && a.type === 'saml' && isKissflowApp(a) && isItsmNamedApp(a),
+    (a) => usableLauncherApp(a) && isSamlLauncherApp(a) && isKissflowApp(a) && isItsmNamedApp(a),
   );
   if (itsmKissflow) return itsmKissflow;
-  return rows.find((a) => usableLauncherApp(a) && a.type === 'saml' && isKissflowApp(a)) || null;
+  return null;
 }
 
 /** Prefer a PM-named Kissflow SAML module so tracker clicks never open EMS. */

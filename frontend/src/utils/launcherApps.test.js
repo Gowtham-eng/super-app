@@ -106,6 +106,35 @@ describe('launcher ITSM vs Reports vs EMS', () => {
     expect(hit).toBe(ITSM_SAML);
     expect(hit.home_url).not.toContain('EMS_001_A00');
   });
+
+  it('Tech Helpdesk SAML opens Kissflow ITSM when the probe is up, not the in-app dashboard', () => {
+    const helpdesk = {
+      id: 'saml-tech-helpdesk',
+      name: 'Tech Helpdesk',
+      type: 'SAML',
+      has_access: true,
+      home_url: 'https://refexgroup.kissflow.com/view/application/IT_Service_Management_A00',
+    };
+    expect(isItsmNamedApp(helpdesk)).toBe(true);
+    expect(shouldHijackItsmLaunch(helpdesk)).toBe(true);
+    expect(resolveKissflowLaunchApp([EMS, helpdesk], helpdesk)).toBe(helpdesk);
+    const up = { status: 200, data: { ok: true, status_code: 200, user_in_kissflow: true } };
+    const decision = resolveItsmLaunchFromKissflowStatus(up, [EMS, helpdesk], helpdesk);
+    expect(decision).toEqual({ mode: 'kissflow', app: helpdesk });
+  });
+
+  it('Tech Helpdesk still finds the ITSM Kissflow module when the tile itself is not marked kissflow', () => {
+    const helpdesk = {
+      id: 'saml-tech-helpdesk',
+      name: 'TechHelpdesk',
+      type: 'saml',
+      has_access: true,
+      home_url: 'https://apps.example.com/helpdesk',
+    };
+    expect(isItsmNamedApp(helpdesk)).toBe(true);
+    expect(resolveKissflowLaunchApp([EMS, ITSM_SAML, helpdesk], helpdesk)).toBe(helpdesk);
+    expect(resolveKissflowLaunchApp([EMS, ITSM_SAML], VIRTUAL).home_url).toContain('IT_Service_Management_A00');
+  });
 });
 
 describe('Reports and Kissflow visibility', () => {
