@@ -195,7 +195,7 @@ function withResolvedLogos(list) {
   }));
 }
 
-function LauncherAppLogo({ logoUrl, label, Icon, restricted, iconSize = 28, letterFallback = false, letterClassName = '' }) {
+function LauncherAppLogo({ logoUrl, label, Icon, restricted, letterFallback = false, letterClassName = '' }) {
   const [failed, setFailed] = useState(false);
   const src = resolveLauncherLogoUrl(logoUrl, BACKEND_ORIGIN);
   if (src && !failed) {
@@ -210,15 +210,65 @@ function LauncherAppLogo({ logoUrl, label, Icon, restricted, iconSize = 28, lett
   }
   if (letterFallback) {
     return (
-      <span className={`font-heading font-bold text-base ${letterClassName}`}>
+      <span className={`font-heading font-bold text-2xl leading-none ${letterClassName}`}>
         {String(label || '?').charAt(0).toUpperCase()}
       </span>
     );
   }
   if (Icon) {
-    return <Icon size={iconSize} strokeWidth={2} className={restricted ? 'text-slate-400' : 'text-slate-600'} />;
+    return (
+      <Icon
+        strokeWidth={2}
+        className={`w-full h-full ${restricted ? 'text-slate-400' : 'text-slate-600'}`}
+      />
+    );
   }
   return null;
+}
+
+/** Icon + label only — no white plate. Size is +2 on both axes and grows on larger screens. */
+function LauncherAppIconTile({ app, appLabel, onClick, testId, compact = false }) {
+  const AppIcon = pickAppIcon(app.name);
+  const noAccess = app.has_access === false && !app.is_placeholder;
+  const blocked = app.policy_blocked && !app.is_placeholder && !noAccess;
+  const restricted = noAccess || blocked;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-testid={testId}
+      title={noAccess ? 'You do not have permission to access this application. Click for details.' : undefined}
+      className={`group relative flex flex-col items-center w-full max-w-[112px] mx-auto bg-transparent border-0 p-1 ${
+        app.is_placeholder || restricted ? 'opacity-70 cursor-pointer' : 'cursor-pointer'
+      }`}
+    >
+      <div
+        className={`relative flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 lg:w-[88px] lg:h-[88px] ${
+          restricted || app.is_placeholder ? '' : 'transition-transform duration-200 group-hover:scale-105 group-active:scale-95'
+        }`}
+      >
+        <LauncherAppLogo
+          logoUrl={app.logo_url}
+          label={appLabel}
+          Icon={AppIcon}
+          restricted={restricted || app.is_placeholder}
+        />
+        {(noAccess || blocked) && (
+          <Lock
+            size={compact ? 10 : 12}
+            className={`absolute -top-0.5 -right-0.5 ${blocked ? 'text-red-400' : 'text-slate-500'}`}
+          />
+        )}
+      </div>
+      <span
+        className={`mt-2 text-center leading-tight line-clamp-2 break-words w-full font-medium ${
+          compact ? 'text-[10px]' : 'text-[13px] sm:text-sm'
+        } ${restricted ? 'text-slate-500' : 'text-slate-600'}`}
+      >
+        {appLabel}
+      </span>
+    </button>
+  );
 }
 
 const AppLauncher = () => {
@@ -859,120 +909,31 @@ const AppLauncher = () => {
                   </div>
                 ) : null}
 
-                {/* Mobile: 4-col grid */}
-                <div className="sm:hidden grid grid-cols-4 gap-3">
-                  {section.apps.map((app) => {
-                    const appLabel = launcherAppDisplayName(app);
-                    const c = APP_COLORS[hashString(app.id || app.name) % APP_COLORS.length];
-                    const mNoAccess = app.has_access === false && !app.is_placeholder;
-                    const mBlocked = app.policy_blocked && !app.is_placeholder && !mNoAccess;
-                    const mRestricted = mNoAccess || mBlocked;
-                    return (
-                      <button
-                        key={app.id}
-                        onClick={() => launchApp(app)}
-                        data-testid={`launch-app-${app.id}`}
-                        className={`group relative flex flex-col items-center p-2 rounded-xl border transition-all duration-150 ${
-                          app.is_placeholder ? 'opacity-60 border-dashed border-slate-300 bg-slate-50' :
-                          mRestricted ? 'opacity-70 border-slate-200 bg-white cursor-pointer hover:opacity-100' :
-                          'bg-white border-slate-200 hover:border-blue-300 hover:shadow-md cursor-pointer active:scale-95'
-                        }`}
-                      >
-                        <div className={`w-12 h-12 rounded-xl ${c.bg} ${c.border} border flex items-center justify-center mb-1.5 p-1`}>
-                          <LauncherAppLogo
-                            logoUrl={app.logo_url}
-                            label={appLabel}
-                            restricted={mRestricted}
-                            letterFallback
-                            letterClassName={c.text}
-                          />
-                        </div>
-                        <span className={`text-[10px] font-medium text-center leading-tight line-clamp-2 break-words w-full ${mRestricted ? 'text-slate-500' : 'text-slate-700'}`}>
-                          {appLabel}
-                        </span>
-                        {mNoAccess && <Lock size={10} className="absolute top-1 right-1 text-slate-500" />}
-                        {mBlocked && <Lock size={10} className="absolute top-1 right-1 text-red-400" />}
-                      </button>
-                    );
-                  })}
+                {/* Mobile: 4-col phone-style icons */}
+                <div className="sm:hidden grid grid-cols-4 gap-x-3 gap-y-5">
+                  {section.apps.map((app) => (
+                    <LauncherAppIconTile
+                      key={app.id}
+                      app={app}
+                      appLabel={launcherAppDisplayName(app)}
+                      onClick={() => launchApp(app)}
+                      testId={`launch-app-${app.id}`}
+                      compact
+                    />
+                  ))}
                 </div>
 
-                {/* Desktop: Vibrant gradient tile grid (matches mockup) */}
-                <div className="hidden sm:grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 3xl:grid-cols-7 gap-4">
-                  {section.apps.map((app) => {
-                    const appLabel = launcherAppDisplayName(app);
-                    const pal = getTilePalette(app);
-                    const AppIcon = pickAppIcon(app.name);
-                    const catMeta = CATEGORY_META[app.category] || meta;
-                    const noAccess = app.has_access === false && !app.is_placeholder;
-                    const blocked = app.policy_blocked && !app.is_placeholder && !noAccess;
-                    const restricted = noAccess || blocked;
-                    return (
-                      <button
-                        key={app.id}
-                        onClick={() => launchApp(app)}
-                        data-testid={`launch-app-desktop-${app.id}`}
-                        className={`group relative overflow-hidden rounded-2xl border bg-white transition-all duration-300 text-left flex flex-col ${
-                          app.is_placeholder ? 'border-slate-200/70 opacity-75 hover:opacity-100 cursor-pointer hover:shadow-md' :
-                          restricted ? 'border-slate-200 opacity-70 hover:opacity-100 cursor-pointer hover:shadow-md hover:border-slate-300' :
-                          'border-slate-200/60 hover:border-transparent hover:shadow-[0_14px_40px_-12px_rgba(15,23,42,0.18)] hover:-translate-y-1 cursor-pointer'
-                        }`}
-                        title={noAccess ? 'You do not have permission to access this application. Click for details.' : undefined}
-                      >
-                        {/* Top section — original card size; only the icon fills the squircle */}
-                        <div
-                          className="relative h-[110px] flex items-center justify-center bg-slate-50"
-                        >
-                          <div className={`relative w-14 h-14 rounded-2xl flex items-center justify-center p-1 transition-transform duration-300 ${
-                            app.is_placeholder ? 'bg-white border border-slate-200' :
-                            restricted ? 'bg-white border border-slate-200' :
-                            'bg-white shadow-sm border border-slate-200 group-hover:scale-110'
-                          }`}>
-                            <LauncherAppLogo
-                              logoUrl={app.logo_url}
-                              label={appLabel}
-                              Icon={AppIcon}
-                              restricted={restricted || app.is_placeholder}
-                              iconSize={32}
-                            />
-                            {noAccess && (
-                              <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-white border border-slate-200 flex items-center justify-center shadow-sm">
-                                <Lock size={11} strokeWidth={2.5} className="text-slate-500" />
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Top-right badges */}
-                          {app.is_placeholder && (
-                            <span className="absolute top-3 right-3 px-2 py-0.5 text-[10px] font-bold tracking-widest bg-slate-700 text-white rounded">
-                              SOON
-                            </span>
-                          )}
-                          {noAccess && (
-                            <span className="absolute top-3 right-3 px-2 py-0.5 text-[10px] font-bold tracking-widest bg-slate-600 text-white rounded flex items-center gap-1">
-                              <Lock size={9} strokeWidth={2.5} /> RESTRICTED
-                            </span>
-                          )}
-                          {blocked && (
-                            <span className="absolute top-3 right-3 px-2 py-0.5 text-[10px] font-bold tracking-widest bg-red-600 text-white rounded flex items-center gap-1">
-                              <Lock size={9} strokeWidth={2.5} /> LOCKED
-                            </span>
-                          )}
-                        </div>
-
-                        {/* Bottom white section with name + category pill */}
-                        <div className="flex-1 px-4 py-4 flex flex-col items-center justify-between gap-2 min-h-[100px]">
-                          <h3 className={`text-sm font-semibold text-center leading-snug line-clamp-2 tracking-tight ${restricted ? 'text-slate-600' : 'text-slate-900'}`}>
-                            {appLabel}
-                          </h3>
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold tracking-wide bg-slate-100 text-slate-600">
-                            <span className="w-1 h-1 rounded-full bg-slate-500" />
-                            {app.category || 'General'}
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })}
+                {/* Desktop: same phone-style icons, more columns */}
+                <div className="hidden sm:grid sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-x-8 gap-y-10">
+                  {section.apps.map((app) => (
+                    <LauncherAppIconTile
+                      key={app.id}
+                      app={app}
+                      appLabel={launcherAppDisplayName(app)}
+                      onClick={() => launchApp(app)}
+                      testId={`launch-app-desktop-${app.id}`}
+                    />
+                  ))}
                 </div>
                 </div>
                 ))}
