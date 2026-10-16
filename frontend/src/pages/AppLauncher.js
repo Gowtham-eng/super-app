@@ -878,7 +878,7 @@ const AppLauncher = () => {
                           'bg-white border-slate-200 hover:border-blue-300 hover:shadow-md cursor-pointer active:scale-95'
                         }`}
                       >
-                        <div className={`w-11 h-11 rounded-xl ${c.bg} ${c.border} border flex items-center justify-center mb-1 p-1`}>
+                        <div className={`w-12 h-12 rounded-xl ${c.bg} ${c.border} border flex items-center justify-center mb-1.5 p-1`}>
                           <LauncherAppLogo
                             logoUrl={app.logo_url}
                             label={appLabel}
@@ -898,7 +898,7 @@ const AppLauncher = () => {
                 </div>
 
                 {/* Desktop: Vibrant gradient tile grid (matches mockup) */}
-                <div className="hidden sm:grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 3xl:grid-cols-7 gap-3">
+                <div className="hidden sm:grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 3xl:grid-cols-7 gap-4">
                   {section.apps.map((app) => {
                     const appLabel = launcherAppDisplayName(app);
                     const pal = getTilePalette(app);
@@ -919,25 +919,25 @@ const AppLauncher = () => {
                         }`}
                         title={noAccess ? 'You do not have permission to access this application. Click for details.' : undefined}
                       >
-                        {/* Top section — compact icon, no extra outside padding */}
+                        {/* Top section — original card size; only the icon fills the squircle */}
                         <div
-                          className="relative h-[68px] flex items-center justify-center bg-slate-50"
+                          className="relative h-[110px] flex items-center justify-center bg-slate-50"
                         >
-                          <div className={`relative w-12 h-12 rounded-xl flex items-center justify-center p-1 transition-transform duration-300 ${
+                          <div className={`relative w-14 h-14 rounded-2xl flex items-center justify-center p-1 transition-transform duration-300 ${
                             app.is_placeholder ? 'bg-white border border-slate-200' :
                             restricted ? 'bg-white border border-slate-200' :
-                            'bg-white shadow-sm border border-slate-200 group-hover:scale-105'
+                            'bg-white shadow-sm border border-slate-200 group-hover:scale-110'
                           }`}>
                             <LauncherAppLogo
                               logoUrl={app.logo_url}
                               label={appLabel}
                               Icon={AppIcon}
                               restricted={restricted || app.is_placeholder}
-                              iconSize={28}
+                              iconSize={32}
                             />
                             {noAccess && (
-                              <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-white border border-slate-200 flex items-center justify-center shadow-sm">
-                                <Lock size={10} strokeWidth={2.5} className="text-slate-500" />
+                              <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-white border border-slate-200 flex items-center justify-center shadow-sm">
+                                <Lock size={11} strokeWidth={2.5} className="text-slate-500" />
                               </div>
                             )}
                           </div>
@@ -961,7 +961,7 @@ const AppLauncher = () => {
                         </div>
 
                         {/* Bottom white section with name + category pill */}
-                        <div className="flex-1 px-3 py-2.5 flex flex-col items-center justify-between gap-1.5 min-h-0">
+                        <div className="flex-1 px-4 py-4 flex flex-col items-center justify-between gap-2 min-h-[100px]">
                           <h3 className={`text-sm font-semibold text-center leading-snug line-clamp-2 tracking-tight ${restricted ? 'text-slate-600' : 'text-slate-900'}`}>
                             {appLabel}
                           </h3>
