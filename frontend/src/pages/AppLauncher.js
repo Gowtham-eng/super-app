@@ -20,6 +20,7 @@ import {
   filterReportsForUser,
   isReportsLauncherApp,
   launcherAppDisplayName,
+  resolveLauncherLogoUrl,
   userCanSeeReports,
   PM_TRACKER_FALLBACK_URL,
 } from '../utils/launcherApps';
@@ -187,6 +188,39 @@ const CATEGORY_LABEL = {
   HR: 'HR & People',
 };
 
+function withResolvedLogos(list) {
+  return (Array.isArray(list) ? list : []).map((app) => ({
+    ...app,
+    logo_url: resolveLauncherLogoUrl(app.logo_url, BACKEND_ORIGIN),
+  }));
+}
+
+function LauncherAppLogo({ logoUrl, label, Icon, restricted, iconSize = 28, letterFallback = false, letterClassName = '' }) {
+  const [failed, setFailed] = useState(false);
+  const src = resolveLauncherLogoUrl(logoUrl, BACKEND_ORIGIN);
+  if (src && !failed) {
+    return (
+      <img
+        src={src}
+        alt={label}
+        onError={() => setFailed(true)}
+        className={`w-full h-full object-contain ${restricted ? 'grayscale-[40%]' : ''}`}
+      />
+    );
+  }
+  if (letterFallback) {
+    return (
+      <span className={`font-heading font-bold text-base ${letterClassName}`}>
+        {String(label || '?').charAt(0).toUpperCase()}
+      </span>
+    );
+  }
+  if (Icon) {
+    return <Icon size={iconSize} strokeWidth={2} className={restricted ? 'text-slate-400' : 'text-slate-600'} />;
+  }
+  return null;
+}
+
 const AppLauncher = () => {
   const { API, getAuthHeader, user, logout } = useAuth();
   const navigate = useNavigate();
@@ -240,7 +274,7 @@ const AppLauncher = () => {
   const fetchApps = async () => {
     try {
       const response = await axios.get(`${API}/launcher/apps`, getAuthHeader());
-      const list = Array.isArray(response.data) ? response.data : [];
+      const list = withResolvedLogos(response.data);
       const withoutDup = list.filter((app) => app.id !== ITSM_VIRTUAL_APP.id);
       const hasItsm = withoutDup.some(isItsmApp);
       setApps(hasItsm ? withoutDup : [...withoutDup, ITSM_VIRTUAL_APP]);
@@ -844,14 +878,14 @@ const AppLauncher = () => {
                           'bg-white border-slate-200 hover:border-blue-300 hover:shadow-md cursor-pointer active:scale-95'
                         }`}
                       >
-                        <div className={`w-12 h-12 rounded-xl ${c.bg} ${c.border} border flex items-center justify-center mb-1.5`}>
-                          {app.logo_url ? (
-                            <img src={app.logo_url} alt={appLabel} className={`w-7 h-7 object-contain ${mRestricted ? 'grayscale-[40%]' : ''}`} />
-                          ) : (
-                            <span className={`font-heading font-bold text-base ${c.text}`}>
-                              {appLabel.charAt(0).toUpperCase()}
-                            </span>
-                          )}
+                        <div className={`w-11 h-11 rounded-xl ${c.bg} ${c.border} border flex items-center justify-center mb-1 p-1`}>
+                          <LauncherAppLogo
+                            logoUrl={app.logo_url}
+                            label={appLabel}
+                            restricted={mRestricted}
+                            letterFallback
+                            letterClassName={c.text}
+                          />
                         </div>
                         <span className={`text-[10px] font-medium text-center leading-tight line-clamp-2 break-words w-full ${mRestricted ? 'text-slate-500' : 'text-slate-700'}`}>
                           {appLabel}
@@ -864,7 +898,7 @@ const AppLauncher = () => {
                 </div>
 
                 {/* Desktop: Vibrant gradient tile grid (matches mockup) */}
-                <div className="hidden sm:grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 3xl:grid-cols-7 gap-4">
+                <div className="hidden sm:grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 3xl:grid-cols-7 gap-3">
                   {section.apps.map((app) => {
                     const appLabel = launcherAppDisplayName(app);
                     const pal = getTilePalette(app);
@@ -885,24 +919,25 @@ const AppLauncher = () => {
                         }`}
                         title={noAccess ? 'You do not have permission to access this application. Click for details.' : undefined}
                       >
-                        {/* Top section — clean neutral, no colored gradient */}
+                        {/* Top section — compact icon, no extra outside padding */}
                         <div
-                          className="relative h-[110px] flex items-center justify-center bg-slate-50"
+                          className="relative h-[68px] flex items-center justify-center bg-slate-50"
                         >
-                          {/* White icon squircle */}
-                          <div className={`relative w-14 h-14 rounded-2xl flex items-center justify-center transition-transform duration-300 ${
+                          <div className={`relative w-12 h-12 rounded-xl flex items-center justify-center p-1 transition-transform duration-300 ${
                             app.is_placeholder ? 'bg-white border border-slate-200' :
                             restricted ? 'bg-white border border-slate-200' :
-                            'bg-white shadow-sm border border-slate-200 group-hover:scale-110'
+                            'bg-white shadow-sm border border-slate-200 group-hover:scale-105'
                           }`}>
-                            {app.logo_url ? (
-                              <img src={app.logo_url} alt={appLabel} className={`w-8 h-8 object-contain ${restricted ? 'grayscale-[40%]' : ''}`} />
-                            ) : (
-                              <AppIcon size={26} strokeWidth={2} className={app.is_placeholder || restricted ? 'text-slate-400' : 'text-slate-600'} />
-                            )}
+                            <LauncherAppLogo
+                              logoUrl={app.logo_url}
+                              label={appLabel}
+                              Icon={AppIcon}
+                              restricted={restricted || app.is_placeholder}
+                              iconSize={28}
+                            />
                             {noAccess && (
-                              <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-white border border-slate-200 flex items-center justify-center shadow-sm">
-                                <Lock size={11} strokeWidth={2.5} className="text-slate-500" />
+                              <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-white border border-slate-200 flex items-center justify-center shadow-sm">
+                                <Lock size={10} strokeWidth={2.5} className="text-slate-500" />
                               </div>
                             )}
                           </div>
@@ -926,7 +961,7 @@ const AppLauncher = () => {
                         </div>
 
                         {/* Bottom white section with name + category pill */}
-                        <div className="flex-1 px-4 py-4 flex flex-col items-center justify-between gap-2 min-h-[100px]">
+                        <div className="flex-1 px-3 py-2.5 flex flex-col items-center justify-between gap-1.5 min-h-0">
                           <h3 className={`text-sm font-semibold text-center leading-snug line-clamp-2 tracking-tight ${restricted ? 'text-slate-600' : 'text-slate-900'}`}>
                             {appLabel}
                           </h3>

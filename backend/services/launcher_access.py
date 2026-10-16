@@ -217,6 +217,22 @@ def launcher_app_display_name(app: Optional[dict] = None) -> str:
     return str(app.get("name") or "")
 
 
+def launcher_logo_url(raw) -> Optional[str]:
+    """Normalize stored logos so the frontend can prefix the live API origin.
+
+    Relative `/api/uploads/...` paths (or the same path behind an old host)
+    stay as the path. Absolute and data URLs are returned unchanged.
+    """
+    url = str(raw or "").strip()
+    if not url:
+        return None
+    marker = "/api/uploads/"
+    idx = url.find(marker)
+    if idx >= 0:
+        return url[idx:]
+    return url
+
+
 def user_can_see_kissflow(user: Optional[dict] = None) -> bool:
     return True
 

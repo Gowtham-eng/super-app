@@ -11,6 +11,7 @@ from services.launcher_access import (
     is_rex_app,
     is_rmc_p2p_app,
     launcher_app_display_name,
+    launcher_logo_url,
     user_can_see_agentic_ai,
     user_can_see_launcher_app,
     user_can_see_procure2pay,
@@ -118,3 +119,12 @@ def test_rex_renamed_and_allowlisted(monkeypatch):
     assert user_can_see_launcher_app(ANIL, REX) is True
     assert user_can_see_launcher_app(OTHER, REX) is False
     assert user_can_see_launcher_app(OTHER, EMS) is True
+
+
+def test_launcher_logo_url_strips_host_from_uploads():
+    assert launcher_logo_url("") is None
+    assert launcher_logo_url("  ") is None
+    assert launcher_logo_url("/api/uploads/coal.png") == "/api/uploads/coal.png"
+    assert launcher_logo_url("http://localhost:8000/api/uploads/coal.png") == "/api/uploads/coal.png"
+    assert launcher_logo_url("https://refexone.com/api/uploads/coal.png") == "/api/uploads/coal.png"
+    assert launcher_logo_url("https://cdn.example/logo.png") == "https://cdn.example/logo.png"

@@ -22,6 +22,7 @@ import {
   userCanSeeAgenticAi,
   isRexApp,
   launcherAppDisplayName,
+  resolveLauncherLogoUrl,
   isAdrenalinApp,
   PM_TRACKER_FALLBACK_URL,
 } from './launcherApps';
@@ -251,6 +252,24 @@ describe('Project Management Tracker launcher', () => {
     expect(hit.mode).toBe('fallback');
     expect(hit.url).toBe(PM_TRACKER_FALLBACK_URL);
     expect(hit.reason).toBe('kissflow_unavailable');
+  });
+});
+
+describe('resolveLauncherLogoUrl', () => {
+  it('prefixes relative upload paths with the backend origin', () => {
+    expect(resolveLauncherLogoUrl('', 'https://refexone.com')).toBe('');
+    expect(resolveLauncherLogoUrl('/api/uploads/coal.png', 'https://refexone.com')).toBe(
+      'https://refexone.com/api/uploads/coal.png'
+    );
+    expect(resolveLauncherLogoUrl('api/uploads/coal.png', 'https://refexone.com/')).toBe(
+      'https://refexone.com/api/uploads/coal.png'
+    );
+    expect(resolveLauncherLogoUrl('https://cdn.example/logo.png', 'https://refexone.com')).toBe(
+      'https://cdn.example/logo.png'
+    );
+    expect(resolveLauncherLogoUrl('data:image/png;base64,abc', 'https://refexone.com')).toBe(
+      'data:image/png;base64,abc'
+    );
   });
 });
 

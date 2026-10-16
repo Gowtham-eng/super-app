@@ -159,6 +159,16 @@ export function launcherAppDisplayName(app = {}) {
   return app.name || '';
 }
 
+/** Prefix relative `/api/uploads/` logos with the live backend origin. */
+export function resolveLauncherLogoUrl(logoUrl, backendOrigin = '') {
+  const raw = String(logoUrl || '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw) || raw.startsWith('data:')) return raw;
+  const origin = String(backendOrigin || '').replace(/\/$/, '');
+  const path = raw.startsWith('/') ? raw : `/${raw}`;
+  return origin ? `${origin}${path}` : path;
+}
+
 export function userCanSeeAgenticAi(user = {}) {
   const email = userEmail(user);
   return Boolean(email) && AGENTIC_AI_EMAILS.includes(email);
