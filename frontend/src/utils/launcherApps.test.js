@@ -220,6 +220,11 @@ describe('Rex / agentic AI visibility', () => {
     expect(isRexApp(rex)).toBe(true);
     expect(isRexApp({ name: 'Rex refex executive agent' })).toBe(true);
     expect(isRexApp({ name: 'Refexions' })).toBe(false);
+    expect(isRexApp({ name: 'Agentic AI' })).toBe(true);
+    expect(filterLauncherAppsForUser(
+      [{ id: 'agentic', name: 'Agentic AI', type: 'saml', has_access: true }],
+      { email: 'itsm.test@refexone.com' },
+    )).toEqual([]);
     expect(launcherAppDisplayName({ name: 'Rex refex executive agent' })).toBe('agentic AI');
     expect(launcherAppDisplayName(rex)).toBe('agentic AI');
     expect(userCanSeeAgenticAi(allowed)).toBe(true);

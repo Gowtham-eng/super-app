@@ -199,10 +199,10 @@ def is_rex_app(app: Optional[dict] = None) -> bool:
     if app_id == "rex":
         return True
     name = str(app.get("name") or "")
-    if _REX_WORD_RE.search(name):
+    if _REX_WORD_RE.search(name) or re.search(r"agentic\s*ai", name, re.I):
         return True
     compact = _compact_name(f"{name} {app.get('description') or ''}")
-    return "refexexecutiveagent" in compact
+    return "refexexecutiveagent" in compact or _compact_name(name) == "agenticai"
 
 
 def user_can_see_agentic_ai(user: Optional[dict] = None) -> bool:

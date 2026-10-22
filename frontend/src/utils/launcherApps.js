@@ -153,9 +153,9 @@ export function isRexApp(app = {}) {
   const id = String(app.id || '').trim().toLowerCase();
   if (id === 'rex') return true;
   const name = String(app.name || '').trim();
-  if (/\brex\b/i.test(name)) return true;
+  if (/\brex\b/i.test(name) || /agentic\s*ai/i.test(name)) return true;
   const compact = compactAppName(`${name} ${app.description || ''}`);
-  return compact.includes('refexexecutiveagent');
+  return compact.includes('refexexecutiveagent') || compactAppName(name) === 'agenticai';
 }
 
 export function launcherAppDisplayName(app = {}) {
