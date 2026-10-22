@@ -10,6 +10,7 @@ from routes.itsm import (
     _public_shared,
     _resolve_webhook_path,
     _ticket_webhook_body,
+    kissflow_webhook_entity_name,
     _webhook_belongs_to_account,
     parse_sap_module_list,
 )
@@ -61,6 +62,44 @@ def test_refex_webhook_omits_empty_attachment():
         attachments=[],
     )
     assert "Attachment" not in body
+
+
+def test_non_refex_webhook_entity_uses_kissflow_select_text():
+    expected = {
+        "Extrovis": "Extrovis",
+        "Kavis": "KavisPharma",
+        "Kavis Pharma": "KavisPharma",
+        "ModePro": "ModePro",
+        "Modepro": "ModePro",
+        "Pharma Pack": "Pharmapack",
+        "Pharmapack": "Pharmapack",
+    }
+    for incoming, want in expected.items():
+        assert kissflow_webhook_entity_name(incoming) == want
+        body = _ticket_webhook_body(
+            process_id="Live_IT_Service_Request_Extrovis_A00",
+            name="A",
+            email="a@extrovis.com",
+            entity=incoming,
+            location="EPL-I",
+            sub_type="Hardware",
+            criticality="Low",
+            description="test",
+            subject="Laptop",
+        )
+        assert body["Entity"] == want
+    assert kissflow_webhook_entity_name("Refex") == "Refex"
+    refex = _ticket_webhook_body(
+        process_id="Live_IT_Service_Request_A00",
+        name="A",
+        email="a@refex.com",
+        entity="Refex",
+        location="Chennai",
+        sub_type="VPN",
+        criticality="Low",
+        description="vpn",
+    )
+    assert refex["Entity"] == "Refex"
 
 
 def test_non_refex_webhook_includes_attachment_array():

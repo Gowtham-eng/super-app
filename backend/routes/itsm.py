@@ -121,6 +121,29 @@ def normalize_non_refex_entity_key(value: str) -> str:
     return (value or "").strip()
 
 
+# Kissflow Extrovis create-webhook Entity select — exact text, not UI labels.
+KISSFLOW_WEBHOOK_ENTITY_NAMES = ("Extrovis", "KavisPharma", "ModePro", "Pharmapack")
+
+
+def kissflow_webhook_entity_name(entity: Optional[str]) -> str:
+    """Webhook JSON Entity for non-Refex. UI may still show Kavis / Pharma Pack."""
+    raw = (entity or "").strip()
+    if not raw:
+        return ""
+    if not _uses_extrovis_flow(raw):
+        return raw
+    token = re.sub(r"[\s_\n.-]+", "", raw.lower())
+    if token.startswith("extrovis"):
+        return "Extrovis"
+    if token.startswith("modepro"):
+        return "ModePro"
+    if token.startswith("kavis"):
+        return "KavisPharma"
+    if token.startswith("pharma"):
+        return "Pharmapack"
+    return raw
+
+
 def normalize_non_refex_location_key(value: str) -> str:
     token = re.sub(r"[\s._-]+", "", (value or "").strip().lower())
     if not token:
@@ -804,7 +827,7 @@ def _ticket_webhook_body(
             "Source": SOURCE_VALUE,
             "Name": name,
             "Email": email,
-            "Entity": entity,
+            "Entity": kissflow_webhook_entity_name(entity),
             "Location_user": location,
             "Subject": subject,
             "Sub_Type": "" if sap else sub_type,
@@ -819,7 +842,7 @@ def _ticket_webhook_body(
             "Source": SOURCE_VALUE,
             "Name": name,
             "Email": email,
-            "Entity": entity,
+            "Entity": kissflow_webhook_entity_name(entity),
             "Location_user": location,
             "Sub_Type": sub_type,
             "Criticality": criticality,

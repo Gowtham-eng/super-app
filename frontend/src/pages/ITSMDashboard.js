@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
+import { HELPDESK_THEME } from '../theme/helpdeskNeTheme';
 import { ITSM_API } from '../config/api';
 import { toast } from 'sonner';
 import { getApiErrorMessage, isKissflowChallengeError, withKissflowRetry } from '../utils/apiError';
@@ -34,28 +35,7 @@ const KPI_CARDS = [
   { key: 'Closed', label: 'Closed Tickets', sub: 'Successfully completed', icon: CheckCircle2, tone: 'green' },
 ];
 
-const KPI_TONE = {
-  blue: {
-    wash: 'from-sky-50/90 via-white to-indigo-50/70',
-    value: 'text-sky-700',
-    iconBg: 'bg-[#0d9488]',
-  },
-  green: {
-    wash: 'from-emerald-50/90 via-white to-teal-50/70',
-    value: 'text-emerald-700',
-    iconBg: 'bg-[#107C10]',
-  },
-  orange: {
-    wash: 'from-orange-50/90 via-white to-amber-50/70',
-    value: 'text-orange-700',
-    iconBg: 'bg-[#E56910]',
-  },
-  red: {
-    wash: 'from-rose-50/90 via-white to-red-50/70',
-    value: 'text-red-700',
-    iconBg: 'bg-[#D13438]',
-  },
-};
+const KPI_TONE = HELPDESK_THEME.kpiTone;
 
 const TABLE_TITLES = {
   All: 'All Tickets',
@@ -357,10 +337,10 @@ const AgentSolutionBlock = ({ ticket, loading = false }) => {
   const rowId = ticket?.id || ticket?.localId || 'ticket';
   return (
     <div
-      className="rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-3"
+      className="rounded-xl border border-[#D0E0F5] bg-[#eef6ff]/80 px-4 py-3"
       data-testid={`itsm-agent-solution-${rowId}`}
     >
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">IT Agent Solution</p>
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-[#0d5ea8]">IT Agent Solution</p>
       {loading && !text ? (
         <p className="mt-1 flex items-center gap-2 text-sm text-slate-500">
           <Loader2 size={14} className="animate-spin" />
@@ -701,7 +681,7 @@ const mergeCommentRows = (...groups) => {
 };
 
 const avatarTone = (name, mine) => {
-  if (mine) return 'bg-teal-800 text-teal-50';
+  if (mine) return HELPDESK_THEME.commentMine;
   const key = String(name || '').trim().toLowerCase();
   if (key.includes('test') || key.includes('employee') || key.includes('requester')) {
     return 'bg-slate-200 text-slate-700';
@@ -1061,7 +1041,7 @@ const TicketConversation = ({
         ) : null}
         {hydrating && !threadReady ? (
           <div className="relative z-[1] flex flex-col items-center justify-center px-4 py-10 text-center" data-testid={`itsm-revisions-loading-${ticket.id}`}>
-            <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg border border-slate-200 bg-white text-teal-700">
+            <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg border border-slate-200 bg-white text-[#0f6cbd]">
               <Loader2 size={20} className="animate-spin" />
             </span>
             <p className="text-sm font-semibold text-slate-800">Loading conversation…</p>
@@ -1123,7 +1103,7 @@ const TicketConversation = ({
                     )}
                     <div className="min-w-0 flex-1">
                       {!grouped ? (
-                        <p className={`mb-1 text-[11px] font-medium ${mine ? 'text-right text-teal-800' : 'text-left text-slate-500'}`}>
+                        <p className={`mb-1 text-[11px] font-medium ${mine ? HELPDESK_THEME.commentNameMine : 'text-left text-slate-500'}`}>
                           {name === 'You' ? 'You' : name}
                           <span className="font-normal text-slate-400"> · {roleLabel}</span>
                         </p>
@@ -1134,7 +1114,7 @@ const TicketConversation = ({
                           isReopen
                             ? 'rounded-xl border-l-4 border-amber-500 bg-amber-50 text-amber-950'
                             : mine
-                              ? 'rounded-xl border-r-4 border-teal-200 bg-teal-800 text-white'
+                              ? HELPDESK_THEME.commentBubbleMine
                               : 'rounded-xl border border-slate-200 border-l-4 border-l-slate-400 bg-white text-slate-800'
                         }`}
                       >
@@ -1188,7 +1168,7 @@ const TicketConversation = ({
                 type="button"
                 disabled={commenting}
                 onClick={() => send(item.text)}
-                className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 disabled:opacity-50"
+                className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:border-[#93c5fd] hover:bg-[#EAF2FF] hover:text-[#0d5ea8] disabled:opacity-50"
               >
                 {item.label}
               </button>
@@ -1211,7 +1191,7 @@ const TicketConversation = ({
               rows={2}
               disabled={commenting}
               placeholder="Write a comment…"
-              className="min-h-[48px] max-h-28 min-w-0 flex-1 resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100"
+              className={`min-h-[48px] max-h-28 min-w-0 flex-1 resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none ${HELPDESK_THEME.commentFocus}`}
               data-testid={`itsm-comment-note-${ticket.id}`}
             />
             {allowAttachments ? (
@@ -1245,7 +1225,7 @@ const TicketConversation = ({
                   aria-label="Add attachment"
                   disabled={commenting}
                   onClick={() => fileInputRef.current?.click()}
-                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-teal-600 hover:bg-teal-50 hover:text-teal-800 disabled:pointer-events-none disabled:opacity-40"
+                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-[#0f6cbd] hover:bg-[#EAF2FF] hover:text-[#0d5ea8] disabled:pointer-events-none disabled:opacity-40"
                   data-testid={`itsm-comment-attach-${ticket.id}`}
                 >
                   <Paperclip size={16} />
@@ -1256,7 +1236,7 @@ const TicketConversation = ({
               type="button"
               onClick={() => send()}
               disabled={commenting || (!draft.trim() && !(allowAttachments && pendingFiles.length))}
-              className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-40"
+              className={HELPDESK_THEME.sendBtn}
               data-testid={`itsm-comment-send-${ticket.id}`}
               aria-label="Send comment"
             >
@@ -2330,22 +2310,22 @@ const ITSMDashboard = () => {
   };
 
   return (
-    <div className="animate-fadeIn w-full pb-8" data-testid="itsm-dashboard-page">
-      <div className="relative overflow-hidden rounded-2xl border-2 border-emerald-200/70 bg-gradient-to-br from-emerald-50 via-white to-teal-50/40 mb-5">
-        <div className="absolute -top-12 -right-12 w-56 h-56 rounded-full bg-emerald-100/40 blur-3xl pointer-events-none" />
-        <div className="absolute -bottom-12 -left-12 w-56 h-56 rounded-full bg-teal-100/30 blur-3xl pointer-events-none" />
+    <div className={`${HELPDESK_THEME.pageWrap} animate-fadeIn w-full pb-8`} data-testid="itsm-dashboard-page">
+      <div className={HELPDESK_THEME.hero}>
+        <div className={HELPDESK_THEME.heroBlobA} />
+        <div className={HELPDESK_THEME.heroBlobB} />
         <div className="relative px-4 py-4 sm:px-7 sm:py-6 flex flex-col gap-4 md:flex-row md:items-center">
           <div className="flex items-center gap-3 min-w-0 flex-1">
             <button
               type="button"
               onClick={() => navigate('/launcher')}
-              className="p-2 rounded-xl border border-emerald-200/80 bg-white/80 text-slate-600 hover:bg-white hover:border-emerald-300 transition-colors shrink-0"
+              className={HELPDESK_THEME.backBtn}
               aria-label="Back to launcher"
             >
               <ArrowLeft size={18} />
             </button>
-            <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-white border-2 border-emerald-200 flex items-center justify-center shadow-sm shrink-0">
-              <Headphones size={22} className="text-emerald-600" strokeWidth={2} />
+            <div className={`w-11 h-11 sm:w-12 sm:h-12 ${HELPDESK_THEME.heroIconWrap}`}>
+              <Headphones size={22} className={HELPDESK_THEME.heroIcon} strokeWidth={2} />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
@@ -2370,8 +2350,8 @@ const ITSMDashboard = () => {
           </div>
           <div className="flex items-center gap-2 flex-wrap md:justify-end shrink-0">
             {entity && (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100/80 border border-emerald-200/70 text-emerald-800 text-sm font-medium">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              <span className={HELPDESK_THEME.entityChip}>
+                <span className={HELPDESK_THEME.entityDot} />
                 {entity}
               </span>
             )}
@@ -2431,7 +2411,7 @@ const ITSMDashboard = () => {
                   onClick={() => setStatusTab(card.key)}
                   className={`relative overflow-hidden rounded-2xl border bg-white text-left p-3 min-h-[100px] md:min-h-[112px] transition ${
                     active
-                      ? 'border-emerald-500 ring-2 ring-emerald-500/30 shadow-md'
+                      ? HELPDESK_THEME.kpiActive
                       : 'border-slate-200 hover:shadow-md'
                   }`}
                   data-testid={`itsm-kpi-${card.key}`}
@@ -2462,7 +2442,7 @@ const ITSMDashboard = () => {
             </div>
             {loading ? (
               <div className="flex items-center justify-center py-16">
-                <Loader2 className="animate-spin text-emerald-600" size={28} />
+                <Loader2 className={`animate-spin ${HELPDESK_THEME.loader}`} size={28} />
               </div>
             ) : tickets.length === 0 ? (
               <div className="p-10 text-center">
@@ -2501,7 +2481,7 @@ const ITSMDashboard = () => {
               if (reopenError) setReopenError('');
             }}
             rows={4}
-            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+            className={`w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none ${HELPDESK_THEME.inputFocus}`}
             placeholder="Enter the reason to reopen"
             data-testid="itsm-reopen-note"
           />

@@ -1,0 +1,24 @@
+/* Refex One helpdesk pages only. Revert: HELPDESK_THEME = HELPDESK_THEME_CLASSIC */
+.helpdesk-theme-ne {
+  --helpdesk-brand: #0f6cbd;
+  --helpdesk-brand-dark: #0d5ea8;
+  --helpdesk-soft: #eef6ff;
+}
+
+.helpdesk-theme-ne .btn-primary {
+  background-color: #0f6cbd;
+  box-shadow: 0 1px 2px rgba(15, 108, 189, 0.18);
+}
+
+.helpdesk-theme-ne .btn-primary:hover:not(:disabled) {
+  background-color: #0d5ea8;
+  box-shadow: 0 8px 20px -8px rgba(15, 108, 189, 0.45);
+}
+
+.helpdesk-theme-ne .btn-primary:focus-visible {
+  --tw-ring-color: rgb(15 108 189 / 0.35);
+}
+
+.helpdesk-theme-classic .btn-primary {
+  /* keep global emerald buttons */
+}
