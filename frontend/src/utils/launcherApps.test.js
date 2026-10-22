@@ -107,6 +107,11 @@ describe('launcher ITSM vs Reports vs EMS', () => {
     expect(hit.home_url).not.toContain('EMS_001_A00');
   });
 
+  it('shows Tech Helpdesk on ITSM / helpdesk tiles', () => {
+    expect(launcherAppDisplayName(ITSM_SAML)).toBe('Tech Helpdesk');
+    expect(launcherAppDisplayName({ id: 'itsm-inapp', name: 'ITSM' })).toBe('Tech Helpdesk');
+  });
+
   it('Tech Helpdesk SAML opens Kissflow ITSM when the probe is up, not the in-app dashboard', () => {
     const helpdesk = {
       id: 'saml-tech-helpdesk',

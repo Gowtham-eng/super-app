@@ -160,6 +160,7 @@ export function isRexApp(app = {}) {
 
 export function launcherAppDisplayName(app = {}) {
   if (isRexApp(app)) return AGENTIC_AI_LABEL;
+  if (isItsmNamedApp(app)) return 'Tech Helpdesk';
   return app.name || '';
 }
 

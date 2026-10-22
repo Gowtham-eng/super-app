@@ -22,7 +22,7 @@ const DEFAULT_POLICY_URL = 'https://policy-sender-645830234926.asia-south1.run.a
 const DEFAULT_MENUS = {
   main: {
     message: 'Please choose from the following',
-    options: ['Expense', 'Travel', 'IT HelpDesk', 'Policies'],
+    options: ['Expense', 'Travel', 'Tech Helpdesk', 'Policies'],
     source: 'setup',
     refreshed_at: null,
   },

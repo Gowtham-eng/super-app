@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { HELPDESK_THEME } from '../theme/helpdeskNeTheme';
 import { ITSM_API } from '../config/api';
 import { toast } from 'sonner';
 import { getApiErrorMessage } from '../utils/apiError';
@@ -911,7 +910,7 @@ const CreateITRequest = () => {
   if (submitted) {
     const failed = submitStatus === 'failed';
     return (
-      <div className={`${HELPDESK_THEME.pageWrap} animate-fadeIn w-full max-w-lg mx-auto pb-8`} data-testid="itsm-create-result">
+      <div className="animate-fadeIn w-full max-w-lg mx-auto pb-8" data-testid="itsm-create-result">
         <div className="card-default overflow-hidden">
           <div className={`px-6 py-8 text-center ${failed ? 'bg-red-50' : 'bg-emerald-50'}`}>
             {failed ? (
@@ -942,22 +941,22 @@ const CreateITRequest = () => {
   }
 
   return (
-    <div className={`${HELPDESK_THEME.pageWrap} animate-fadeIn w-full pb-8`} data-testid="itsm-create-page">
-      <div className={HELPDESK_THEME.hero}>
-        <div className={HELPDESK_THEME.heroBlobA} />
-        <div className={HELPDESK_THEME.heroBlobB} />
+    <div className="animate-fadeIn w-full pb-8" data-testid="itsm-create-page">
+      <div className="relative overflow-hidden rounded-2xl border-2 border-emerald-200/70 bg-gradient-to-br from-emerald-50 via-white to-teal-50/40 mb-5">
+        <div className="absolute -top-12 -right-12 w-56 h-56 rounded-full bg-emerald-100/40 blur-3xl pointer-events-none" />
+        <div className="absolute -bottom-12 -left-12 w-56 h-56 rounded-full bg-teal-100/30 blur-3xl pointer-events-none" />
         <div className="relative px-5 py-5 sm:px-7 sm:py-6 flex items-center gap-4">
           <button
             type="button"
             onClick={() => navigate('/itsm')}
-            className={HELPDESK_THEME.backBtn}
+            className="p-2 rounded-xl border border-emerald-200/80 bg-white/80 text-slate-600 hover:bg-white hover:border-emerald-300 transition-colors shrink-0"
             aria-label="Back to my tickets"
           >
             <ArrowLeft size={18} />
           </button>
           <div className="flex items-center gap-3 min-w-0 flex-1">
-            <div className={`w-12 h-12 ${HELPDESK_THEME.heroIconWrap}`}>
-              <Headphones size={22} className={HELPDESK_THEME.heroIcon} strokeWidth={2} />
+            <div className="w-12 h-12 rounded-2xl bg-white border-2 border-emerald-200 flex items-center justify-center shadow-sm shrink-0">
+              <Headphones size={22} className="text-emerald-600" strokeWidth={2} />
             </div>
             <div className="min-w-0">
               <h1 className="font-heading text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 tracking-tight">
@@ -969,8 +968,8 @@ const CreateITRequest = () => {
           {profile.entity && (
             <div className="hidden md:flex flex-col items-end shrink-0">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Entity</span>
-              <span className={HELPDESK_THEME.entityChip}>
-                <span className={HELPDESK_THEME.entityDot} />
+              <span className="mt-1 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100/80 border border-emerald-200/70 text-emerald-800 text-sm font-medium">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                 {profile.entity}
               </span>
             </div>
@@ -1101,7 +1100,7 @@ const CreateITRequest = () => {
                       setSapModule('');
                     }}
                     className={`px-4 py-2 rounded-lg text-sm font-semibold ${
-                      !isSapTicket ? HELPDESK_THEME.toggleActive : 'text-slate-500'
+                      !isSapTicket ? 'bg-white text-emerald-800 shadow-sm border border-emerald-100' : 'text-slate-500'
                     }`}
                     data-testid="itsm-sap-ticket-no"
                   >
@@ -1119,7 +1118,7 @@ const CreateITRequest = () => {
                       setCascade({ ticketType: '', category: '', subCategory: '', subType: '', type: '' });
                     }}
                     className={`px-4 py-2 rounded-lg text-sm font-semibold ${
-                      isSapTicket ? HELPDESK_THEME.toggleActive : 'text-slate-500'
+                      isSapTicket ? 'bg-white text-emerald-800 shadow-sm border border-emerald-100' : 'text-slate-500'
                     }`}
                     data-testid="itsm-sap-ticket-yes"
                   >
@@ -1186,7 +1185,7 @@ const CreateITRequest = () => {
                       setSelectedSubType('');
                     }}
                     className={`px-4 py-2 rounded-lg text-sm font-semibold ${
-                      !manualEdit ? HELPDESK_THEME.toggleActive : 'text-slate-500'
+                      !manualEdit ? 'bg-white text-emerald-800 shadow-sm border border-emerald-100' : 'text-slate-500'
                     }`}
                     data-testid="itsm-manual-edit-no"
                   >
@@ -1202,7 +1201,7 @@ const CreateITRequest = () => {
                       setSelectedMatrix(null);
                     }}
                     className={`px-4 py-2 rounded-lg text-sm font-semibold ${
-                      manualEdit ? HELPDESK_THEME.toggleActive : 'text-slate-500'
+                      manualEdit ? 'bg-white text-emerald-800 shadow-sm border border-emerald-100' : 'text-slate-500'
                     }`}
                     data-testid="itsm-manual-edit-yes"
                   >
@@ -1225,7 +1224,7 @@ const CreateITRequest = () => {
               )}
               <div className="relative">
                 <Search
-                  className={`absolute left-4 top-1/2 -translate-y-1/2 ${HELPDESK_THEME.accentIcon} pointer-events-none shrink-0`}
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-600 pointer-events-none shrink-0"
                   size={18}
                   aria-hidden
                 />
@@ -1242,7 +1241,7 @@ const CreateITRequest = () => {
                 />
                 {(loadingMatrix || isSearchPending) && (
                   <Loader2
-                    className={`absolute right-4 top-1/2 -translate-y-1/2 animate-spin ${HELPDESK_THEME.accentIcon} pointer-events-none`}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 animate-spin text-emerald-600 pointer-events-none"
                     size={18}
                     aria-hidden
                   />
@@ -1263,7 +1262,7 @@ const CreateITRequest = () => {
                       key={item}
                       type="button"
                       onClick={() => selectSubType(item)}
-                      className="w-full text-left px-4 py-3 text-sm text-slate-700 hover:bg-[#EAF2FF] border-b border-slate-100 last:border-0 transition-colors"
+                      className="w-full text-left px-4 py-3 text-sm text-slate-700 hover:bg-emerald-50 border-b border-slate-100 last:border-0 transition-colors"
                     >
                       {item}
                     </button>
@@ -1377,7 +1376,7 @@ const CreateITRequest = () => {
             {isSapTicket ? (
               <>
                 <div className="flex items-center gap-2 mb-4">
-                  <ClipboardList className={HELPDESK_THEME.accentIcon} size={18} />
+                  <ClipboardList className="text-emerald-600" size={18} />
                   <h2 className="form-section-title !mb-0">SAP request</h2>
                 </div>
                 <div className="grid grid-cols-1 gap-3">
@@ -1390,7 +1389,7 @@ const CreateITRequest = () => {
               <>
                 <div className="flex items-center justify-between gap-3 mb-4">
                   <div className="flex items-center gap-2">
-                    <ClipboardList className={HELPDESK_THEME.accentIcon} size={18} />
+                    <ClipboardList className="text-emerald-600" size={18} />
                     <h2 className="form-section-title !mb-0">Request Details</h2>
                   </div>
                   {criticality && (
@@ -1437,7 +1436,7 @@ const CreateITRequest = () => {
                 return (
                   <div data-testid="itsm-ticket-type-guide">
                     <div className="flex items-center gap-2 mb-4">
-                      <ClipboardList className={HELPDESK_THEME.accentIcon} size={18} />
+                      <ClipboardList className="text-emerald-600" size={18} />
                       <h2 className="form-section-title !mb-0">What is {guide.title}?</h2>
                     </div>
                     <p className="text-sm font-medium text-slate-800 mb-2">{guide.summary}</p>
@@ -1446,7 +1445,7 @@ const CreateITRequest = () => {
                     <ul className="space-y-1.5 mb-4">
                       {guide.examples.map((ex) => (
                         <li key={ex} className="text-sm text-slate-600 flex gap-2">
-                          <span className={`${HELPDESK_THEME.accentIcon} shrink-0`}>•</span>
+                          <span className="text-emerald-600 shrink-0">•</span>
                           <span>{ex}</span>
                         </li>
                       ))}
@@ -1459,8 +1458,8 @@ const CreateITRequest = () => {
               })()
             ) : (
               <div className="flex flex-col items-center justify-center text-center py-8 px-4 h-full min-h-[280px]">
-                <div className="w-14 h-14 rounded-2xl bg-[#EAF2FF] border border-[#D0E0F5] flex items-center justify-center mb-4">
-                  <ClipboardList className={HELPDESK_THEME.accentIcon} size={24} />
+                <div className="w-14 h-14 rounded-2xl bg-emerald-50 border border-emerald-100 flex items-center justify-center mb-4">
+                  <ClipboardList className="text-emerald-600" size={24} />
                 </div>
                 <h2 className="font-heading text-lg font-semibold text-slate-900 mb-1">Request details</h2>
                 <p className="text-sm text-slate-500 max-w-xs mb-6">
@@ -1490,7 +1489,7 @@ const CreateITRequest = () => {
                 className={`absolute right-2 top-2 p-2 rounded-lg border transition-colors ${
                   isListening
                     ? 'bg-red-50 border-red-200 text-red-600'
-                    : 'bg-[#EAF2FF] border-[#D0E0F5] text-[#0d5ea8] hover:bg-[#DCE8FA]'
+                    : 'bg-emerald-50 border-emerald-100 text-emerald-700 hover:bg-emerald-100'
                 }`}
                 aria-label={isListening ? 'Stop listening' : 'Start voice input'}
               >
@@ -1524,11 +1523,11 @@ const CreateITRequest = () => {
                   event.preventDefault();
                   addAttachmentFiles(event.dataTransfer?.files);
                 }}
-                className={HELPDESK_THEME.dropzone}
+                className="w-full rounded-xl border-2 border-dashed border-emerald-200 bg-emerald-50/40 px-4 py-8 text-center hover:bg-emerald-50 transition-colors"
                 data-testid="itsm-attachment-dropzone"
               >
-                <Upload className={`mx-auto mb-2 ${HELPDESK_THEME.accentIcon}`} size={20} />
-                <div className={HELPDESK_THEME.dropzoneTitle}>Upload file</div>
+                <Upload className="mx-auto mb-2 text-emerald-600" size={20} />
+                <div className="text-sm font-semibold text-emerald-800">Upload file</div>
                 <div className="text-xs text-slate-500 mt-1">Drag and drop a file or click to browse</div>
               </button>
               {attachments.length > 0 && (
@@ -1576,9 +1575,9 @@ const CreateITRequest = () => {
 };
 
 const ProfileChip = ({ icon: Icon, label, value, highlight = false }) => (
-  <div className={`flex items-start gap-3 rounded-xl border p-3 ${highlight ? HELPDESK_THEME.highlightCard : 'border-slate-100 bg-slate-50/50'}`}>
-    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${highlight ? HELPDESK_THEME.highlightIconWrap : 'bg-white border border-slate-200'}`}>
-      <Icon size={15} className={highlight ? HELPDESK_THEME.accentIcon : 'text-slate-500'} />
+  <div className={`flex items-start gap-3 rounded-xl border p-3 ${highlight ? 'border-emerald-200 bg-emerald-50/50' : 'border-slate-100 bg-slate-50/50'}`}>
+    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${highlight ? 'bg-emerald-100' : 'bg-white border border-slate-200'}`}>
+      <Icon size={15} className={highlight ? 'text-emerald-600' : 'text-slate-500'} />
     </div>
     <div className="min-w-0">
       <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">{label}</div>
@@ -1588,10 +1587,10 @@ const ProfileChip = ({ icon: Icon, label, value, highlight = false }) => (
 );
 
 const InlineField = ({ icon: Icon, label, children, required = false, highlight = false }) => (
-  <div className={`rounded-xl border p-3 ${highlight ? HELPDESK_THEME.highlightCard : 'border-amber-200 bg-amber-50/40'}`}>
+  <div className={`rounded-xl border p-3 ${highlight ? 'border-emerald-200 bg-emerald-50/40' : 'border-amber-200 bg-amber-50/40'}`}>
     <div className="flex items-center gap-2 mb-2">
-      <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${highlight ? HELPDESK_THEME.highlightIconWrap : 'bg-amber-100'}`}>
-        <Icon size={14} className={highlight ? HELPDESK_THEME.accentIcon : 'text-amber-700'} />
+      <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${highlight ? 'bg-emerald-100' : 'bg-amber-100'}`}>
+        <Icon size={14} className={highlight ? 'text-emerald-700' : 'text-amber-700'} />
       </div>
       <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
         {label}{required ? ' *' : ''}
@@ -1604,7 +1603,7 @@ const InlineField = ({ icon: Icon, label, children, required = false, highlight 
 const InfoBlock = ({ label, value, highlight = false }) => (
   <div>
     <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-0.5">{label}</div>
-    <div className={`text-sm whitespace-pre-wrap ${highlight ? 'font-semibold text-[#0d5ea8]' : 'font-medium text-slate-800'}`}>
+    <div className={`text-sm whitespace-pre-wrap ${highlight ? 'font-semibold text-emerald-800' : 'font-medium text-slate-800'}`}>
       {value || '—'}
     </div>
   </div>
