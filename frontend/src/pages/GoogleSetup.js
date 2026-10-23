@@ -11,6 +11,7 @@ import {
   Pencil,
   Plus,
   Power,
+  RefreshCw,
   Trash2,
   X,
 } from 'lucide-react';
@@ -23,6 +24,8 @@ const emptyForm = () => ({
   hosted_domain: '',
   redirect_uri: '',
   status: 'active',
+  directory_admin_email: '',
+  service_account_json: '',
 });
 
 const Field = ({ label, hint, children, required }) => (
@@ -49,6 +52,7 @@ const GoogleSetup = () => {
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
+  const [syncingId, setSyncingId] = useState(null);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -90,6 +94,8 @@ const GoogleSetup = () => {
       hosted_domain: cfg.hosted_domain || '',
       redirect_uri: cfg.redirect_uri || meta?.redirect_uri || '',
       status: cfg.status || 'active',
+      directory_admin_email: cfg.directory_admin_email || '',
+      service_account_json: '',
     });
     setEditorOpen(true);
   };
@@ -125,7 +131,11 @@ const GoogleSetup = () => {
         redirect_uri: form.redirect_uri.trim() || meta?.redirect_uri,
         status: form.status,
         scopes: ['openid', 'profile', 'email'],
+        directory_admin_email: form.directory_admin_email.trim(),
       };
+      if (form.service_account_json.trim()) {
+        payload.service_account_json = form.service_account_json;
+      }
       if (form.client_secret.trim()) {
         payload.client_secret = form.client_secret.trim();
       }
@@ -169,6 +179,33 @@ const GoogleSetup = () => {
       fetchAll();
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Delete failed');
+    }
+  };
+
+  const syncUsers = async (cfg) => {
+    const admin = cfg.directory_admin_email || 'the directory admin on this config';
+    if (
+      !window.confirm(
+        `Pull ${admin}'s Google Workspace users into RefexOne?\n\nOnly that company's domain is synced. The admin must be a super admin, and the service-account key must already be saved.`
+      )
+    ) {
+      return;
+    }
+    setSyncingId(cfg.id);
+    try {
+      const res = await axios.post(
+        `${API}/google-oauth/configs/${cfg.id}/sync-users`,
+        {},
+        getAuthHeader()
+      );
+      toast.success(
+        `${cfg.label}: ${res.data.created || 0} created, ${res.data.updated || 0} updated, ${res.data.disabled || 0} disabled`
+      );
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'User sync failed');
+    } finally {
+      setSyncingId(null);
     }
   };
 
@@ -295,9 +332,19 @@ const GoogleSetup = () => {
                 <p className="text-xs text-slate-500">
                   Domains: {(cfg.email_domains || []).map((d) => `@${d}`).join(', ')}
                   {cfg.hosted_domain ? ` · Workspace: @${cfg.hosted_domain}` : ''}
+                  {cfg.directory_admin_email ? ` · Sync admin: ${cfg.directory_admin_email}` : ''}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => syncUsers(cfg)}
+                  disabled={syncingId === cfg.id}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-60"
+                >
+                  {syncingId === cfg.id ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                  Sync users
+                </button>
                 <button
                   type="button"
                   onClick={() => toggleStatus(cfg)}
@@ -389,6 +436,34 @@ const GoogleSetup = () => {
                   value={form.hosted_domain}
                   onChange={(e) => setForm({ ...form, hosted_domain: e.target.value })}
                   placeholder="refex.co.in"
+                />
+              </Field>
+              <Field
+                label="Directory admin email"
+                hint="Super admin of the company to import, such as the ModePro admin. Sync pulls only that email's domain."
+              >
+                <input
+                  className={inputClass}
+                  value={form.directory_admin_email}
+                  onChange={(e) => setForm({ ...form, directory_admin_email: e.target.value })}
+                  placeholder="admin@modepro.com"
+                />
+              </Field>
+              <Field
+                label="Service account JSON"
+                hint="Upload the Google Cloud service-account JSON. Leave empty when editing to keep the saved key."
+              >
+                <input
+                  className={inputClass}
+                  type="file"
+                  accept="application/json,.json"
+                  onChange={(e) => {
+                    const file = e.target.files && e.target.files[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = () => setForm((prev) => ({ ...prev, service_account_json: String(reader.result || '') }));
+                    reader.readAsText(file);
+                  }}
                 />
               </Field>
               <Field label="Redirect URI" hint="Must match Google OAuth client exactly">
