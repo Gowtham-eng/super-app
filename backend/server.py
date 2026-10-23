@@ -849,6 +849,7 @@ async def check_access_policies(user: dict, app: dict, request: Request) -> tupl
 PLATFORM_ADMIN_EMAILS = (
     "gowtham.s@refex.co.in",
     "aravind.srinivasan@refex.co.in",
+    "mohamedaasik.m@refex.co.in",
 )
 
 async def seed_default_permissions():
