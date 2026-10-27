@@ -88,7 +88,7 @@ const AppAccessSelector = ({ samlApps, selectedIds, onToggle, onSelectAll, onCle
               {/* App name + type */}
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-slate-800 truncate">{app.name}</p>
-                <p className="text-[10px] text-slate-400 font-mono uppercase tracking-wide">SAML 2.0</p>
+                <p className="text-[10px] text-slate-400 font-mono uppercase tracking-wide">{app.app_type === 'oidc' ? 'OIDC' : 'SAML 2.0'}</p>
               </div>
               {isSelected && (
                 <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">Granted</span>
@@ -269,16 +269,20 @@ const UsersPage = () => {
 
   const fetchData = async () => {
     try {
-      const [usersRes, groupsRes, rolesRes, appsRes] = await Promise.all([
+      const [usersRes, groupsRes, rolesRes, appsRes, oidcRes] = await Promise.all([
         axios.get(`${API}/users`, getAuthHeader()),
         axios.get(`${API}/groups`, getAuthHeader()),
         axios.get(`${API}/roles`, getAuthHeader()),
         axios.get(`${API}/apps/saml`, getAuthHeader()),
+        axios.get(`${API}/apps/oidc`, getAuthHeader()),
       ]);
       setUsers(usersRes.data);
       setGroups(groupsRes.data);
       setRoles(rolesRes.data);
-      setSamlApps(appsRes.data);
+      setSamlApps([
+        ...(appsRes.data || []).map((a) => ({ ...a, app_type: 'saml' })),
+        ...(oidcRes.data || []).map((a) => ({ ...a, app_type: 'oidc' })),
+      ]);
     } catch (error) {
       toast.error('Failed to load data');
     } finally {
@@ -295,7 +299,9 @@ const UsersPage = () => {
       const newUserId = res.data?.id;
       if (newUserId && app_ids.length > 0) {
         for (const appId of app_ids) {
-          try { await axios.post(`${API}/apps/saml/${appId}/users`, { user_ids: [newUserId] }, getAuthHeader()); } catch {}
+          const app = samlApps.find((a) => a.id === appId);
+          if (!app) continue;
+          try { await axios.post(`${API}/apps/${app.app_type}/${app.id}/users`, { user_ids: [newUserId] }, getAuthHeader()); } catch {}
         }
       }
       toast.success('User created');
@@ -317,9 +323,9 @@ const UsersPage = () => {
         const isAssigned = app.approved_user_ids?.includes(selectedUser.id);
         const shouldBeAssigned = app_ids.includes(app.id);
         if (shouldBeAssigned && !isAssigned) {
-          await axios.post(`${API}/apps/saml/${app.id}/users`, { user_ids: [selectedUser.id] }, getAuthHeader());
+          await axios.post(`${API}/apps/${app.app_type}/${app.id}/users`, { user_ids: [selectedUser.id] }, getAuthHeader());
         } else if (!shouldBeAssigned && isAssigned) {
-          await axios.delete(`${API}/apps/saml/${app.id}/users/${selectedUser.id}`, getAuthHeader());
+          await axios.delete(`${API}/apps/${app.app_type}/${app.id}/users/${selectedUser.id}`, getAuthHeader());
         }
       }
       toast.success('User updated');
@@ -519,9 +525,9 @@ const UsersPage = () => {
         const isAssigned = app.approved_user_ids?.includes(detailUser.id);
         const shouldBeAssigned = (app_ids || []).includes(app.id);
         if (shouldBeAssigned && !isAssigned) {
-          await axios.post(`${API}/apps/saml/${app.id}/users`, { user_ids: [detailUser.id] }, getAuthHeader());
+          await axios.post(`${API}/apps/${app.app_type}/${app.id}/users`, { user_ids: [detailUser.id] }, getAuthHeader());
         } else if (!shouldBeAssigned && isAssigned) {
-          await axios.delete(`${API}/apps/saml/${app.id}/users/${detailUser.id}`, getAuthHeader());
+          await axios.delete(`${API}/apps/${app.app_type}/${app.id}/users/${detailUser.id}`, getAuthHeader());
         }
       }
 
@@ -1172,7 +1178,10 @@ const UsersPage = () => {
                     </h4>
                     <div className="flex flex-wrap gap-2">
                       {getUserApps(detailUser.id).map(a => (
-                        <span key={a.id} className="text-xs bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full font-medium">{a.name}</span>
+                        <span key={`${a.app_type}-${a.id}`} className="text-xs bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full font-medium">
+                          {a.name}
+                          <span className="ml-1 text-[10px] uppercase text-blue-500">{a.app_type === 'oidc' ? 'OIDC' : 'SAML'}</span>
+                        </span>
                       ))}
                       {getUserApps(detailUser.id).length === 0 && (
                         <span className="text-xs text-slate-400">No apps assigned</span>

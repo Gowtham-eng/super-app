@@ -7,7 +7,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
 import { Switch } from '../components/ui/switch';
-import { Key, Plus, PencilSimple, Trash, Copy, Eye, EyeSlash, X, Upload, Globe, MagnifyingGlass, Lock } from '@phosphor-icons/react';
+import { Key, Plus, PencilSimple, Trash, Copy, Eye, EyeSlash, X, Upload, Globe, MagnifyingGlass, Lock, Users, UserMinus } from '@phosphor-icons/react';
 
 const OIDCApps = () => {
   const { API, getAuthHeader, user } = useAuth();
@@ -28,6 +28,10 @@ const OIDCApps = () => {
   const [savingUris, setSavingUris] = useState({});
   const [editingField, setEditingField] = useState({}); // {appId_fieldKey: 'new value'}
   const [savingField, setSavingField] = useState({});
+  const [orgUsers, setOrgUsers] = useState([]);
+  const [showUsersModal, setShowUsersModal] = useState(false);
+  const [appUsers, setAppUsers] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
   const logoInputRef = useRef(null);
 
   const [form, setForm] = useState({
@@ -41,14 +45,16 @@ const OIDCApps = () => {
 
   const fetchData = async () => {
     try {
-      const [appsRes, groupsRes, rolesRes] = await Promise.all([
+      const [appsRes, groupsRes, rolesRes, usersRes] = await Promise.all([
         axios.get(`${API}/apps/oidc`, getAuthHeader()),
         axios.get(`${API}/groups`, getAuthHeader()),
-        axios.get(`${API}/roles`, getAuthHeader())
+        axios.get(`${API}/roles`, getAuthHeader()),
+        axios.get(`${API}/users`, getAuthHeader())
       ]);
       setApps(appsRes.data);
       setGroups(groupsRes.data);
       setRoles(rolesRes.data);
+      setOrgUsers(usersRes.data);
     } catch (error) {
       toast.error('Failed to load data');
     } finally {
@@ -107,6 +113,56 @@ const OIDCApps = () => {
       fetchData();
     } catch (error) {
       toast.error('Failed to delete app');
+    }
+  };
+
+  const syncAssignedUsers = (appId, users) => {
+    setAppUsers(users);
+    setApps((prev) => prev.map((a) => (
+      a.id === appId ? { ...a, approved_user_ids: users.map((u) => u.id) } : a
+    )));
+  };
+
+  const openUsersModal = async (app) => {
+    setSelectedApp(app);
+    setShowUsersModal(true);
+    setUsersLoading(true);
+    try {
+      const response = await axios.get(`${API}/apps/oidc/${app.id}/users`, getAuthHeader());
+      syncAssignedUsers(app.id, response.data);
+    } catch (error) {
+      toast.error('Failed to load assigned users');
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
+  const assignUser = async (userId) => {
+    if (!selectedApp) return;
+    try {
+      await axios.post(`${API}/apps/oidc/${selectedApp.id}/users`, { user_ids: [userId] }, getAuthHeader());
+      const response = await axios.get(`${API}/apps/oidc/${selectedApp.id}/users`, getAuthHeader());
+      syncAssignedUsers(selectedApp.id, response.data);
+      toast.success('User assigned');
+    } catch (error) {
+      toast.error('Failed to assign user');
+    }
+  };
+
+  const removeUser = async (userId) => {
+    if (!selectedApp) return;
+    const appId = selectedApp.id;
+    try {
+      await axios.delete(`${API}/apps/oidc/${appId}/users/${userId}`, getAuthHeader());
+      setAppUsers((prev) => prev.filter((u) => u.id !== userId));
+      setApps((prev) => prev.map((a) => (
+        a.id === appId
+          ? { ...a, approved_user_ids: (a.approved_user_ids || []).filter((id) => id !== userId) }
+          : a
+      )));
+      toast.success('User removed');
+    } catch (error) {
+      toast.error('Failed to remove user');
     }
   };
 
@@ -390,6 +446,14 @@ const OIDCApps = () => {
                   {/* Actions — always visible on the card */}
                   <div className="flex items-center gap-2 shrink-0">
                     <Button
+                      onClick={() => openUsersModal(app)}
+                      className="bg-white hover:bg-violet-50 text-violet-700 border border-violet-200 hover:border-violet-300 rounded-xl px-3 py-2 text-sm font-medium transition-all"
+                      data-testid={`manage-users-${app.id}`}
+                      title="Manage Users"
+                    >
+                      <Users size={15} className="mr-1.5" /> Users
+                    </Button>
+                    <Button
                       onClick={() => editApp(app)}
                       className="bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 hover:border-emerald-300 rounded-xl px-3 py-2 text-sm font-medium transition-all"
                       data-testid={`edit-oidc-${app.id}`}
@@ -424,6 +488,10 @@ const OIDCApps = () => {
                   <span>{app.redirect_uris?.length || 0} redirect URI{(app.redirect_uris?.length || 0) !== 1 ? 's' : ''}</span>
                   <span>•</span>
                   <span>{app.scopes?.length || 0} scope{(app.scopes?.length || 0) !== 1 ? 's' : ''}</span>
+                  <span>•</span>
+                  <span className="inline-flex items-center gap-1 text-violet-600">
+                    <Users size={12} /> {app.approved_user_ids?.length || 0} user{(app.approved_user_ids?.length || 0) !== 1 ? 's' : ''}
+                  </span>
                 </div>
 
                 {/* Toggle for details */}
@@ -794,6 +862,75 @@ const OIDCApps = () => {
               <Button type="submit" disabled={saving} className="btn-primary" data-testid="oidc-save-btn">{saving ? 'Saving...' : 'Save'}</Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showUsersModal} onOpenChange={setShowUsersModal}>
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Users size={20} className="text-violet-600" />
+              Manage Users - {selectedApp?.name}
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <Label className="label-uppercase text-xs">Add User</Label>
+              <select
+                onChange={(e) => { if (e.target.value) { assignUser(e.target.value); e.target.value = ''; } }}
+                className="input-brutalist w-full mt-1"
+                data-testid="assign-user-select"
+              >
+                <option value="">Select a user to assign...</option>
+                {orgUsers
+                  .filter(u => !appUsers.some(au => au.id === u.id))
+                  .map(u => (
+                    <option key={u.id} value={u.id}>{u.name || u.email} ({u.email})</option>
+                  ))
+                }
+              </select>
+            </div>
+
+            <div>
+              <Label className="label-uppercase text-xs">
+                Assigned Users ({appUsers.length})
+              </Label>
+              {usersLoading ? (
+                <div className="flex items-center justify-center py-8"><div className="spinner" /></div>
+              ) : appUsers.length === 0 ? (
+                <div className="text-center py-8 bg-zinc-50 border border-zinc-200 mt-2 rounded-lg">
+                  <Users size={32} className="text-zinc-300 mx-auto mb-2" />
+                  <p className="text-sm text-zinc-500">No users assigned yet.</p>
+                  <p className="text-xs text-zinc-400 mt-1">Only assigned users can see this app in the Launcher.</p>
+                </div>
+              ) : (
+                <div className="space-y-2 mt-2">
+                  {appUsers.map(u => (
+                    <div key={u.id} className="flex items-center justify-between p-3 bg-zinc-50 border border-zinc-200 rounded-lg" data-testid={`assigned-user-${u.id}`}>
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-violet-100 flex items-center justify-center text-violet-700 text-xs font-bold">
+                          {(u.name || u.email || '?').charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold">{u.name || u.email}</p>
+                          <p className="text-xs text-zinc-500">{u.email}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => removeUser(u.id)}
+                        className="p-1.5 hover:bg-red-50 rounded"
+                        title="Remove user"
+                        data-testid={`remove-user-${u.id}`}
+                      >
+                        <UserMinus size={16} className="text-red-500" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
