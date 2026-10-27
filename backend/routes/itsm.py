@@ -5264,6 +5264,7 @@ class TicketCommentRequest(BaseModel):
     requester_name: Optional[str] = None
     requester_email: Optional[str] = None
     assigned_to: Optional[str] = None
+    sap: Optional[bool] = None
 
 
 class KissflowEntityApis(BaseModel):
@@ -7315,6 +7316,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             ticket_requester_name=(body.requester_name or "").strip(),
             ticket_requester_email=(body.requester_email or "").strip(),
             assigned_to=(body.assigned_to or "").strip(),
+            sap=bool(body.sap),
             files=[],
         )
 
@@ -7336,6 +7338,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         ticket_requester_name: str = "",
         ticket_requester_email: str = "",
         assigned_to: str = "",
+        sap: bool = False,
         files: Optional[List[UploadFile]] = None,
     ) -> Dict[str, Any]:
         uploads = [item for item in (files or []) if item is not None]
@@ -7529,6 +7532,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                         entity=entity,
                         requester_email=ticket_requester_email,
                         commenter_email=str(user.get("email") or "").strip(),
+                        sap=bool(sap),
                     )
                 except Exception as exc:
                     logger.warning("ITSM comment notify schedule failed instance=%s: %s", instance_id, exc)
@@ -7657,6 +7661,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             ticket_requester_name=str(form.get("requester_name") or "").strip(),
             ticket_requester_email=str(form.get("requester_email") or "").strip(),
             assigned_to=str(form.get("assigned_to") or "").strip(),
+            sap=str(form.get("sap") or "").strip().lower() in {"1", "true", "yes"},
             files=uploads,
         )
 

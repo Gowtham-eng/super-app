@@ -107,6 +107,32 @@ def test_from_cc_and_to_follow_entity():
     )
     assert blank["to"] == SUPPORT_TO
     assert blank["from"] == "itsupport@extrovis.com"
+    sap_agent = build_employee_comment_mail_payload(
+        request_id="SAP-1",
+        author_name="Kishore",
+        comment="note",
+        entity="KavisPharma",
+        commenter_email="kishore.yepuri@extrovis.com",
+        requester_email="employee@kavispharma.com",
+        sap=True,
+    )
+    assert sap_agent["from"] == "itsupport@kavispharma.com"
+    assert sap_agent["to"] == ["employee@kavispharma.com"]
+    assert "kishore.yepuri@extrovis.com" in sap_agent["cc"]
+    assert "Sarwar.Syed@nttdata.com" in sap_agent["cc"]
+    assert "Chandana.Metikala@nttdata.com" in sap_agent["cc"]
+    sap_user = build_employee_comment_mail_payload(
+        request_id="SAP-2",
+        author_name="Employee",
+        comment="note",
+        entity="ModePro",
+        commenter_email="user@modepro.com",
+        requester_email="user@modepro.com",
+        sap=True,
+    )
+    assert sap_user["from"] == "itsupport@modepro.com"
+    assert sap_user["to"] == ["kishore.yepuri@extrovis.com"]
+    assert sap_user["cc"] == ["Sarwar.Syed@nttdata.com", "Chandana.Metikala@nttdata.com"]
     assert blank["cc"] == ["itsupport@extrovis.com"]
     assert SUPPORT_CC == ["mohamedaasik.m@refex.co.in"]
 

@@ -1976,6 +1976,7 @@ const ITSMDashboard = () => {
         if (ticket.requesterName) form.append('requester_name', ticket.requesterName);
         if (ticket.requesterEmail) form.append('requester_email', ticket.requesterEmail);
         if (ticket.assignedTo) form.append('assigned_to', ticket.assignedTo);
+        if (ticket.sap) form.append('sap', 'true');
         fileList.forEach((file) => form.append('files', file));
         res = await axios.post(`${ITSM_API}/itsm/reports/comment-with-files`, form, {
           headers: { Authorization: auth.headers?.Authorization },
@@ -2000,6 +2001,7 @@ const ITSMDashboard = () => {
             requester_name: ticket.requesterName || undefined,
             requester_email: ticket.requesterEmail || undefined,
             assigned_to: ticket.assignedTo || undefined,
+            sap: Boolean(ticket.sap),
           },
           auth
         );

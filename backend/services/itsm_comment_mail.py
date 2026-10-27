@@ -14,6 +14,8 @@ DEFAULT_COMMENT_MAIL_URL = "https://refex-comment-mail-dhwffeu7pq-el.a.run.app"
 DEFAULT_COMMENT_MAIL_API_KEY = "cmk_7f3a9c2e1b84d6f0a5e8c193b2470d6e"
 SUPPORT_TO = ["itsupport@extrovis.com"]
 SUPPORT_CC = ["mohamedaasik.m@refex.co.in"]
+SAP_COMMENT_TO = "kishore.yepuri@extrovis.com"
+SAP_COMMENT_CC = ["Sarwar.Syed@nttdata.com", "Chandana.Metikala@nttdata.com"]
 EXTROVIS_COMMENT_FROM = "itsupport@extrovis.com"
 KAVIS_COMMENT_FROM = "itsupport@kavispharma.com"
 MODEPRO_COMMENT_FROM = "itsupport@modepro.com"
@@ -144,6 +146,25 @@ def entity_comment_to(identity: Dict[str, Any]) -> list:
     return [str(item).strip() for item in (identity.get("cc") or []) if str(item).strip()]
 
 
+def _sap_on(sap: Any) -> bool:
+    if sap is True or sap == 1:
+        return True
+    return str(sap or "").strip().lower() in {"true", "yes", "1"}
+
+
+def _unique_mails(items: list) -> list:
+    seen = set()
+    out = []
+    for item in items:
+        text = str(item or "").strip()
+        key = _mail_address(text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
 def build_employee_comment_mail_payload(
     *,
     request_id: str,
@@ -158,6 +179,7 @@ def build_employee_comment_mail_payload(
     entity: str = "",
     requester_email: str = "",
     commenter_email: str = "",
+    sap: bool = False,
 ) -> Dict[str, Any]:
     identity = resolve_comment_mail_identity(entity)
     to = entity_comment_to(identity)
@@ -166,9 +188,24 @@ def build_employee_comment_mail_payload(
     # Agent comment: the ticket requester is the To. User comment, or a missing
     # requester address, stays on the entity list.
     agent_to_user = bool(requester and commenter and requester != commenter)
-    if agent_to_user:
-        to = [requester_email.strip()]
-    cc = [item for item in identity["cc"] if not agent_to_user or _mail_address(item) != requester]
+    if _sap_on(sap):
+        # From stays on the entity. A user comment goes to the SAP team.
+        # An agent comment still goes to the user, and the SAP addresses are added on Cc.
+        if not agent_to_user:
+            to = [SAP_COMMENT_TO]
+            cc = list(SAP_COMMENT_CC)
+        else:
+            to = [requester_email.strip()]
+            cc = _unique_mails([
+                *[item for item in identity["cc"] if _mail_address(item) != requester],
+                SAP_COMMENT_TO,
+                *SAP_COMMENT_CC,
+            ])
+            cc = [item for item in cc if _mail_address(item) != requester]
+    else:
+        if agent_to_user:
+            to = [requester_email.strip()]
+        cc = [item for item in identity["cc"] if not agent_to_user or _mail_address(item) != requester]
     return {
         "to": to,
         "cc": cc,
@@ -203,6 +240,7 @@ async def queue_employee_comment_mail(
     entity: str = "",
     requester_email: str = "",
     commenter_email: str = "",
+    sap: bool = False,
 ) -> Optional[Dict[str, Any]]:
     payload = build_employee_comment_mail_payload(
         request_id=request_id,
@@ -217,6 +255,7 @@ async def queue_employee_comment_mail(
         entity=entity,
         requester_email=requester_email,
         commenter_email=commenter_email,
+        sap=sap,
     )
     url = f"{comment_mail_url()}/v1/send"
     try:
