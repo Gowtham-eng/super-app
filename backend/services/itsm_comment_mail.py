@@ -135,6 +135,15 @@ def resolve_comment_mail_identity(entity: str = "") -> Dict[str, Any]:
     }
 
 
+def _mail_address(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def entity_comment_to(identity: Dict[str, Any]) -> list:
+    """User-side To. Kavis and ModePro must not fall back to itsupport@extrovis.com."""
+    return [str(item).strip() for item in (identity.get("cc") or []) if str(item).strip()]
+
+
 def build_employee_comment_mail_payload(
     *,
     request_id: str,
@@ -147,11 +156,22 @@ def build_employee_comment_mail_payload(
     subject: str = "",
     assigned_to: str = "",
     entity: str = "",
+    requester_email: str = "",
+    commenter_email: str = "",
 ) -> Dict[str, Any]:
     identity = resolve_comment_mail_identity(entity)
+    to = entity_comment_to(identity)
+    requester = _mail_address(requester_email)
+    commenter = _mail_address(commenter_email)
+    # Agent comment: the ticket requester is the To. User comment, or a missing
+    # requester address, stays on the entity list.
+    agent_to_user = bool(requester and commenter and requester != commenter)
+    if agent_to_user:
+        to = [requester_email.strip()]
+    cc = [item for item in identity["cc"] if not agent_to_user or _mail_address(item) != requester]
     return {
-        "to": list(SUPPORT_TO),
-        "cc": list(identity["cc"]),
+        "to": to,
+        "cc": cc,
         "subject": comment_mail_subject(request_id),
         "html": build_comment_mail_html(
             request_id=request_id,
@@ -181,6 +201,8 @@ async def queue_employee_comment_mail(
     subject: str = "",
     assigned_to: str = "",
     entity: str = "",
+    requester_email: str = "",
+    commenter_email: str = "",
 ) -> Optional[Dict[str, Any]]:
     payload = build_employee_comment_mail_payload(
         request_id=request_id,
@@ -193,6 +215,8 @@ async def queue_employee_comment_mail(
         subject=subject,
         assigned_to=assigned_to,
         entity=entity,
+        requester_email=requester_email,
+        commenter_email=commenter_email,
     )
     url = f"{comment_mail_url()}/v1/send"
     try:

@@ -41,7 +41,7 @@ def test_assigned_greeting_uses_human_not_approle():
     assert assigned_greeting_name("Vishnu Kumar (user), IT Agents Extrovis (role)") == "Vishnu"
 
 
-def test_from_and_cc_follow_entity_to_stays_support():
+def test_from_cc_and_to_follow_entity():
     extrovis = resolve_comment_mail_identity("Extrovis")
     assert extrovis["from"] == "itsupport@extrovis.com"
     assert extrovis["cc"] == ["itsupport@extrovis.com"]
@@ -50,6 +50,8 @@ def test_from_and_cc_follow_entity_to_stays_support():
         author_name="Aasik",
         comment="note",
         entity="Pharmapack",
+        commenter_email="user@pharmapack.com",
+        requester_email="user@pharmapack.com",
     )
     assert pharma["to"] == SUPPORT_TO
     assert pharma["from"] == "itsupport@extrovis.com"
@@ -59,8 +61,11 @@ def test_from_and_cc_follow_entity_to_stays_support():
         author_name="Aasik",
         comment="note",
         entity="KavisPharma",
+        commenter_email="user@kavispharma.com",
+        requester_email="user@kavispharma.com",
     )
-    assert kavis["to"] == SUPPORT_TO
+    assert kavis["to"] == ["Jon.Hudanich@kavispharma.com", "Vidhya.Kumar@kavispharma.com"]
+    assert "itsupport@extrovis.com" not in kavis["to"]
     assert kavis["from"] == "itsupport@kavispharma.com"
     assert kavis["cc"] == ["Jon.Hudanich@kavispharma.com", "Vidhya.Kumar@kavispharma.com"]
     modepro = build_employee_comment_mail_payload(
@@ -68,10 +73,32 @@ def test_from_and_cc_follow_entity_to_stays_support():
         author_name="Aasik",
         comment="note",
         entity="Mode Pro",
+        commenter_email="user@modepro.com",
+        requester_email="user@modepro.com",
     )
-    assert modepro["to"] == SUPPORT_TO
+    assert modepro["to"] == ["pradip.kakade@modepro.com"]
+    assert "itsupport@extrovis.com" not in modepro["to"]
     assert modepro["from"] == "itsupport@modepro.com"
     assert modepro["cc"] == ["pradip.kakade@modepro.com"]
+    agent = build_employee_comment_mail_payload(
+        request_id="MP-2",
+        author_name="Pradip",
+        comment="note",
+        entity="ModePro",
+        commenter_email="pradip.kakade@modepro.com",
+        requester_email="user@modepro.com",
+    )
+    assert agent["to"] == ["user@modepro.com"]
+    assert agent["cc"] == ["pradip.kakade@modepro.com"]
+    missing = build_employee_comment_mail_payload(
+        request_id="MP-3",
+        author_name="Pradip",
+        comment="note",
+        entity="ModePro",
+        commenter_email="pradip.kakade@modepro.com",
+        requester_email="",
+    )
+    assert missing["to"] == ["pradip.kakade@modepro.com"]
     blank = build_employee_comment_mail_payload(
         request_id="X-1",
         author_name="Aasik",

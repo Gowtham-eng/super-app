@@ -219,10 +219,15 @@ const CreateITRequest = () => {
   const useManualCascade = !isRefex && !isSapTicket && manualEdit;
   const locationOptions = useMemo(() => {
     if (isRefex) return LOCATION_OPTIONS;
-    return locationCatalog
+    const options = locationCatalog
       .map((row) => String(row?.location || '').trim())
       .filter(Boolean);
-  }, [isRefex, locationCatalog]);
+    const entityToken = String(profile.entity || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    if (entityToken.startsWith('extrovis') && !options.some((item) => item.toLowerCase() === 'extrovis-ag')) {
+      options.push('Extrovis-AG');
+    }
+    return options;
+  }, [isRefex, locationCatalog, profile.entity]);
 
   /** Quick Search + non-Refex cascade: Refex entity rows, Incident / Service Request only. */
   const entityRecords = useMemo(

@@ -5262,6 +5262,7 @@ class TicketCommentRequest(BaseModel):
     category: Optional[str] = None
     subject: Optional[str] = None
     requester_name: Optional[str] = None
+    requester_email: Optional[str] = None
     assigned_to: Optional[str] = None
 
 
@@ -7312,6 +7313,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             category=(body.category or "").strip(),
             subject=(body.subject or "").strip(),
             ticket_requester_name=(body.requester_name or "").strip(),
+            ticket_requester_email=(body.requester_email or "").strip(),
             assigned_to=(body.assigned_to or "").strip(),
             files=[],
         )
@@ -7332,6 +7334,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         category: str = "",
         subject: str = "",
         ticket_requester_name: str = "",
+        ticket_requester_email: str = "",
         assigned_to: str = "",
         files: Optional[List[UploadFile]] = None,
     ) -> Dict[str, Any]:
@@ -7524,6 +7527,8 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                         subject=subject,
                         assigned_to=(assigned_to if assigned_to and assigned_to != "—" else live_assignee),
                         entity=entity,
+                        requester_email=ticket_requester_email,
+                        commenter_email=str(user.get("email") or "").strip(),
                     )
                 except Exception as exc:
                     logger.warning("ITSM comment notify schedule failed instance=%s: %s", instance_id, exc)
@@ -7650,6 +7655,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             category=str(form.get("category") or "").strip(),
             subject=str(form.get("subject") or "").strip(),
             ticket_requester_name=str(form.get("requester_name") or "").strip(),
+            ticket_requester_email=str(form.get("requester_email") or "").strip(),
             assigned_to=str(form.get("assigned_to") or "").strip(),
             files=uploads,
         )

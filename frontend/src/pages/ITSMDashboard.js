@@ -489,6 +489,13 @@ const displayItsmPersonName = (value) => {
   return ITSM_PERSON_ALIASES[key] || text;
 };
 
+const WAITING_FOR_PICKUP_LABEL = 'Waiting for Pickup';
+
+const isExtrovisAgentPickupStepLabel = (step) => {
+  const token = String(step || '').toLowerCase();
+  return token.includes('it agent pickup') || token.includes('it agent pick up');
+};
+
 /** Hide ITSM BOT / AppRole from Assigned To — keep the human name. */
 const formatAssignedToDisplay = (value) => {
   const parts = String(value || '')
@@ -504,6 +511,11 @@ const formatAssignedToDisplay = (value) => {
     unique.push(part);
   });
   return unique.join(', ') || '—';
+};
+
+const formatAssignedToForTicket = (ticket) => {
+  if (isExtrovisAgentPickupStepLabel(ticket?.currentStep)) return WAITING_FOR_PICKUP_LABEL;
+  return formatAssignedToDisplay(ticket?.assignedTo);
 };
 
 const isPickupStep = (step) => {
@@ -1962,6 +1974,7 @@ const ITSMDashboard = () => {
         if (ticket.category) form.append('category', ticket.category);
         if (ticket.subject) form.append('subject', ticket.subject);
         if (ticket.requesterName) form.append('requester_name', ticket.requesterName);
+        if (ticket.requesterEmail) form.append('requester_email', ticket.requesterEmail);
         if (ticket.assignedTo) form.append('assigned_to', ticket.assignedTo);
         fileList.forEach((file) => form.append('files', file));
         res = await axios.post(`${ITSM_API}/itsm/reports/comment-with-files`, form, {
@@ -1985,6 +1998,7 @@ const ITSMDashboard = () => {
             category: ticket.category || undefined,
             subject: ticket.subject || undefined,
             requester_name: ticket.requesterName || undefined,
+            requester_email: ticket.requesterEmail || undefined,
             assigned_to: ticket.assignedTo || undefined,
           },
           auth
@@ -2112,8 +2126,8 @@ const ITSMDashboard = () => {
                       </td>
                     ) : null}
                     <td className="text-slate-600 whitespace-nowrap">{formatTicketDate(ticket.createdOn)}</td>
-                    <td className="text-slate-700" title={formatAssignedToDisplay(ticket.assignedTo)}>
-                      {formatAssignedToDisplay(ticket.assignedTo)}
+                    <td className="text-slate-700" title={formatAssignedToForTicket(ticket)}>
+                      {formatAssignedToForTicket(ticket)}
                     </td>
                     <td className="!whitespace-normal">
                       <TicketStatusTags ticket={ticket} />
@@ -2228,7 +2242,7 @@ const ITSMDashboard = () => {
               ) : null}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1 mb-3">
                 <p className="text-xs text-slate-500">Created On: {formatTicketDate(ticket.createdOn)}</p>
-                <p className="text-xs text-slate-500">Assigned To: {formatAssignedToDisplay(ticket.assignedTo)}</p>
+                <p className="text-xs text-slate-500">Assigned To: {formatAssignedToForTicket(ticket)}</p>
                 <p className="text-xs text-slate-500">Stage: {ticketStageLabel(ticket) || '—'}</p>
                 <p className="text-xs text-slate-500">Closed By: {ticket.closedBy || '—'}</p>
                 <p className="text-xs text-slate-500">Closed On: {formatTicketDate(ticket.closedOn)}</p>
