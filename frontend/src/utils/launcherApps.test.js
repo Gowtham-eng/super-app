@@ -239,6 +239,24 @@ describe('Rex / agentic AI visibility', () => {
     expect(allowedIds).toEqual(['saml-ems', 'rex']);
     expect(otherIds).toEqual(['saml-ems']);
   });
+
+  it('shows the Agentic AI OIDC app to users assigned in Manage Users', () => {
+    const oidc = {
+      id: 'oidc-agentic',
+      name: 'Agentic AI',
+      type: 'oidc',
+      has_access: true,
+      approved_user_ids: ['user-added'],
+    };
+    const assigned = { id: 'user-added', email: 'added.user@refex.co.in' };
+    const stranger = { id: 'someone-else', email: 'other@refex.co.in' };
+    expect(filterLauncherAppsForUser([EMS, oidc], assigned).map((a) => a.id)).toEqual(['saml-ems', 'oidc-agentic']);
+    expect(filterLauncherAppsForUser([EMS, oidc], stranger).map((a) => a.id)).toEqual(['saml-ems']);
+    expect(filterLauncherAppsForUser(
+      [EMS, { ...oidc, approved_user_ids: [], assigned_to_viewer: true }],
+      stranger,
+    ).map((a) => a.id)).toEqual(['saml-ems', 'oidc-agentic']);
+  });
 });
 
 describe('Project Management Tracker launcher', () => {

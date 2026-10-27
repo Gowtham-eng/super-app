@@ -210,6 +210,15 @@ def user_can_see_agentic_ai(user: Optional[dict] = None) -> bool:
     return bool(email) and email in agentic_ai_allowed_emails()
 
 
+def user_assigned_to_app(user: Optional[dict] = None, app: Optional[dict] = None) -> bool:
+    """True when this user is on the app's OIDC/SAML Manage Users list."""
+    user_id = str((user or {}).get("id") or "").strip()
+    if not user_id:
+        return False
+    approved = (app or {}).get("approved_user_ids") or []
+    return user_id in {str(uid).strip() for uid in approved if uid}
+
+
 def launcher_app_display_name(app: Optional[dict] = None) -> str:
     app = app or {}
     if is_rex_app(app):
@@ -247,5 +256,7 @@ def user_can_see_launcher_app(user: Optional[dict], app: Optional[dict]) -> bool
     if is_procure2pay_app(app):
         return user_can_see_procure2pay(user)
     if is_rex_app(app):
+        if user_assigned_to_app(user, app):
+            return True
         return user_can_see_agentic_ai(user)
     return True

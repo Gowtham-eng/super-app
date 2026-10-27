@@ -174,9 +174,13 @@ export function resolveLauncherLogoUrl(logoUrl, backendOrigin = '') {
   return origin ? `${origin}${path}` : path;
 }
 
-export function userCanSeeAgenticAi(user = {}) {
+export function userCanSeeAgenticAi(user = {}, app = null) {
   const email = userEmail(user);
-  return Boolean(email) && AGENTIC_AI_EMAILS.includes(email);
+  if (email && AGENTIC_AI_EMAILS.includes(email)) return true;
+  if (app?.assigned_to_viewer === true) return true;
+  const userId = String(user?.id || '');
+  const ids = Array.isArray(app?.approved_user_ids) ? app.approved_user_ids.map(String) : [];
+  return Boolean(userId) && ids.includes(userId);
 }
 
 /** Reports stay on the Reports tab — never mix them into All Apps. */
@@ -225,7 +229,7 @@ export function filterLauncherAppsForUser(apps, user) {
     if (isReportsLauncherApp(app) && !userCanSeeReports(user)) return false;
     if (isRmcP2pApp(app) && !userCanSeeRmcP2p(user)) return false;
     if (isProcure2PayApp(app) && !userCanSeeProcure2Pay(user)) return false;
-    if (isRexApp(app) && !userCanSeeAgenticAi(user)) return false;
+    if (isRexApp(app) && !userCanSeeAgenticAi(user, app)) return false;
     return true;
   });
 }

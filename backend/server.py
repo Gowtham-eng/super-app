@@ -25,6 +25,7 @@ from services.launcher_access import (
     is_rmc_p2p_app,
     launcher_app_display_name,
     launcher_logo_url,
+    user_assigned_to_app,
     user_can_see_launcher_app,
     user_can_see_reports,
     user_can_see_rmc_p2p,
@@ -681,7 +682,8 @@ async def check_user_app_access(user: dict, app: dict) -> bool:
     - Procure2Pay → hidden from that same email list
     - restricted=True  → org_admin / owner / admin only
     - restricted=False → all users
-    approved_user_ids / group assignments are NOT consulted for launch or SSO.
+    Agentic AI is shown to the email allowlist and to users assigned in Manage Users.
+    Other approved_user_ids / group assignments are not consulted for launch or SSO.
     """
     if is_reports_app(app) or is_rmc_p2p_app(app) or is_procure2pay_app(app) or is_rex_app(app):
         return user_can_see_launcher_app(user, app)
@@ -3538,6 +3540,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
             "category": app.get("category", ""),
             "sort_order": app.get("sort_order", 99),
             "is_placeholder": app.get("is_placeholder", False),
+            "assigned_to_viewer": bool(is_rex_app(app) and user_assigned_to_app(user, app)),
         })
     
     for app in oidc_apps:
@@ -3563,6 +3566,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
             "category": app.get("category", ""),
             "sort_order": app.get("sort_order", 99),
             "is_placeholder": app.get("is_placeholder", False),
+            "assigned_to_viewer": bool(is_rex_app(app) and user_assigned_to_app(user, app)),
         })
 
     for app in mobile_apps:
@@ -3589,6 +3593,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
             "category": app.get("category", ""),
             "sort_order": app.get("sort_order", 99),
             "is_placeholder": app.get("is_placeholder", False),
+            "assigned_to_viewer": bool(is_rex_app(app) and user_assigned_to_app(user, app)),
         })
     
     # Sort by category order, then sort_order within category
