@@ -185,11 +185,25 @@ def parse_non_refex_location_rows(payload: Any) -> List[Dict[str, str]]:
     return out
 
 
+EXTROVIS_AG_LOCATION = "Extrovis-AG"
+
+
 def locations_for_entity(rows: List[Dict[str, str]], entity: str) -> List[Dict[str, str]]:
     key = normalize_non_refex_entity_key(entity)
     if not key:
         return list(rows or [])
-    return [row for row in (rows or []) if row.get("entityKey") == key]
+    matched = [row for row in (rows or []) if row.get("entityKey") == key]
+    if key != "Extrovis":
+        return matched
+    ag_key = normalize_non_refex_location_key(EXTROVIS_AG_LOCATION)
+    if any(normalize_non_refex_location_key(row.get("location") or "") == ag_key for row in matched):
+        return matched
+    return matched + [{
+        "id": "extrovis-ag",
+        "entity": "Extrovis",
+        "entityKey": "Extrovis",
+        "location": EXTROVIS_AG_LOCATION,
+    }]
 
 
 EXTROVIS_PROCESS_ID = os.environ.get(
@@ -7509,6 +7523,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                         category=category,
                         subject=subject,
                         assigned_to=(assigned_to if assigned_to and assigned_to != "—" else live_assignee),
+                        entity=entity,
                     )
                 except Exception as exc:
                     logger.warning("ITSM comment notify schedule failed instance=%s: %s", instance_id, exc)

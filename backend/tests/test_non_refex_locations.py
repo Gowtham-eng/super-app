@@ -35,7 +35,7 @@ def test_parse_and_filter_payload():
     }
     rows = parse_non_refex_location_rows(payload)
     extrovis = locations_for_entity(rows, "Extrovis")
-    assert [row["location"] for row in extrovis] == ["EPL-I", "EPL-II"]
+    assert [row["location"] for row in extrovis] == ["EPL-I", "EPL-II", "Extrovis-AG"]
     modepro = locations_for_entity(rows, "ModePro")
     assert [row["location"] for row in modepro] == ["Kurkumbh", "Andheri"]
     kavis = locations_for_entity(rows, "Kavis")

@@ -6,6 +6,7 @@ from services.itsm_comment_mail import (
     build_comment_mail_html,
     build_employee_comment_mail_payload,
     comment_mail_subject,
+    resolve_comment_mail_identity,
 )
 
 
@@ -22,7 +23,7 @@ def test_employee_payload_goes_to_support_list():
         assigned_to="Vishnu Kumar",
     )
     assert payload["to"] == SUPPORT_TO
-    assert payload["cc"] == SUPPORT_CC
+    assert payload["cc"] == ["itsupport@extrovis.com"]
     assert payload["from"] == "itsupport@extrovis.com"
     assert "EXT-1042" in payload["subject"]
     assert "Please check this" in payload["html"]
@@ -38,6 +39,49 @@ def test_assigned_greeting_uses_human_not_approle():
         [{"Kind": "AppRole", "Name": "IT Agents Extrovis"}, {"Kind": "User", "Name": "Vishnu"}],
     ) == "Vishnu"
     assert assigned_greeting_name("Vishnu Kumar (user), IT Agents Extrovis (role)") == "Vishnu"
+
+
+def test_from_and_cc_follow_entity_to_stays_support():
+    extrovis = resolve_comment_mail_identity("Extrovis")
+    assert extrovis["from"] == "itsupport@extrovis.com"
+    assert extrovis["cc"] == ["itsupport@extrovis.com"]
+    pharma = build_employee_comment_mail_payload(
+        request_id="PP-1",
+        author_name="Aasik",
+        comment="note",
+        entity="Pharmapack",
+    )
+    assert pharma["to"] == SUPPORT_TO
+    assert pharma["from"] == "itsupport@extrovis.com"
+    assert pharma["cc"] == ["itsupport@extrovis.com"]
+    kavis = build_employee_comment_mail_payload(
+        request_id="KV-1",
+        author_name="Aasik",
+        comment="note",
+        entity="KavisPharma",
+    )
+    assert kavis["to"] == SUPPORT_TO
+    assert kavis["from"] == "itsupport@kavispharma.com"
+    assert kavis["cc"] == ["Jon.Hudanich@kavispharma.com", "Vidhya.Kumar@kavispharma.com"]
+    modepro = build_employee_comment_mail_payload(
+        request_id="MP-1",
+        author_name="Aasik",
+        comment="note",
+        entity="Mode Pro",
+    )
+    assert modepro["to"] == SUPPORT_TO
+    assert modepro["from"] == "itsupport@modepro.com"
+    assert modepro["cc"] == ["pradip.kakade@modepro.com"]
+    blank = build_employee_comment_mail_payload(
+        request_id="X-1",
+        author_name="Aasik",
+        comment="note",
+        entity="",
+    )
+    assert blank["to"] == SUPPORT_TO
+    assert blank["from"] == "itsupport@extrovis.com"
+    assert blank["cc"] == ["itsupport@extrovis.com"]
+    assert SUPPORT_CC == ["mohamedaasik.m@refex.co.in"]
 
 
 def test_html_escapes_comment_text():
