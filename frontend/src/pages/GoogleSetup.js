@@ -283,7 +283,7 @@ const GoogleSetup = () => {
           <p className="text-sm font-medium text-slate-800 mb-1">Google SSO</p>
           <p className="text-xs text-slate-500">
             Create the OAuth client, then save it here. A space after a comma in Email domains is ignored.
-            The same email must already exist in User Management and be Active.
+            A listed domain can sign in even if the person is not in User Management yet. The first Google sign-in adds them as an Active user.
           </p>
         </div>
         <div className="bg-white border border-slate-200 rounded-lg p-3">

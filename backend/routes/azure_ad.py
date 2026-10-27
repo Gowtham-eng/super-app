@@ -20,6 +20,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
+from services.sso_provision import create_registered_domain_user
+
 logger = logging.getLogger("azure_ad")
 
 COLLECTION = "azure_ad_configs"
@@ -481,8 +483,31 @@ def register_azure_ad_routes(
             )
 
         if not user:
-            return fail(
-                "No RefexOne account found for this Microsoft email. Contact your admin."
+            if domain not in allowed:
+                return fail(
+                    "No RefexOne account found for this Microsoft email. Contact your admin."
+                )
+            user = await create_registered_domain_user(
+                db,
+                email=email,
+                org_id=cfg.get("org_id"),
+                claims=claims,
+                source="azure_login",
+                extra={
+                    "azure_oid": claims.get("oid"),
+                    "azure_tenant_id": claims.get("tid") or cfg.get("tenant_id"),
+                    "azure_config_id": cfg["id"],
+                },
+            )
+            await log_audit(
+                user["org_id"],
+                "user_created_on_azure_login",
+                "user",
+                user["id"],
+                user["email"],
+                user["id"],
+                {"azure_config_id": cfg["id"], "domain": domain},
+                request.client.host if request.client else None,
             )
         if user.get("status") != "active":
             return fail("Your RefexOne account is not active")

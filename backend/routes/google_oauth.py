@@ -20,6 +20,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
+from services.sso_provision import create_registered_domain_user
+
 logger = logging.getLogger("google_oauth")
 
 COLLECTION = "google_oauth_configs"
@@ -842,8 +844,31 @@ def register_google_oauth_routes(
             )
 
         if not user:
-            return fail(
-                "No RefexOne account found for this Google email. Contact your admin."
+            if domain not in allowed:
+                return fail(
+                    "No RefexOne account found for this Google email. Contact your admin."
+                )
+            user = await create_registered_domain_user(
+                db,
+                email=email,
+                org_id=cfg.get("org_id"),
+                claims=claims,
+                source="google_login",
+                extra={
+                    "google_sub": claims.get("sub"),
+                    "google_hd": token_hd or None,
+                    "google_config_id": cfg["id"],
+                },
+            )
+            await log_audit(
+                user["org_id"],
+                "user_created_on_google_login",
+                "user",
+                user["id"],
+                user["email"],
+                user["id"],
+                {"google_config_id": cfg["id"], "domain": domain},
+                request.client.host if request.client else None,
             )
         if user.get("status") != "active":
             return fail("Your RefexOne account is not active")
