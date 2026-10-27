@@ -8,6 +8,7 @@ import { Label } from '../components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
 import { Switch } from '../components/ui/switch';
 import { Key, Plus, PencilSimple, Trash, Copy, Eye, EyeSlash, X, Upload, Globe, MagnifyingGlass, Lock, Users, UserMinus } from '@phosphor-icons/react';
+import UserAssignPicker from '../components/UserAssignPicker';
 
 const OIDCApps = () => {
   const { API, getAuthHeader, user } = useAuth();
@@ -877,19 +878,12 @@ const OIDCApps = () => {
           <div className="space-y-4">
             <div>
               <Label className="label-uppercase text-xs">Add User</Label>
-              <select
-                onChange={(e) => { if (e.target.value) { assignUser(e.target.value); e.target.value = ''; } }}
-                className="input-brutalist w-full mt-1"
-                data-testid="assign-user-select"
-              >
-                <option value="">Select a user to assign...</option>
-                {orgUsers
-                  .filter(u => !appUsers.some(au => au.id === u.id))
-                  .map(u => (
-                    <option key={u.id} value={u.id}>{u.name || u.email} ({u.email})</option>
-                  ))
-                }
-              </select>
+              <UserAssignPicker
+                key={selectedApp?.id || 'oidc-users'}
+                users={orgUsers}
+                assignedUsers={appUsers}
+                onAssign={assignUser}
+              />
             </div>
 
             <div>
