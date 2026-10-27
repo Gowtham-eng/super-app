@@ -53,6 +53,7 @@ const GoogleSetup = () => {
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
   const [syncingId, setSyncingId] = useState(null);
+  const [editorKind, setEditorKind] = useState('login');
 
   const fetchAll = async () => {
     setLoading(true);
@@ -77,6 +78,7 @@ const GoogleSetup = () => {
 
   const openCreate = () => {
     setEditingId(null);
+    setEditorKind('login');
     setForm({
       ...emptyForm(),
       redirect_uri: meta?.redirect_uri || '',
@@ -84,8 +86,16 @@ const GoogleSetup = () => {
     setEditorOpen(true);
   };
 
+  const openCreateSync = () => {
+    setEditingId(null);
+    setEditorKind('sync');
+    setForm(emptyForm());
+    setEditorOpen(true);
+  };
+
   const openEdit = (cfg) => {
     setEditingId(cfg.id);
+    setEditorKind(cfg.purpose === 'directory_sync' ? 'sync' : 'login');
     setForm({
       label: cfg.label || '',
       client_id: cfg.client_id || '',
@@ -107,16 +117,25 @@ const GoogleSetup = () => {
       .filter(Boolean);
 
   const save = async () => {
-    if (!form.label.trim() || !form.client_id.trim()) {
+    const syncOnly = editorKind === 'sync';
+    if (!form.label.trim()) {
+      toast.error('Display name is required');
+      return;
+    }
+    if (syncOnly && !form.directory_admin_email.trim()) {
+      toast.error('Directory admin email is required');
+      return;
+    }
+    if (!syncOnly && !form.client_id.trim()) {
       toast.error('Label and Client ID are required');
       return;
     }
-    if (!editingId && !form.client_secret.trim()) {
+    if (!syncOnly && !editingId && !form.client_secret.trim()) {
       toast.error('Client Secret is required for new configs');
       return;
     }
     const domains = parseDomains(form.email_domains);
-    if (!domains.length) {
+    if (!syncOnly && !domains.length) {
       toast.error('Add at least one email domain (e.g. refex.co.in)');
       return;
     }
@@ -125,9 +144,10 @@ const GoogleSetup = () => {
     try {
       const payload = {
         label: form.label.trim(),
-        client_id: form.client_id.trim(),
+        purpose: syncOnly ? 'directory_sync' : 'login',
+        client_id: syncOnly ? '' : form.client_id.trim(),
         email_domains: domains,
-        hosted_domain: form.hosted_domain.trim() || null,
+        hosted_domain: syncOnly ? null : (form.hosted_domain.trim() || null),
         redirect_uri: form.redirect_uri.trim() || meta?.redirect_uri,
         status: form.status,
         scopes: ['openid', 'profile', 'email'],
@@ -142,10 +162,10 @@ const GoogleSetup = () => {
 
       if (editingId) {
         await axios.put(`${API}/google-oauth/configs/${editingId}`, payload, getAuthHeader());
-        toast.success('Google config updated');
+        toast.success(syncOnly ? 'Sync admin updated' : 'Google config updated');
       } else {
         await axios.post(`${API}/google-oauth/configs`, payload, getAuthHeader());
-        toast.success('Google config added');
+        toast.success(syncOnly ? 'Sync admin added. Those users still sign in with RefexOne Google.' : 'Google config added');
       }
       setEditorOpen(false);
       fetchAll();
@@ -214,6 +234,9 @@ const GoogleSetup = () => {
     toast.success('Copied');
   };
 
+  const loginConfigs = configs.filter((cfg) => cfg.purpose !== 'directory_sync');
+  const syncConfigs = configs.filter((cfg) => cfg.purpose === 'directory_sync');
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -230,18 +253,29 @@ const GoogleSetup = () => {
             Google Login
           </h1>
           <p className="text-sm text-slate-400">
-            Configure Google Workspace OAuth for RefexOne login (OIDC — not SAML).
+            Everyone signs in with the RefexOne Google OAuth. Extra Google admins only pull users.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={openCreate}
-          className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800"
-          data-testid="google-oauth-add"
-        >
-          <Plus size={16} />
-          Add Google OAuth
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={openCreateSync}
+            className="inline-flex items-center gap-2 px-4 py-2.5 border border-slate-300 text-slate-800 text-sm font-medium rounded-lg hover:bg-slate-50"
+            data-testid="google-sync-add"
+          >
+            <Plus size={16} />
+            Add sync admin
+          </button>
+          <button
+            type="button"
+            onClick={openCreate}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800"
+            data-testid="google-oauth-add"
+          >
+            <Plus size={16} />
+            Add Google OAuth
+          </button>
+        </div>
       </div>
 
       <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-4">
@@ -257,8 +291,9 @@ const GoogleSetup = () => {
             <li>In Google Cloud, create an OAuth client of type Web application.</li>
             <li>Scopes: openid, profile, email.</li>
             <li>Add the redirect URI below on that client.</li>
-            <li>Paste Client ID, Client Secret, and email domains here. Example: refex.co.in, modepro.com, omegahires.com.</li>
-            <li>Set Hosted domain only for a single workspace, such as refex.co.in. Leave it blank when one login covers several companies.</li>
+            <li>Paste Client ID, Client Secret, and every company domain that should sign in. Example: refex.co.in, modepro.com, omegahires.com.</li>
+            <li>Leave Hosted domain blank when one RefexOne login covers several companies.</li>
+            <li>For Mode Pro and later companies, use Add sync admin. That Google admin only pulls users. People still sign in with RefexOne Google.</li>
             <li>Save, then test Sign in with Google.</li>
           </ol>
         </div>
@@ -290,7 +325,12 @@ const GoogleSetup = () => {
         </div>
       </div>
 
-      {configs.length === 0 ? (
+      <div className="mb-3">
+        <h2 className="text-sm font-semibold text-slate-800">RefexOne Google login</h2>
+        <p className="text-xs text-slate-400">This is the only Sign in with Google button. It authenticates every listed domain.</p>
+      </div>
+
+      {loginConfigs.length === 0 ? (
         <div className="border border-dashed border-slate-200 rounded-xl p-10 text-center">
           <Mail className="mx-auto text-slate-300 mb-3" size={36} />
           <p className="text-slate-600 font-medium mb-1">No Google OAuth configurations yet</p>
@@ -307,7 +347,7 @@ const GoogleSetup = () => {
         </div>
       ) : (
         <div className="space-y-3">
-          {configs.map((cfg) => (
+          {loginConfigs.map((cfg) => (
             <div
               key={cfg.id}
               className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-4"
@@ -373,26 +413,119 @@ const GoogleSetup = () => {
         </div>
       )}
 
+      <div className="mt-8 mb-3">
+        <h2 className="text-sm font-semibold text-slate-800">User sync only</h2>
+        <p className="text-xs text-slate-400">
+          Add a Google Workspace admin for each company, starting with Mode Pro. These accounts pull users and do not appear on the login page.
+        </p>
+      </div>
+      {syncConfigs.length === 0 ? (
+        <div className="border border-dashed border-slate-200 rounded-xl p-8 text-center mb-6">
+          <p className="text-sm text-slate-500 mb-3">No sync admins yet. Add Mode Pro first, then more companies the same way.</p>
+          <button
+            type="button"
+            onClick={openCreateSync}
+            className="inline-flex items-center gap-2 px-4 py-2 border border-slate-300 text-sm rounded-lg"
+          >
+            <Plus size={16} /> Add sync admin
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-3 mb-6">
+          {syncConfigs.map((cfg) => (
+            <div
+              key={cfg.id}
+              className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-4"
+              data-testid={`google-sync-row-${cfg.id}`}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <h3 className="font-semibold text-slate-900 truncate">{cfg.label}</h3>
+                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-violet-50 text-violet-700">
+                    User sync only
+                  </span>
+                  {cfg.status === 'active' ? (
+                    <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 inline-flex items-center gap-1">
+                      <CheckCircle size={12} /> Active
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
+                      Disabled
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500">
+                  Sync admin: {cfg.directory_admin_email || 'not set'}
+                  {(cfg.email_domains || []).length ? ` · ${(cfg.email_domains || []).map((d) => `@${d}`).join(', ')}` : ''}
+                  {cfg.has_directory_key ? ' · service account saved' : ' · uses the RefexOne service account if one is saved'}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => syncUsers(cfg)}
+                  disabled={syncingId === cfg.id}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-60"
+                >
+                  {syncingId === cfg.id ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                  Sync users
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggleStatus(cfg)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-slate-200 rounded-lg hover:bg-slate-50"
+                >
+                  <Power size={14} />
+                  {cfg.status === 'active' ? 'Disable' : 'Enable'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openEdit(cfg)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-slate-200 rounded-lg hover:bg-slate-50"
+                >
+                  <Pencil size={14} /> Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => remove(cfg)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-red-100 text-red-600 rounded-lg hover:bg-red-50"
+                >
+                  <Trash2 size={14} /> Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {editorOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
               <h2 className="font-semibold text-slate-900">
-                {editingId ? 'Edit Google OAuth' : 'Add Google OAuth'}
+                {editorKind === 'sync'
+                  ? (editingId ? 'Edit sync admin' : 'Add sync admin')
+                  : (editingId ? 'Edit Google OAuth' : 'Add Google OAuth')}
               </h2>
               <button type="button" onClick={() => setEditorOpen(false)} className="text-slate-400 hover:text-slate-600">
                 <X size={20} />
               </button>
             </div>
             <div className="p-5 space-y-4">
-              <Field label="Display name" required hint="Shown on login company picker">
+              <Field
+                label="Display name"
+                required
+                hint={editorKind === 'sync' ? 'Company to pull, such as Mode Pro. Not shown on the login page.' : 'RefexOne Google login. One button signs in every listed domain.'}
+              >
                 <input
                   className={inputClass}
                   value={form.label}
                   onChange={(e) => setForm({ ...form, label: e.target.value })}
-                  placeholder="e.g. Refex Google Workspace"
+                  placeholder={editorKind === 'sync' ? 'Mode Pro' : 'Refex Google Workspace'}
                 />
               </Field>
+              {editorKind === 'login' && (
+              <>
               <Field label="OAuth Client ID" required>
                 <input
                   className={monoClass}
@@ -438,9 +571,14 @@ const GoogleSetup = () => {
                   placeholder="refex.co.in"
                 />
               </Field>
+              </>
+              )}
               <Field
                 label="Directory admin email"
-                hint="Super admin of the company to import, such as the ModePro admin. Sync pulls only that email's domain."
+                required={editorKind === 'sync'}
+                hint={editorKind === 'sync'
+                  ? 'Super admin of that company, such as admin@modepro.com. Sync pulls only this email domain. Sign-in stays on RefexOne Google.'
+                  : 'Optional on the login config. Prefer Add sync admin for Mode Pro and other companies.'}
               >
                 <input
                   className={inputClass}
@@ -451,7 +589,9 @@ const GoogleSetup = () => {
               </Field>
               <Field
                 label="Service account JSON"
-                hint="Upload the Google Cloud service-account JSON. Leave empty when editing to keep the saved key."
+                hint={editorKind === 'sync'
+                  ? 'Optional when the RefexOne login already has a key. Domain-wide delegation must include this admin.'
+                  : 'Upload the Google Cloud service-account JSON. Leave empty when editing to keep the saved key.'}
               >
                 <input
                   className={inputClass}
@@ -466,6 +606,7 @@ const GoogleSetup = () => {
                   }}
                 />
               </Field>
+              {editorKind === 'login' && (
               <Field label="Redirect URI" hint="Must match Google OAuth client exactly">
                 <input
                   className={monoClass}
@@ -474,6 +615,7 @@ const GoogleSetup = () => {
                   placeholder={meta?.redirect_uri}
                 />
               </Field>
+              )}
               <Field label="Status">
                 <select
                   className={inputClass}
