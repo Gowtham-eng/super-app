@@ -698,7 +698,17 @@ const AppLauncher = () => {
         toast.error('No store link available for this app');
         return;
       }
-      if (isPWA && isMobile) { window.location.href = targetUrl; } else { window.open(targetUrl, '_blank'); }
+      // Android WebView cannot open Play Store pages. Hand the link to the system.
+      const isPlayStore = /play\.google\.com\/store|market:\/\//i.test(targetUrl);
+      if (isAndroid && isPlayStore && window.RefexOneBridge?.openExternalUrl) {
+        window.RefexOneBridge.openExternalUrl(targetUrl);
+        return;
+      }
+      if (isAndroid || (isPWA && isMobile)) {
+        window.location.href = targetUrl;
+      } else {
+        window.open(targetUrl, '_blank');
+      }
     } else {
       const targetUrl = `${baseUrl}${app.launch_url}`;
       if (isPWA && isMobile) { window.location.href = targetUrl; } else { openDesktopAppTab(targetUrl); }
