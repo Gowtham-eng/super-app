@@ -285,6 +285,18 @@ const firstTicketText = (ticket, keys) => {
   return '';
 };
 
+const ticketIsSap = (ticket) => {
+  const value = ticket?.sap;
+  if (value === true || value === 1) return true;
+  if (value && typeof value === 'object') {
+    const nested = value.Name || value.name || value.Value || value.value || value.v;
+    if (nested != null) return ticketIsSap({ ...ticket, sap: nested });
+  }
+  const text = String(value ?? '').trim().toLowerCase();
+  if (text === 'true' || text === 'yes' || text === '1' || text === 'y') return true;
+  return Boolean(firstTicketText(ticket, ['sapModule', 'SAP_Module', 'sap_module']));
+};
+
 const TicketDetailsPanel = ({
   ticket,
   showSolution = false,
@@ -295,9 +307,7 @@ const TicketDetailsPanel = ({
   const category = firstTicketText(ticket, ['category', 'Category']);
   const subCategory = firstTicketText(ticket, ['subCategory', 'SubCategory', 'sub_category']);
   const sapModule = firstTicketText(ticket, ['sapModule', 'SAP_Module', 'sap_module']);
-  const sapTicket = ticket?.sap === true
-    || ticket?.sap === 1
-    || /^(true|yes|1)$/i.test(String(ticket?.sap ?? '').trim());
+  const sapTicket = ticketIsSap(ticket);
   const description = firstTicketText(ticket, ['description', 'Description']);
   return (
     <aside
@@ -1977,7 +1987,7 @@ const ITSMDashboard = () => {
         if (ticket.requesterName) form.append('requester_name', ticket.requesterName);
         if (ticket.requesterEmail) form.append('requester_email', ticket.requesterEmail);
         if (ticket.assignedTo) form.append('assigned_to', ticket.assignedTo);
-        if (ticket.sap) form.append('sap', 'true');
+        if (ticketIsSap(ticket)) form.append('sap', 'true');
         fileList.forEach((file) => form.append('files', file));
         res = await axios.post(`${ITSM_API}/itsm/reports/comment-with-files`, form, {
           headers: { Authorization: auth.headers?.Authorization },
@@ -2003,7 +2013,7 @@ const ITSMDashboard = () => {
             requester_name: ticket.requesterName || undefined,
             requester_email: ticket.requesterEmail || undefined,
             assigned_to: ticket.assignedTo || undefined,
-            sap: Boolean(ticket.sap),
+            sap: ticketIsSap(ticket),
           },
           auth
         );

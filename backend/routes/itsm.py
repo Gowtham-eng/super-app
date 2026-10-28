@@ -603,8 +603,13 @@ def _response_is_kissflow_challenge(response: Any) -> bool:
 def _as_bool_flag(value: Any) -> bool:
     if value is True or value == 1:
         return True
+    if isinstance(value, dict):
+        for key in ("Name", "name", "Value", "value", "display_value", "DisplayValue", "v"):
+            if key in value:
+                return _as_bool_flag(value.get(key))
+        return False
     text = str(value or "").strip().lower()
-    return text in ("true", "yes", "1")
+    return text in ("true", "yes", "1", "y")
 
 
 def _as_string(value: Any) -> str:
@@ -4787,6 +4792,17 @@ def _parse_report_ticket(
     sap = _as_bool_flag(
         _raw_field(data, *field_ids.get("sap", []), "SAP", "Column_l8-JThY4eN")
     )
+    sap_module_text = _lookup_field(
+        data,
+        *field_ids.get("sap_module", []),
+        "SAP_Module",
+        "Sap_Module",
+        "Column_xAD9rXgk8-",
+    )
+    if sap_module_text in ("—", "-"):
+        sap_module_text = ""
+    if sap_module_text and not sap:
+        sap = True
     ticket_entity = _lookup_field(
         data,
         *field_ids.get("entity", []),
@@ -4795,12 +4811,7 @@ def _parse_report_ticket(
         "Column_3BS3PmwiFu",
         "Column_bmKcae3MCg",
     )
-    sap_module = _lookup_field(
-        data,
-        *field_ids.get("sap_module", []),
-        "SAP_Module",
-        "Column_xAD9rXgk8-",
-    ) if sap else ""
+    sap_module = sap_module_text if sap else ""
     item_status = _lookup_field(
         data,
         *field_ids["item_status"],

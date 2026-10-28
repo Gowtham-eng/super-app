@@ -23,7 +23,7 @@ def test_employee_payload_goes_to_support_list():
         assigned_to="Vishnu Kumar",
     )
     assert payload["to"] == SUPPORT_TO
-    assert payload["cc"] == ["itsupport@extrovis.com"]
+    assert payload["cc"] == ["itsupport@extrovis.com", "mohamedaasik.m@refex.co.in"]
     assert payload["from"] == "itsupport@extrovis.com"
     assert "EXT-1042" in payload["subject"]
     assert "Please check this" in payload["html"]
@@ -55,7 +55,7 @@ def test_from_cc_and_to_follow_entity():
     )
     assert pharma["to"] == SUPPORT_TO
     assert pharma["from"] == "itsupport@extrovis.com"
-    assert pharma["cc"] == ["itsupport@extrovis.com"]
+    assert pharma["cc"] == ["itsupport@extrovis.com", "mohamedaasik.m@refex.co.in"]
     kavis = build_employee_comment_mail_payload(
         request_id="KV-1",
         author_name="Aasik",
@@ -67,7 +67,11 @@ def test_from_cc_and_to_follow_entity():
     assert kavis["to"] == ["Jon.Hudanich@kavispharma.com", "Vidhya.Kumar@kavispharma.com"]
     assert "itsupport@extrovis.com" not in kavis["to"]
     assert kavis["from"] == "itsupport@kavispharma.com"
-    assert kavis["cc"] == ["Jon.Hudanich@kavispharma.com", "Vidhya.Kumar@kavispharma.com"]
+    assert kavis["cc"] == [
+        "Jon.Hudanich@kavispharma.com",
+        "Vidhya.Kumar@kavispharma.com",
+        "mohamedaasik.m@refex.co.in",
+    ]
     modepro = build_employee_comment_mail_payload(
         request_id="MP-1",
         author_name="Aasik",
@@ -79,7 +83,7 @@ def test_from_cc_and_to_follow_entity():
     assert modepro["to"] == ["pradip.kakade@modepro.com"]
     assert "itsupport@extrovis.com" not in modepro["to"]
     assert modepro["from"] == "itsupport@modepro.com"
-    assert modepro["cc"] == ["pradip.kakade@modepro.com"]
+    assert modepro["cc"] == ["pradip.kakade@modepro.com", "mohamedaasik.m@refex.co.in"]
     agent = build_employee_comment_mail_payload(
         request_id="MP-2",
         author_name="Pradip",
@@ -89,7 +93,7 @@ def test_from_cc_and_to_follow_entity():
         requester_email="user@modepro.com",
     )
     assert agent["to"] == ["user@modepro.com"]
-    assert agent["cc"] == ["pradip.kakade@modepro.com"]
+    assert agent["cc"] == ["pradip.kakade@modepro.com", "mohamedaasik.m@refex.co.in"]
     missing = build_employee_comment_mail_payload(
         request_id="MP-3",
         author_name="Pradip",
@@ -114,6 +118,8 @@ def test_from_cc_and_to_follow_entity():
         entity="KavisPharma",
         commenter_email="kishore.yepuri@extrovis.com",
         requester_email="employee@kavispharma.com",
+        requester_name="Priya Shah",
+        assigned_to="Kishore Yepuri",
         sap=True,
     )
     assert sap_agent["from"] == "itsupport@kavispharma.com"
@@ -122,7 +128,9 @@ def test_from_cc_and_to_follow_entity():
         "kishore.yepuri@extrovis.com",
         "Sarwar.Syed@nttdata.com",
         "Chandana.Metikala@nttdata.com",
+        "mohamedaasik.m@refex.co.in",
     ]
+    assert "> Priya<" in sap_agent["html"]
     sap_user = build_employee_comment_mail_payload(
         request_id="SAP-2",
         author_name="Employee",
@@ -130,7 +138,8 @@ def test_from_cc_and_to_follow_entity():
         entity="ModePro",
         commenter_email="user@modepro.com",
         requester_email="user@modepro.com",
-        sap=True,
+        assigned_to="Pradip Kakade",
+        sap={"Name": "Yes"},
     )
     assert sap_user["from"] == "itsupport@modepro.com"
     assert sap_user["to"] == ["pradip.kakade@modepro.com"]
@@ -138,10 +147,12 @@ def test_from_cc_and_to_follow_entity():
         "kishore.yepuri@extrovis.com",
         "Sarwar.Syed@nttdata.com",
         "Chandana.Metikala@nttdata.com",
+        "mohamedaasik.m@refex.co.in",
     ]
+    assert "> Pradip<" in sap_user["html"]
     assert "itsupport@extrovis.com" not in sap_user["to"]
     assert "itsupport@extrovis.com" not in sap_user["cc"]
-    assert blank["cc"] == ["itsupport@extrovis.com"]
+    assert blank["cc"] == ["itsupport@extrovis.com", "mohamedaasik.m@refex.co.in"]
     assert SUPPORT_CC == ["mohamedaasik.m@refex.co.in"]
 
 

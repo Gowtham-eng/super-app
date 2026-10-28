@@ -14,6 +14,7 @@ DEFAULT_COMMENT_MAIL_URL = "https://refex-comment-mail-dhwffeu7pq-el.a.run.app"
 DEFAULT_COMMENT_MAIL_API_KEY = "cmk_7f3a9c2e1b84d6f0a5e8c193b2470d6e"
 SUPPORT_TO = ["itsupport@extrovis.com"]
 SUPPORT_CC = ["mohamedaasik.m@refex.co.in"]
+COMMENT_MAIL_CHECK_CC = "mohamedaasik.m@refex.co.in"
 SAP_COMMENT_TO = "kishore.yepuri@extrovis.com"
 SAP_COMMENT_CC = ["Sarwar.Syed@nttdata.com", "Chandana.Metikala@nttdata.com"]
 EXTROVIS_COMMENT_FROM = "itsupport@extrovis.com"
@@ -68,6 +69,8 @@ def _first_human_assignee_name(value: Any) -> str:
     text = text.replace(" (user)", "").replace(" (role)", "").strip()
     low = text.lower()
     if not text or "it agent" in low or "itsm bot" in low or low == "bot":
+        return ""
+    if low == "waiting" or low.startswith("waiting for") or low in {"it support", "it"}:
         return ""
     if "@" in text:
         return text.split("@", 1)[0].split(".")[0].split("_")[0].capitalize()
@@ -160,7 +163,12 @@ def entity_comment_to(identity: Dict[str, Any]) -> list:
 def _sap_on(sap: Any) -> bool:
     if sap is True or sap == 1:
         return True
-    return str(sap or "").strip().lower() in {"true", "yes", "1"}
+    if isinstance(sap, dict):
+        for key in ("Name", "name", "Value", "value", "display_value", "DisplayValue", "v"):
+            if key in sap:
+                return _sap_on(sap.get(key))
+        return False
+    return str(sap or "").strip().lower() in {"true", "yes", "1", "y"}
 
 
 def _unique_mails(items: list) -> list:
@@ -199,12 +207,15 @@ def build_employee_comment_mail_payload(
     # requester address, stays on the entity list. SAP Yes replaces Cc.
     agent_to_user = bool(requester and commenter and requester != commenter)
     base_cc = [SAP_COMMENT_TO, *SAP_COMMENT_CC] if _sap_on(sap) else list(identity["cc"])
+    base_cc = _unique_mails([*base_cc, COMMENT_MAIL_CHECK_CC])
     if agent_to_user:
         to = [requester_email.strip()]
-        cc = [item for item in _unique_mails(base_cc) if _mail_address(item) != requester]
+        cc = [item for item in base_cc if _mail_address(item) != requester]
+        greeting = _first_human_assignee_name(requester_name) or "User"
     else:
         to = entity_comment_to(identity)
-        cc = _unique_mails(base_cc)
+        cc = base_cc
+        greeting = assigned_greeting_name(assigned_to)
     return {
         "to": to,
         "cc": cc,
@@ -212,7 +223,7 @@ def build_employee_comment_mail_payload(
         "html": build_comment_mail_html(
             request_id=request_id,
             requester_name=requester_name,
-            greeting_name=assigned_greeting_name(assigned_to),
+            greeting_name=greeting,
             ticket_type=ticket_type,
             category=category,
             subject=subject,
