@@ -25,6 +25,7 @@ from services.launcher_access import (
     is_rmc_p2p_app,
     launcher_app_display_name,
     launcher_logo_url,
+    user_assigned_to_app,
     user_can_see_launcher_app,
     user_can_see_reports,
     user_can_see_rmc_p2p,
@@ -681,7 +682,8 @@ async def check_user_app_access(user: dict, app: dict) -> bool:
     - Procure2Pay → hidden from that same email list
     - restricted=True  → org_admin / owner / admin only
     - restricted=False → all users
-    approved_user_ids / group assignments are NOT consulted for launch or SSO.
+    Agentic AI is shown to the email allowlist and to users assigned in Manage Users.
+    Other approved_user_ids / group assignments are not consulted for launch or SSO.
     """
     if is_reports_app(app) or is_rmc_p2p_app(app) or is_procure2pay_app(app) or is_rex_app(app):
         return user_can_see_launcher_app(user, app)
@@ -2884,6 +2886,43 @@ async def delete_oidc_app(app_id: str, request: Request, user: dict = Depends(ge
                    {"name": app['name']}, request.client.host if request.client else None)
     return {"message": "App deleted"}
 
+
+@api_router.get("/apps/oidc/{app_id}/users")
+async def get_oidc_app_users(app_id: str, user: dict = Depends(get_current_user)):
+    """Get users assigned to an OIDC app"""
+    app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+
+    approved_ids = app.get('approved_user_ids', [])
+    users = []
+    for uid in approved_ids:
+        u = await db.users.find_one({"id": uid}, {"_id": 0, "password": 0})
+        if u:
+            users.append({"id": u['id'], "email": u.get('email'), "name": u.get('name'), "role": u.get('role')})
+    return users
+
+@api_router.post("/apps/oidc/{app_id}/users")
+async def assign_users_to_oidc_app(app_id: str, body: dict, request: Request, user: dict = Depends(get_current_user)):
+    """Assign users to an OIDC app"""
+    app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+
+    user_ids = body.get('user_ids', [])
+    await db.oidc_apps.update_one({"id": app_id}, {"$addToSet": {"approved_user_ids": {"$each": user_ids}}})
+    return {"message": f"Added {len(user_ids)} user(s)", "user_ids": user_ids}
+
+@api_router.delete("/apps/oidc/{app_id}/users/{user_id}")
+async def remove_user_from_oidc_app(app_id: str, user_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Remove a user from an OIDC app"""
+    app = await db.oidc_apps.find_one({"id": app_id, "org_id": user['org_id']}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+
+    await db.oidc_apps.update_one({"id": app_id}, {"$pull": {"approved_user_ids": user_id}})
+    return {"message": "User removed"}
+
 # ===================== MOBILE APP ROUTES =====================
 
 @api_router.get("/apps/mobile")
@@ -3501,6 +3540,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
             "category": app.get("category", ""),
             "sort_order": app.get("sort_order", 99),
             "is_placeholder": app.get("is_placeholder", False),
+            "assigned_to_viewer": bool(is_rex_app(app) and user_assigned_to_app(user, app)),
         })
     
     for app in oidc_apps:
@@ -3526,6 +3566,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
             "category": app.get("category", ""),
             "sort_order": app.get("sort_order", 99),
             "is_placeholder": app.get("is_placeholder", False),
+            "assigned_to_viewer": bool(is_rex_app(app) and user_assigned_to_app(user, app)),
         })
 
     for app in mobile_apps:
@@ -3552,6 +3593,7 @@ async def get_user_apps(request: Request, user: dict = Depends(get_current_user)
             "category": app.get("category", ""),
             "sort_order": app.get("sort_order", 99),
             "is_placeholder": app.get("is_placeholder", False),
+            "assigned_to_viewer": bool(is_rex_app(app) and user_assigned_to_app(user, app)),
         })
     
     # Sort by category order, then sort_order within category

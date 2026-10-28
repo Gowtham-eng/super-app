@@ -20,6 +20,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
+from services.sso_provision import create_registered_domain_user
+
 logger = logging.getLogger("google_oauth")
 
 COLLECTION = "google_oauth_configs"
@@ -31,12 +33,15 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 
 DIRECTORY_USER_SCOPE = "https://www.googleapis.com/auth/admin.directory.user.readonly"
+LOGIN_PURPOSE = "login"
+SYNC_PURPOSE = "directory_sync"
+SYNC_PURPOSE_ALIASES = (SYNC_PURPOSE, "sync", "sync_only")
 
 
 class GoogleOAuthConfigCreate(BaseModel):
     label: str = Field(..., min_length=1, max_length=120)
-    client_id: str = Field(..., min_length=1)
-    client_secret: str = Field(..., min_length=1)
+    client_id: str = ""
+    client_secret: str = ""
     email_domains: List[str] = Field(default_factory=list)
     hosted_domain: Optional[str] = None  # Google Workspace domain hint (hd=)
     redirect_uri: Optional[str] = None
@@ -44,6 +49,7 @@ class GoogleOAuthConfigCreate(BaseModel):
     status: str = "active"  # active | disabled
     directory_admin_email: Optional[str] = None
     service_account_json: Optional[str] = None
+    purpose: str = LOGIN_PURPOSE  # login | directory_sync
 
 
 class GoogleOAuthConfigUpdate(BaseModel):
@@ -57,6 +63,38 @@ class GoogleOAuthConfigUpdate(BaseModel):
     status: Optional[str] = None
     directory_admin_email: Optional[str] = None
     service_account_json: Optional[str] = None
+    purpose: Optional[str] = None
+
+
+def config_purpose(doc: Optional[dict]) -> str:
+    purpose = str((doc or {}).get("purpose") or LOGIN_PURPOSE).strip().lower()
+    if purpose in SYNC_PURPOSE_ALIASES:
+        return SYNC_PURPOSE
+    return LOGIN_PURPOSE
+
+
+def is_directory_sync(doc: Optional[dict]) -> bool:
+    return config_purpose(doc) == SYNC_PURPOSE
+
+
+def login_config_query() -> dict:
+    """Active Google configs that can sign users in. Sync-only admins are excluded."""
+    return {"status": "active", "purpose": {"$nin": list(SYNC_PURPOSE_ALIASES)}}
+
+
+def pick_login_config_for_domain(configs: List[dict], domain: str) -> Optional[dict]:
+    """Login config that should accept this company. Prefer one that already lists the domain, else RefexOne."""
+    domain = (domain or "").strip().lower().lstrip("@")
+    logins = [c for c in configs or [] if not is_directory_sync(c) and (c.get("status") or "active") == "active"]
+    if not domain or not logins:
+        return None
+    for cfg in logins:
+        if domain in _normalize_domains(cfg.get("email_domains") or []):
+            return cfg
+    for cfg in logins:
+        if re.search(r"refex", str(cfg.get("label") or ""), re.I):
+            return cfg
+    return logins[0]
 
 
 def _normalize_domains(domains: Optional[List[str]]) -> List[str]:
@@ -149,7 +187,10 @@ def register_google_oauth_routes(
             raise HTTPException(status_code=403, detail="Admin only")
 
     async def _domain_conflict(
-        org_id: str, domains: List[str], exclude_id: Optional[str] = None
+        org_id: str,
+        domains: List[str],
+        exclude_id: Optional[str] = None,
+        purpose: str = LOGIN_PURPOSE,
     ):
         if not domains:
             return
@@ -158,6 +199,10 @@ def register_google_oauth_routes(
             "status": "active",
             "email_domains": {"$in": domains},
         }
+        if is_directory_sync({"purpose": purpose}):
+            query["purpose"] = {"$in": list(SYNC_PURPOSE_ALIASES)}
+        else:
+            query["purpose"] = {"$nin": list(SYNC_PURPOSE_ALIASES)}
         if exclude_id:
             query["id"] = {"$ne": exclude_id}
         conflict = await db[COLLECTION].find_one(query, {"_id": 0, "id": 1, "label": 1, "email_domains": 1})
@@ -167,6 +212,29 @@ def register_google_oauth_routes(
                 status_code=409,
                 detail=f"Email domain(s) {', '.join(overlap)} already used by '{conflict.get('label')}'",
             )
+
+    async def _grant_login_domain(org_id: str, domain: str):
+        """Let the RefexOne Google login accept a company that is synced by a separate admin."""
+        domain = (domain or "").strip().lower().lstrip("@")
+        if not domain:
+            return
+        query = {"org_id": org_id}
+        query.update(login_config_query())
+        logins = await db[COLLECTION].find(query, {"_id": 0}).to_list(50)
+        target = pick_login_config_for_domain(logins, domain)
+        if not target:
+            return
+        domains = _normalize_domains(target.get("email_domains") or [])
+        if domain in domains:
+            return
+        domains.append(domain)
+        await db[COLLECTION].update_one(
+            {"id": target["id"]},
+            {"$set": {
+                "email_domains": domains,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
 
     @api_router.get("/google-oauth/configs")
     async def list_google_oauth_configs(user: dict = Depends(get_current_user)):
@@ -195,8 +263,23 @@ def register_google_oauth_routes(
         user: dict = Depends(get_current_user),
     ):
         _require_admin(user)
+        purpose = config_purpose({"purpose": body.purpose})
         domains = _normalize_domains(body.email_domains)
-        await _domain_conflict(user["org_id"], domains)
+        admin_email = None
+        if (body.directory_admin_email or "").strip():
+            admin_email = _directory_admin_email(body.directory_admin_email)
+        if purpose == SYNC_PURPOSE:
+            if not admin_email:
+                raise HTTPException(status_code=400, detail="Directory admin email is required for user sync")
+            sync_domain = admin_email.split("@", 1)[1]
+            if sync_domain not in domains:
+                domains.append(sync_domain)
+        else:
+            if not (body.client_id or "").strip() or not (body.client_secret or "").strip():
+                raise HTTPException(status_code=400, detail="Client ID and Client Secret are required for Google login")
+            if not domains:
+                raise HTTPException(status_code=400, detail="Add at least one email domain")
+        await _domain_conflict(user["org_id"], domains, purpose=purpose)
 
         redirect = (body.redirect_uri or "").strip() or _default_redirect(public_url, request)
         hosted = (body.hosted_domain or "").strip().lower().lstrip("@") or None
@@ -206,14 +289,15 @@ def register_google_oauth_routes(
             "id": config_id,
             "org_id": user["org_id"],
             "label": body.label.strip(),
-            "client_id": body.client_id.strip(),
-            "client_secret": body.client_secret.strip(),
+            "purpose": purpose,
+            "client_id": (body.client_id or "").strip(),
+            "client_secret": (body.client_secret or "").strip(),
             "email_domains": domains,
             "hosted_domain": hosted,
             "redirect_uri": redirect,
             "scopes": body.scopes or list(DEFAULT_SCOPES),
             "status": body.status if body.status in ("active", "disabled") else "active",
-            "directory_admin_email": _directory_admin_email(body.directory_admin_email) if (body.directory_admin_email or "").strip() else None,
+            "directory_admin_email": admin_email,
             "created_at": now,
             "updated_at": now,
             "created_by": user.get("email"),
@@ -221,6 +305,8 @@ def register_google_oauth_routes(
         if (body.service_account_json or "").strip():
             doc["service_account"] = _parse_service_account(body.service_account_json)
         await db[COLLECTION].insert_one(doc)
+        if purpose == SYNC_PURPOSE and doc.get("status") == "active" and admin_email:
+            await _grant_login_domain(user["org_id"], admin_email.split("@", 1)[1])
         await log_audit(
             user["org_id"],
             "google_oauth_config_created",
@@ -254,11 +340,12 @@ def register_google_oauth_routes(
             update["client_id"] = body.client_id.strip()
         if body.client_secret is not None and body.client_secret.strip():
             update["client_secret"] = body.client_secret.strip()
+        purpose = config_purpose(existing)
         if body.email_domains is not None:
             domains = _normalize_domains(body.email_domains)
             status = body.status or existing.get("status") or "active"
             if status == "active":
-                await _domain_conflict(user["org_id"], domains, exclude_id=config_id)
+                await _domain_conflict(user["org_id"], domains, exclude_id=config_id, purpose=purpose)
             update["email_domains"] = domains
         if body.hosted_domain is not None:
             hd = (body.hosted_domain or "").strip().lower().lstrip("@")
@@ -272,17 +359,28 @@ def register_google_oauth_routes(
                 raise HTTPException(status_code=400, detail="status must be active or disabled")
             if body.status == "active":
                 domains = update.get("email_domains", existing.get("email_domains") or [])
-                await _domain_conflict(user["org_id"], domains, exclude_id=config_id)
+                await _domain_conflict(user["org_id"], domains, exclude_id=config_id, purpose=purpose)
             update["status"] = body.status
         if body.directory_admin_email is not None:
             raw_admin = (body.directory_admin_email or "").strip()
             update["directory_admin_email"] = _directory_admin_email(raw_admin) if raw_admin else None
+            if purpose == SYNC_PURPOSE and update["directory_admin_email"]:
+                sync_domain = update["directory_admin_email"].split("@", 1)[1]
+                domains = _normalize_domains(update.get("email_domains", existing.get("email_domains") or []))
+                if sync_domain not in domains:
+                    domains.append(sync_domain)
+                    await _domain_conflict(user["org_id"], [sync_domain], exclude_id=config_id, purpose=purpose)
+                update["email_domains"] = domains
         if body.service_account_json is not None and body.service_account_json.strip():
             update["service_account"] = _parse_service_account(body.service_account_json)
 
         await db[COLLECTION].update_one(
             {"id": config_id, "org_id": user["org_id"]}, {"$set": update}
         )
+        admin_after = update.get("directory_admin_email", existing.get("directory_admin_email"))
+        status_after = update.get("status", existing.get("status"))
+        if purpose == SYNC_PURPOSE and status_after == "active" and admin_after and "@" in admin_after:
+            await _grant_login_domain(user["org_id"], admin_after.split("@", 1)[1])
         await log_audit(
             user["org_id"],
             "google_oauth_config_updated",
@@ -411,9 +509,20 @@ def register_google_oauth_routes(
                 except Exception:
                     raise HTTPException(status_code=400, detail="GOOGLE_DIRECTORY_SA_FILE could not be read")
         if not sa_info:
+            sibling = await db[COLLECTION].find_one(
+                {
+                    "org_id": user["org_id"],
+                    "service_account.private_key": {"$exists": True, "$nin": [None, ""]},
+                },
+                {"_id": 0, "service_account": 1},
+            )
+            sibling_sa = (sibling or {}).get("service_account")
+            if isinstance(sibling_sa, dict) and sibling_sa.get("private_key") and sibling_sa.get("client_email"):
+                sa_info = sibling_sa
+        if not sa_info:
             raise HTTPException(
                 status_code=400,
-                detail="Upload the Google Cloud service-account JSON on this Google config",
+                detail="Upload the Google Cloud service-account JSON on this sync admin or on the RefexOne Google login",
             )
 
         result = {
@@ -550,8 +659,8 @@ def register_google_oauth_routes(
     async def list_google_providers():
         """Public: active Google configs for the login page (no secrets)."""
         docs = await db[COLLECTION].find(
-            {"status": "active"},
-            {"_id": 0, "id": 1, "label": 1, "email_domains": 1},
+            login_config_query(),
+            {"_id": 0, "id": 1, "label": 1, "email_domains": 1, "purpose": 1},
         ).sort("label", 1).to_list(200)
         return docs
 
@@ -561,17 +670,19 @@ def register_google_oauth_routes(
             cfg = await db[COLLECTION].find_one(
                 {"id": config_id, "status": "active"}, {"_id": 0}
             )
+            if is_directory_sync(cfg):
+                cfg = None
         elif domain:
             dom = (domain or "").strip().lower().lstrip("@")
             if "@" in (domain or ""):
                 email = normalize_email(domain)
                 dom = email.split("@")[-1] if "@" in email else dom
-            cfg = await db[COLLECTION].find_one(
-                {"status": "active", "email_domains": dom}, {"_id": 0}
-            )
+            query = login_config_query()
+            query["email_domains"] = dom
+            cfg = await db[COLLECTION].find_one(query, {"_id": 0})
         if not cfg:
             all_active = await db[COLLECTION].find(
-                {"status": "active"}, {"_id": 0}
+                login_config_query(), {"_id": 0}
             ).to_list(5)
             if len(all_active) == 1 and not config_id and not domain:
                 cfg = all_active[0]
@@ -733,8 +844,31 @@ def register_google_oauth_routes(
             )
 
         if not user:
-            return fail(
-                "No RefexOne account found for this Google email. Contact your admin."
+            if domain not in allowed:
+                return fail(
+                    "No RefexOne account found for this Google email. Contact your admin."
+                )
+            user = await create_registered_domain_user(
+                db,
+                email=email,
+                org_id=cfg.get("org_id"),
+                claims=claims,
+                source="google_login",
+                extra={
+                    "google_sub": claims.get("sub"),
+                    "google_hd": token_hd or None,
+                    "google_config_id": cfg["id"],
+                },
+            )
+            await log_audit(
+                user["org_id"],
+                "user_created_on_google_login",
+                "user",
+                user["id"],
+                user["email"],
+                user["id"],
+                {"google_config_id": cfg["id"], "domain": domain},
+                request.client.host if request.client else None,
             )
         if user.get("status") != "active":
             return fail("Your RefexOne account is not active")

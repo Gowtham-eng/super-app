@@ -859,7 +859,77 @@ public class MainActivity extends BridgeActivity {
             returnToLauncher(view);
             return true;
         }
+        // Play Store links fail inside the WebView (net::ERR_UNKNOWN_URL_SCHEME / blocked page).
+        // iOS and desktop already leave the page for the store.
+        if (isPlayStoreUrl(url)) {
+            openPlayStoreUrl(url);
+            return true;
+        }
         return false;
+    }
+
+    private boolean isPlayStoreUrl(String url) {
+        if (url == null || url.isEmpty()) return false;
+        String lower = url.toLowerCase();
+        if (lower.startsWith("market://")) return true;
+        if (lower.startsWith("intent:") && (lower.contains("com.android.vending") || lower.contains("play.google.com"))) {
+            return true;
+        }
+        try {
+            Uri uri = Uri.parse(url);
+            String host = uri.getHost();
+            String path = uri.getPath();
+            if (host == null) return false;
+            host = host.toLowerCase();
+            return (host.equals("play.google.com") || host.endsWith(".play.google.com"))
+                && path != null
+                && path.startsWith("/store");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String playStorePackageId(String url) {
+        try {
+            Uri uri = Uri.parse(url);
+            String id = uri.getQueryParameter("id");
+            if (id != null && !id.isEmpty()) return id;
+            if (url.toLowerCase().startsWith("intent:")) {
+                Intent parsed = Intent.parseUri(url, Intent.URI_INTENT_SCHEME);
+                if (parsed.getPackage() != null && !parsed.getPackage().isEmpty()
+                        && !"com.android.vending".equals(parsed.getPackage())) {
+                    return parsed.getPackage();
+                }
+                Uri data = parsed.getData();
+                if (data != null && data.getQueryParameter("id") != null) {
+                    return data.getQueryParameter("id");
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private void openPlayStoreUrl(String url) {
+        String packageId = playStorePackageId(url);
+        if (packageId != null) {
+            try {
+                Intent store = new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + packageId));
+                store.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(store);
+                return;
+            } catch (Exception ignored) {
+            }
+        }
+        String httpsUrl = url;
+        if (packageId != null && (url.toLowerCase().startsWith("market:") || url.toLowerCase().startsWith("intent:"))) {
+            httpsUrl = "https://play.google.com/store/apps/details?id=" + packageId;
+        }
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(httpsUrl))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (Exception ignored) {
+        }
     }
 
     private boolean isAdrenalinWebUrl(String url) {
@@ -1018,6 +1088,12 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public void openAdrenalinApp() {
             runOnUiThread(MainActivity.this::launchAdrenalinNativeApp);
+        }
+
+        @JavascriptInterface
+        public void openExternalUrl(String url) {
+            if (url == null || url.isEmpty() || !isPlayStoreUrl(url)) return;
+            runOnUiThread(() -> openPlayStoreUrl(url));
         }
 
         @JavascriptInterface

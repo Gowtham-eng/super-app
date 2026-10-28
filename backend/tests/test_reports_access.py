@@ -121,6 +121,15 @@ def test_rex_renamed_and_allowlisted(monkeypatch):
     assert user_can_see_launcher_app(ANIL, REX) is True
     assert user_can_see_launcher_app(OTHER, REX) is False
     assert user_can_see_launcher_app(OTHER, EMS) is True
+    assigned = {"id": "user-added", "email": "added.user@refex.co.in"}
+    oidc_agentic = {
+        "id": "oidc-agentic",
+        "name": "Agentic AI",
+        "type": "oidc",
+        "approved_user_ids": ["user-added"],
+    }
+    assert user_can_see_launcher_app(assigned, oidc_agentic) is True
+    assert user_can_see_launcher_app({"id": "someone-else", "email": "other@refex.co.in"}, oidc_agentic) is False
 
 
 def test_launcher_logo_url_strips_host_from_uploads():
