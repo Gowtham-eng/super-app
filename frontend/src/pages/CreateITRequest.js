@@ -341,7 +341,6 @@ const CreateITRequest = () => {
       && sapModule.trim()
       && subject.trim()
       && description.trim()
-      && attachments.length
       && !submitting
     )
     : (
@@ -835,7 +834,6 @@ const CreateITRequest = () => {
       if (!sapModule.trim()) return toast.error('SAP Module is required.');
       if (!subject.trim()) return toast.error('Subject is required');
       if (!description.trim()) return toast.error('Description is required');
-      if (!attachments.length) return toast.error('Attachment is required for SAP tickets.');
     } else {
       if (!selectedMatrix) {
         return toast.error(
@@ -1505,10 +1503,10 @@ const CreateITRequest = () => {
 
           <section className="form-section !mb-0 lg:col-span-7" data-testid="itsm-attachments">
               <h2 className="form-section-title">
-                Supporting Documents{isSapTicket ? <span className="text-red-500"> *</span> : ''}
+                Supporting Documents
               </h2>
               <p className="text-xs text-slate-500 mb-3">
-                {isSapTicket ? `Required for SAP tickets. ${TICKET_ATTACHMENT_HINT}` : `Optional. ${TICKET_ATTACHMENT_HINT}`}
+                {`Optional. ${TICKET_ATTACHMENT_HINT}`}
               </p>
               <input
                 ref={fileInputRef}

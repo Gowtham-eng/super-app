@@ -6204,8 +6204,6 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         from services.itsm_ticket_attachments import normalize_attachment_urls
 
         attachment_urls = normalize_attachment_urls(body.attachments)
-        if sap and not attachment_urls:
-            raise HTTPException(status_code=400, detail="Attachment is required for SAP tickets.")
         cfg = await _resolve_config(user.get("org_id") or "", entity)
         if not cfg.get("webhook_path") or not cfg.get("access_key_secret"):
             raise HTTPException(

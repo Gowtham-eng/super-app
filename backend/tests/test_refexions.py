@@ -130,6 +130,26 @@ def test_refexions_create_payload_keeps_optional_attachment():
     assert "Attachment" not in skipped
 
 
+def test_sap_ticket_webhook_allows_missing_attachment():
+    webhook = _ticket_webhook_body(
+        process_id="Live_IT_Service_Request_Extrovis_A00",
+        name="A",
+        email="a@extrovis.com",
+        entity="Extrovis",
+        location="Chennai",
+        sub_type="",
+        criticality="",
+        description="SAP access",
+        subject="SAP access",
+        attachments=[],
+        sap=True,
+        sap_module="SD",
+    )
+    assert webhook["SAP"] is True
+    assert webhook["Sap_Module"] == "SD"
+    assert "Attachment" not in webhook
+
+
 def test_ticket_kissflow_env_follows_setup_unless_overridden(monkeypatch):
     monkeypatch.delenv("REFEXIONS_TICKET_ENV", raising=False)
     assert _ticket_kissflow_env() is None
