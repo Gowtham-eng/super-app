@@ -160,6 +160,107 @@ def entity_comment_to(identity: Dict[str, Any]) -> list:
     return [str(item).strip() for item in (identity.get("cc") or []) if str(item).strip()]
 
 
+# Kissflow stores "First Last". The list below is only the email lookup.
+# Names are not copied into the greeting.
+_SAP_ASSIGNEE_DIRECTORY = (
+    (("sumeet dongre", "dongre sumeet"), "Sumeet.Dongre@bs.nttdata.com"),
+    (("sandesh dandage", "dandage sandesh"), "Sumeet.Dongre@bs.nttdata.com"),
+    (("chinmayee maharana", "maharana chinmayee"), "chinmayee.maharana@bs.nttdata.com"),
+    (("naveen thumukunta", "naveenkumar thumukunta"), "naveenkumar.thumukunta@bs.nttdata.com"),
+    (("tanuja villa", "villa tanuja"), "Tanuja.Villa@bs.nttdata.com"),
+    (("anusha shyamala",), "Anusha.Shyamala@bs.nttdata.com"),
+    (("karthikeya sri vasthav annaluru", "karthikeyasri vasthav annaluru", "annaluru karthikeya"), "KarthikeyaSriVasthav.Annaluru@bs.nttdata.com"),
+    (("nithya sree", "nithyasree pa"), "Nithyasree.PA@bs.nttdata.com"),
+    (("sesha sai prasanna kandikuppa", "seshasai prasanna kandikuppa", "sesha sai"), "SeshaSaiPrasanna.Kandikuppa@bs.nttdata.com"),
+    (("waliullah md", "md waliullah"), "Waliullah.Md@bs.nttdata.com"),
+    (("venugopala reddy yerreddu", "venugopalareddy yerreddu"), "VenugopalaReddy.Yerreddu@bs.nttdata.com"),
+    (("ganesh sable", "ganesh11 sable"), "Ganesh11.Sable@bs.nttdata.com"),
+    (("sarwar syed",), "sarwar.syed@nttdata.com"),
+    (("chandana metikala",), "chandana.metikala@nttdata.com"),
+    (("nagesh boyina",), "nagesh.boyina@extrovis.com"),
+    (("balaraju ilaveni",), "balaraju.ilaveni@extrovis.com"),
+    (("vishnu gullapally",), "Vishnu.Gullapally@extrovis.com"),
+    (("koteswara rao patchava", "koti patchava"), "Koti.Patchava@extrovis.com"),
+    (("gundeboyina rajendra", "rajendra gundeboyina"), "rajendra.g@extrovis.com"),
+    (("upendra kumar boddu", "upendrakumar boddu"), "Upendrakumar.Boddu@extrovis.com"),
+    (("jon hudanich", "jon p hudanich"), "Jon.Hudanich@kavispharma.com"),
+    (("vidhya kumar", "vidhya s kumar"), "Vidhya.Kumar@kavispharma.com"),
+    (("pradip kakade",), "pradip.kakade@modepro.com"),
+    (("kishore yepuri",), "kishore.yepuri@extrovis.com"),
+)
+
+_SAP_MODULE_EMAILS = {
+    "PP": ["Sumeet.Dongre@bs.nttdata.com"],
+    "QM": ["Sumeet.Dongre@bs.nttdata.com"],
+    "MM": ["chinmayee.maharana@bs.nttdata.com"],
+    "PM": ["naveenkumar.thumukunta@bs.nttdata.com"],
+    "SD": ["Tanuja.Villa@bs.nttdata.com", "Anusha.Shyamala@bs.nttdata.com"],
+    "BASIS": ["KarthikeyaSriVasthav.Annaluru@bs.nttdata.com"],
+    "FI": ["Nithyasree.PA@bs.nttdata.com"],
+    "WM": ["SeshaSaiPrasanna.Kandikuppa@bs.nttdata.com"],
+    "SECURITY": ["Waliullah.Md@bs.nttdata.com"],
+    "CO": ["VenugopalaReddy.Yerreddu@bs.nttdata.com"],
+    "PS": ["Ganesh11.Sable@bs.nttdata.com"],
+}
+
+
+def _name_tokens(value: Any) -> list:
+    import re
+    text = str(value or "").lower()
+    text = text.replace("(user)", " ").replace("(role)", " ")
+    return [token for token in re.split(r"[^a-z0-9]+", text) if len(token) >= 3]
+
+
+def _person_matches(assignee_blobs: list, names: tuple) -> bool:
+    person = []
+    for name in names:
+        for token in _name_tokens(name):
+            if token not in person:
+                person.append(token)
+    significant = [token for token in person if len(token) >= 4]
+    if not significant:
+        return False
+    longest = max(significant, key=len)
+    others = [token for token in significant if token != longest]
+    for blob in assignee_blobs:
+        if not any(token == longest or longest in token or token in longest for token in blob):
+            continue
+        if not others:
+            return True
+        if any(any(token == item or token in item or item in token for item in blob) for token in others):
+            return True
+    return False
+
+
+def sap_assignee_emails(assigned_to: Any = "", sap_module: str = "") -> list:
+    """SAP user-comment To. Match the Kissflow assignee, else the module, else Kishore."""
+    blobs = []
+    text = str(assigned_to or "")
+    for part in text.split(","):
+        tokens = _name_tokens(part)
+        if tokens:
+            blobs.append(tokens)
+    whole = _name_tokens(text)
+    if whole:
+        blobs.append(whole)
+    matched = []
+    for names, email in _SAP_ASSIGNEE_DIRECTORY:
+        if _person_matches(blobs, names):
+            matched.append(email)
+    matched = _unique_mails(matched)
+    if matched:
+        return matched
+    import re
+    module_tokens = re.findall(r"[A-Za-z]+", str(sap_module or "").upper())
+    from_module = []
+    for code in module_tokens:
+        from_module.extend(_SAP_MODULE_EMAILS.get(code, []))
+    from_module = _unique_mails(from_module)
+    if from_module:
+        return from_module
+    return [SAP_COMMENT_TO]
+
+
 def _sap_on(sap: Any) -> bool:
     if sap is True or sap == 1:
         return True
@@ -199,24 +300,30 @@ def build_employee_comment_mail_payload(
     requester_email: str = "",
     commenter_email: str = "",
     sap: bool = False,
+    sap_module: str = "",
 ) -> Dict[str, Any]:
     identity = resolve_comment_mail_identity(entity)
     requester = _mail_address(requester_email)
     commenter = _mail_address(commenter_email)
-    # Agent comment: the ticket requester is the To. User comment, or a missing
-    # requester address, stays on the entity list. SAP Yes replaces Cc.
+    sap_on = _sap_on(sap)
+    # Agent comment: the ticket requester is the To. User comment stays on the
+    # entity list. SAP user comments go to the Kissflow assignee instead.
     agent_to_user = bool(requester and commenter and requester != commenter)
-    base_cc = [SAP_COMMENT_TO, *SAP_COMMENT_CC] if _sap_on(sap) else list(identity["cc"])
+    base_cc = [SAP_COMMENT_TO, *SAP_COMMENT_CC] if sap_on else list(identity["cc"])
     base_cc = _unique_mails([*base_cc, COMMENT_MAIL_CHECK_CC])
     if agent_to_user:
         to = [requester_email.strip()]
         cc = [item for item in base_cc if _mail_address(item) != requester]
         greeting = _first_human_assignee_name(requester_name) or "User"
     else:
-        to = entity_comment_to(identity)
-        cc = base_cc
+        to = sap_assignee_emails(assigned_to, sap_module) if sap_on else entity_comment_to(identity)
+        if sap_on:
+            to_keys = {_mail_address(item) for item in to}
+            cc = [item for item in base_cc if _mail_address(item) not in to_keys]
+        else:
+            cc = base_cc
         greeting = assigned_greeting_name(assigned_to)
-    return {
+    payload = {
         "to": to,
         "cc": cc,
         "subject": comment_mail_subject(request_id),
@@ -234,6 +341,9 @@ def build_employee_comment_mail_payload(
         ),
         "from": identity["from"],
     }
+    if sap_on and not agent_to_user:
+        payload["replyTo"] = list(to)
+    return payload
 
 
 async def queue_employee_comment_mail(
@@ -251,6 +361,7 @@ async def queue_employee_comment_mail(
     requester_email: str = "",
     commenter_email: str = "",
     sap: bool = False,
+    sap_module: str = "",
 ) -> Optional[Dict[str, Any]]:
     payload = build_employee_comment_mail_payload(
         request_id=request_id,
@@ -266,6 +377,7 @@ async def queue_employee_comment_mail(
         requester_email=requester_email,
         commenter_email=commenter_email,
         sap=sap,
+        sap_module=sap_module,
     )
     url = f"{comment_mail_url()}/v1/send"
     try:

@@ -1987,7 +1987,11 @@ const ITSMDashboard = () => {
         if (ticket.requesterName) form.append('requester_name', ticket.requesterName);
         if (ticket.requesterEmail) form.append('requester_email', ticket.requesterEmail);
         if (ticket.assignedTo) form.append('assigned_to', ticket.assignedTo);
-        if (ticketIsSap(ticket)) form.append('sap', 'true');
+        if (ticketIsSap(ticket)) {
+          form.append('sap', 'true');
+          const moduleName = firstTicketText(ticket, ['sapModule', 'SAP_Module', 'sap_module']);
+          if (moduleName) form.append('sap_module', moduleName);
+        }
         fileList.forEach((file) => form.append('files', file));
         res = await axios.post(`${ITSM_API}/itsm/reports/comment-with-files`, form, {
           headers: { Authorization: auth.headers?.Authorization },
@@ -2014,6 +2018,9 @@ const ITSMDashboard = () => {
             requester_email: ticket.requesterEmail || undefined,
             assigned_to: ticket.assignedTo || undefined,
             sap: ticketIsSap(ticket),
+            sap_module: ticketIsSap(ticket)
+              ? (firstTicketText(ticket, ['sapModule', 'SAP_Module', 'sap_module']) || undefined)
+              : undefined,
           },
           auth
         );

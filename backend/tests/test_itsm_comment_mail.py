@@ -123,6 +123,7 @@ def test_from_cc_and_to_follow_entity():
         sap=True,
     )
     assert sap_agent["from"] == "itsupport@kavispharma.com"
+    assert "replyTo" not in sap_agent
     assert sap_agent["to"] == ["employee@kavispharma.com"]
     assert sap_agent["cc"] == [
         "kishore.yepuri@extrovis.com",
@@ -142,6 +143,7 @@ def test_from_cc_and_to_follow_entity():
         sap={"Name": "Yes"},
     )
     assert sap_user["from"] == "itsupport@modepro.com"
+    assert sap_user["replyTo"] == sap_user["to"]
     assert sap_user["to"] == ["pradip.kakade@modepro.com"]
     assert sap_user["cc"] == [
         "kishore.yepuri@extrovis.com",
@@ -151,6 +153,45 @@ def test_from_cc_and_to_follow_entity():
     ]
     assert "> Pradip<" in sap_user["html"]
     assert "itsupport@extrovis.com" not in sap_user["to"]
+    assert "replyTo" not in modepro
+    named = build_employee_comment_mail_payload(
+        request_id="SAP-3",
+        author_name="Employee",
+        comment="note",
+        entity="Extrovis",
+        commenter_email="user@extrovis.com",
+        requester_email="user@extrovis.com",
+        assigned_to="Vishnu Gullapally",
+        sap=True,
+    )
+    assert named["to"] == ["Vishnu.Gullapally@extrovis.com"]
+    assert named["from"] == "itsupport@extrovis.com"
+    assert named["replyTo"] == named["to"]
+    assert "> Vishnu<" in named["html"]
+    last_first = build_employee_comment_mail_payload(
+        request_id="SAP-4",
+        author_name="Employee",
+        comment="note",
+        entity="Extrovis",
+        commenter_email="user@extrovis.com",
+        requester_email="user@extrovis.com",
+        assigned_to="Villa, Tanuja",
+        sap=True,
+    )
+    assert last_first["to"] == ["Tanuja.Villa@bs.nttdata.com"]
+    module_only = build_employee_comment_mail_payload(
+        request_id="SAP-5",
+        author_name="Employee",
+        comment="note",
+        entity="Extrovis",
+        commenter_email="user@extrovis.com",
+        requester_email="user@extrovis.com",
+        assigned_to="Waiting for Pickup",
+        sap_module="SD",
+        sap=True,
+    )
+    assert module_only["to"] == ["Tanuja.Villa@bs.nttdata.com", "Anusha.Shyamala@bs.nttdata.com"]
+    assert module_only["replyTo"] == module_only["to"]
     assert "itsupport@extrovis.com" not in sap_user["cc"]
     assert blank["cc"] == ["itsupport@extrovis.com", "mohamedaasik.m@refex.co.in"]
     assert SUPPORT_CC == ["mohamedaasik.m@refex.co.in"]

@@ -5286,6 +5286,7 @@ class TicketCommentRequest(BaseModel):
     requester_email: Optional[str] = None
     assigned_to: Optional[str] = None
     sap: Optional[bool] = None
+    sap_module: Optional[str] = None
     ticket_entity: Optional[str] = None
 
 
@@ -7337,6 +7338,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             ticket_requester_email=(body.requester_email or "").strip(),
             assigned_to=(body.assigned_to or "").strip(),
             sap=bool(body.sap),
+            sap_module=(body.sap_module or "").strip(),
             ticket_entity=(body.ticket_entity or "").strip(),
             files=[],
         )
@@ -7360,6 +7362,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         ticket_requester_email: str = "",
         assigned_to: str = "",
         sap: bool = False,
+        sap_module: str = "",
         ticket_entity: str = "",
         files: Optional[List[UploadFile]] = None,
     ) -> Dict[str, Any]:
@@ -7558,6 +7561,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                         requester_email=ticket_requester_email,
                         commenter_email=str(user.get("email") or "").strip(),
                         sap=bool(sap),
+                        sap_module=sap_module,
                     )
                 except Exception as exc:
                     logger.warning("ITSM comment notify schedule failed instance=%s: %s", instance_id, exc)
@@ -7687,6 +7691,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             ticket_requester_email=str(form.get("requester_email") or "").strip(),
             assigned_to=str(form.get("assigned_to") or "").strip(),
             sap=str(form.get("sap") or "").strip().lower() in {"1", "true", "yes"},
+            sap_module=str(form.get("sap_module") or "").strip(),
             ticket_entity=str(form.get("ticket_entity") or "").strip(),
             files=uploads,
         )
