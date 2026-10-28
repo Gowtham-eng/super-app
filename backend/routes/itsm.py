@@ -2463,6 +2463,7 @@ REPORT_FIELD_IDS = {
         "solution_table_comments_type": ["Column_x6WUN8QD4O", "Comments_2"],
         "solution_table_attachments": ["Attachments", "attachments", "Column_zXMX1EDrCx"],
         "subject": ["Column_HEiwMtIBBO", "Subject"],
+        "entity": ["Column_3BS3PmwiFu", "Column_bmKcae3MCg", "Entity", "Entity_1"],
         "sap": ["Column_l8-JThY4eN", "SAP"],
         "sap_module": ["Column_xAD9rXgk8-", "SAP_Module", "Sap_Module"],
         "stages": ["Status", "Column_JUGHj6d2Xj", "Stages"],
@@ -4786,6 +4787,14 @@ def _parse_report_ticket(
     sap = _as_bool_flag(
         _raw_field(data, *field_ids.get("sap", []), "SAP", "Column_l8-JThY4eN")
     )
+    ticket_entity = _lookup_field(
+        data,
+        *field_ids.get("entity", []),
+        "Entity",
+        "Entity_1",
+        "Column_3BS3PmwiFu",
+        "Column_bmKcae3MCg",
+    )
     sap_module = _lookup_field(
         data,
         *field_ids.get("sap_module", []),
@@ -4922,6 +4931,7 @@ def _parse_report_ticket(
         "subject": subject,
         "sap": sap,
         "sapModule": sap_module,
+        "ticketEntity": ticket_entity,
         "description": description,
         "ticketType": _lookup_field(
             data,
@@ -5265,6 +5275,7 @@ class TicketCommentRequest(BaseModel):
     requester_email: Optional[str] = None
     assigned_to: Optional[str] = None
     sap: Optional[bool] = None
+    ticket_entity: Optional[str] = None
 
 
 class KissflowEntityApis(BaseModel):
@@ -7317,6 +7328,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             ticket_requester_email=(body.requester_email or "").strip(),
             assigned_to=(body.assigned_to or "").strip(),
             sap=bool(body.sap),
+            ticket_entity=(body.ticket_entity or "").strip(),
             files=[],
         )
 
@@ -7339,6 +7351,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         ticket_requester_email: str = "",
         assigned_to: str = "",
         sap: bool = False,
+        ticket_entity: str = "",
         files: Optional[List[UploadFile]] = None,
     ) -> Dict[str, Any]:
         uploads = [item for item in (files or []) if item is not None]
@@ -7517,7 +7530,10 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             visible = _employee_visible_comments(merged, entity)
             if comments_type == "User":
                 try:
-                    from services.itsm_comment_mail import schedule_employee_comment_mail
+                    from services.itsm_comment_mail import (
+                        comment_mail_entity,
+                        schedule_employee_comment_mail,
+                    )
 
                     schedule_employee_comment_mail(
                         request_id=request_id or instance_id,
@@ -7529,7 +7545,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                         category=category,
                         subject=subject,
                         assigned_to=(assigned_to if assigned_to and assigned_to != "—" else live_assignee),
-                        entity=entity,
+                        entity=comment_mail_entity(ticket_entity, entity),
                         requester_email=ticket_requester_email,
                         commenter_email=str(user.get("email") or "").strip(),
                         sap=bool(sap),
@@ -7662,6 +7678,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
             ticket_requester_email=str(form.get("requester_email") or "").strip(),
             assigned_to=str(form.get("assigned_to") or "").strip(),
             sap=str(form.get("sap") or "").strip().lower() in {"1", "true", "yes"},
+            ticket_entity=str(form.get("ticket_entity") or "").strip(),
             files=uploads,
         )
 

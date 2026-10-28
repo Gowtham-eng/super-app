@@ -141,6 +141,17 @@ def _mail_address(value: str) -> str:
     return str(value or "").strip().lower()
 
 
+def comment_mail_entity(ticket_entity: str = "", request_entity: str = "") -> str:
+    """Mail follows the ticket Entity. The viewer profile is only a fallback."""
+    def known(value: str) -> bool:
+        token = "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+        return token.startswith(("modepro", "kavis", "extrovis", "pharma"))
+
+    if known(ticket_entity):
+        return str(ticket_entity).strip()
+    return str(request_entity or ticket_entity or "").strip()
+
+
 def entity_comment_to(identity: Dict[str, Any]) -> list:
     """User-side To. Kavis and ModePro must not fall back to itsupport@extrovis.com."""
     return [str(item).strip() for item in (identity.get("cc") or []) if str(item).strip()]
@@ -182,30 +193,18 @@ def build_employee_comment_mail_payload(
     sap: bool = False,
 ) -> Dict[str, Any]:
     identity = resolve_comment_mail_identity(entity)
-    to = entity_comment_to(identity)
     requester = _mail_address(requester_email)
     commenter = _mail_address(commenter_email)
     # Agent comment: the ticket requester is the To. User comment, or a missing
-    # requester address, stays on the entity list.
+    # requester address, stays on the entity list. SAP Yes replaces Cc.
     agent_to_user = bool(requester and commenter and requester != commenter)
-    if _sap_on(sap):
-        # From stays on the entity. A user comment goes to the SAP team.
-        # An agent comment still goes to the user, and the SAP addresses are added on Cc.
-        if not agent_to_user:
-            to = [SAP_COMMENT_TO]
-            cc = list(SAP_COMMENT_CC)
-        else:
-            to = [requester_email.strip()]
-            cc = _unique_mails([
-                *[item for item in identity["cc"] if _mail_address(item) != requester],
-                SAP_COMMENT_TO,
-                *SAP_COMMENT_CC,
-            ])
-            cc = [item for item in cc if _mail_address(item) != requester]
+    base_cc = [SAP_COMMENT_TO, *SAP_COMMENT_CC] if _sap_on(sap) else list(identity["cc"])
+    if agent_to_user:
+        to = [requester_email.strip()]
+        cc = [item for item in _unique_mails(base_cc) if _mail_address(item) != requester]
     else:
-        if agent_to_user:
-            to = [requester_email.strip()]
-        cc = [item for item in identity["cc"] if not agent_to_user or _mail_address(item) != requester]
+        to = entity_comment_to(identity)
+        cc = _unique_mails(base_cc)
     return {
         "to": to,
         "cc": cc,

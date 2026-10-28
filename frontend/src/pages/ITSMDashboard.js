@@ -1963,6 +1963,7 @@ const ITSMDashboard = () => {
       if (fileList.length) {
         const form = new FormData();
         form.append('entity', entity);
+        form.append('ticket_entity', ticket.ticketEntity || ticket.entity || entity);
         form.append('instance_id', ticket.id);
         form.append('activity_instance_id', ticket.activityInstanceId || '');
         form.append('comment', note);
@@ -1988,6 +1989,7 @@ const ITSMDashboard = () => {
           `${ITSM_API}/itsm/reports/comment`,
           {
             entity,
+            ticket_entity: ticket.ticketEntity || ticket.entity || entity,
             instance_id: ticket.id,
             activity_instance_id: ticket.activityInstanceId || '',
             comment: note,
