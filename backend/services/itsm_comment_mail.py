@@ -13,8 +13,6 @@ logger = logging.getLogger("itsm.comment_mail")
 DEFAULT_COMMENT_MAIL_URL = "https://refex-comment-mail-dhwffeu7pq-el.a.run.app"
 DEFAULT_COMMENT_MAIL_API_KEY = "cmk_7f3a9c2e1b84d6f0a5e8c193b2470d6e"
 SUPPORT_TO = ["itsupport@extrovis.com"]
-SUPPORT_CC = ["mohamedaasik.m@refex.co.in"]
-COMMENT_MAIL_CHECK_CC = "mohamedaasik.m@refex.co.in"
 SAP_COMMENT_TO = "kishore.yepuri@extrovis.com"
 SAP_COMMENT_CC = ["Sarwar.Syed@nttdata.com", "Chandana.Metikala@nttdata.com"]
 EXTROVIS_COMMENT_FROM = "itsupport@extrovis.com"
@@ -309,8 +307,7 @@ def build_employee_comment_mail_payload(
     # Agent comment: the ticket requester is the To. User comment stays on the
     # entity list. SAP user comments go to the Kissflow assignee instead.
     agent_to_user = bool(requester and commenter and requester != commenter)
-    base_cc = [SAP_COMMENT_TO, *SAP_COMMENT_CC] if sap_on else list(identity["cc"])
-    base_cc = _unique_mails([*base_cc, COMMENT_MAIL_CHECK_CC])
+    base_cc = _unique_mails([SAP_COMMENT_TO, *SAP_COMMENT_CC] if sap_on else list(identity["cc"]))
     if agent_to_user:
         to = [requester_email.strip()]
         cc = [item for item in base_cc if _mail_address(item) != requester]

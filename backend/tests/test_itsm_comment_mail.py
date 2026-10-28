@@ -1,6 +1,5 @@
 from services.itsm_comment_mail import (
     REFEXONE_LOGO_URL,
-    SUPPORT_CC,
     SUPPORT_TO,
     assigned_greeting_name,
     build_comment_mail_html,
@@ -23,7 +22,7 @@ def test_employee_payload_goes_to_support_list():
         assigned_to="Vishnu Kumar",
     )
     assert payload["to"] == SUPPORT_TO
-    assert payload["cc"] == ["itsupport@extrovis.com", "mohamedaasik.m@refex.co.in"]
+    assert payload["cc"] == ["itsupport@extrovis.com"]
     assert payload["from"] == "itsupport@extrovis.com"
     assert "EXT-1042" in payload["subject"]
     assert "Please check this" in payload["html"]
@@ -55,7 +54,7 @@ def test_from_cc_and_to_follow_entity():
     )
     assert pharma["to"] == SUPPORT_TO
     assert pharma["from"] == "itsupport@extrovis.com"
-    assert pharma["cc"] == ["itsupport@extrovis.com", "mohamedaasik.m@refex.co.in"]
+    assert pharma["cc"] == ["itsupport@extrovis.com"]
     kavis = build_employee_comment_mail_payload(
         request_id="KV-1",
         author_name="Aasik",
@@ -70,7 +69,6 @@ def test_from_cc_and_to_follow_entity():
     assert kavis["cc"] == [
         "Jon.Hudanich@kavispharma.com",
         "Vidhya.Kumar@kavispharma.com",
-        "mohamedaasik.m@refex.co.in",
     ]
     modepro = build_employee_comment_mail_payload(
         request_id="MP-1",
@@ -83,7 +81,7 @@ def test_from_cc_and_to_follow_entity():
     assert modepro["to"] == ["pradip.kakade@modepro.com"]
     assert "itsupport@extrovis.com" not in modepro["to"]
     assert modepro["from"] == "itsupport@modepro.com"
-    assert modepro["cc"] == ["pradip.kakade@modepro.com", "mohamedaasik.m@refex.co.in"]
+    assert modepro["cc"] == ["pradip.kakade@modepro.com"]
     agent = build_employee_comment_mail_payload(
         request_id="MP-2",
         author_name="Pradip",
@@ -93,7 +91,7 @@ def test_from_cc_and_to_follow_entity():
         requester_email="user@modepro.com",
     )
     assert agent["to"] == ["user@modepro.com"]
-    assert agent["cc"] == ["pradip.kakade@modepro.com", "mohamedaasik.m@refex.co.in"]
+    assert agent["cc"] == ["pradip.kakade@modepro.com"]
     missing = build_employee_comment_mail_payload(
         request_id="MP-3",
         author_name="Pradip",
@@ -129,7 +127,6 @@ def test_from_cc_and_to_follow_entity():
         "kishore.yepuri@extrovis.com",
         "Sarwar.Syed@nttdata.com",
         "Chandana.Metikala@nttdata.com",
-        "mohamedaasik.m@refex.co.in",
     ]
     assert "> Priya<" in sap_agent["html"]
     sap_user = build_employee_comment_mail_payload(
@@ -149,7 +146,6 @@ def test_from_cc_and_to_follow_entity():
         "kishore.yepuri@extrovis.com",
         "Sarwar.Syed@nttdata.com",
         "Chandana.Metikala@nttdata.com",
-        "mohamedaasik.m@refex.co.in",
     ]
     assert "> Pradip<" in sap_user["html"]
     assert "itsupport@extrovis.com" not in sap_user["to"]
@@ -193,8 +189,7 @@ def test_from_cc_and_to_follow_entity():
     assert module_only["to"] == ["Tanuja.Villa@bs.nttdata.com", "Anusha.Shyamala@bs.nttdata.com"]
     assert module_only["replyTo"] == module_only["to"]
     assert "itsupport@extrovis.com" not in sap_user["cc"]
-    assert blank["cc"] == ["itsupport@extrovis.com", "mohamedaasik.m@refex.co.in"]
-    assert SUPPORT_CC == ["mohamedaasik.m@refex.co.in"]
+    assert blank["cc"] == ["itsupport@extrovis.com"]
 
 
 def test_html_escapes_comment_text():
