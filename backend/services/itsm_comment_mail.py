@@ -209,6 +209,15 @@ def _name_tokens(value: Any) -> list:
     return [token for token in re.split(r"[^a-z0-9]+", text) if len(token) >= 3]
 
 
+def _token_hit(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    # "and" sits inside sandesh/dandage. A 3-letter word must not match a person.
+    if len(left) < 4 or len(right) < 4:
+        return False
+    return left in right or right in left
+
+
 def _person_matches(assignee_blobs: list, names: tuple) -> bool:
     person = []
     for name in names:
@@ -221,11 +230,11 @@ def _person_matches(assignee_blobs: list, names: tuple) -> bool:
     longest = max(significant, key=len)
     others = [token for token in significant if token != longest]
     for blob in assignee_blobs:
-        if not any(token == longest or longest in token or token in longest for token in blob):
+        if not any(_token_hit(token, longest) for token in blob):
             continue
         if not others:
             return True
-        if any(any(token == item or token in item or item in token for item in blob) for token in others):
+        if any(any(_token_hit(item, token) for item in blob) for token in others):
             return True
     return False
 
@@ -247,6 +256,13 @@ def sap_assignee_emails(assigned_to: Any = "", sap_module: str = "") -> list:
             matched.append(email)
     matched = _unique_mails(matched)
     if matched:
+        import re
+        module_codes = re.findall(r"[A-Za-z]+", str(sap_module or "").upper())
+        if "SD" in module_codes:
+            sd = _SAP_MODULE_EMAILS["SD"]
+            keys = {_mail_address(item) for item in matched}
+            if all(_mail_address(email) in keys for email in sd):
+                return _unique_mails(sd)
         return matched
     import re
     module_tokens = re.findall(r"[A-Za-z]+", str(sap_module or "").upper())
