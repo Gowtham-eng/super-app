@@ -4,6 +4,7 @@ from services.itsm_comment_mail import (
     assigned_greeting_name,
     build_comment_mail_html,
     build_employee_comment_mail_payload,
+    join_assignee_names,
     comment_mail_subject,
     resolve_comment_mail_identity,
 )
@@ -189,8 +190,22 @@ def test_from_cc_and_to_follow_entity():
     )
     assert both_sd["to"] == ["Tanuja.Villa@bs.nttdata.com", "Anusha.Shyamala@bs.nttdata.com"]
     assert both_sd["replyTo"] == both_sd["to"]
-    assert "mohamedaasik.m@refex.co.in" in both_sd["cc"]
+    assert "mohamedaasik.m@refex.co.in" not in both_sd["cc"]
     assert "kishore.yepuri@extrovis.com" in both_sd["cc"]
+    joined = join_assignee_names("Tanuja Villa", "Tanuja Villa, Anusha Shyamala")
+    assert joined == "Tanuja Villa, Anusha Shyamala"
+    from_joined = build_employee_comment_mail_payload(
+        request_id="SAP-4B2",
+        author_name="Employee",
+        comment="note",
+        entity="Extrovis",
+        commenter_email="user@extrovis.com",
+        requester_email="user@extrovis.com",
+        assigned_to=joined,
+        sap_module="SD",
+        sap=True,
+    )
+    assert from_joined["to"] == ["Tanuja.Villa@bs.nttdata.com", "Anusha.Shyamala@bs.nttdata.com"]
     both_and = build_employee_comment_mail_payload(
         request_id="SAP-4C",
         author_name="Employee",
@@ -205,7 +220,7 @@ def test_from_cc_and_to_follow_entity():
     assert both_and["to"] == ["Tanuja.Villa@bs.nttdata.com", "Anusha.Shyamala@bs.nttdata.com"]
     assert "Sumeet.Dongre@bs.nttdata.com" not in both_and["to"]
     assert both_and["replyTo"] == both_and["to"]
-    assert "mohamedaasik.m@refex.co.in" in both_and["cc"]
+    assert "mohamedaasik.m@refex.co.in" not in both_and["cc"]
     module_only = build_employee_comment_mail_payload(
         request_id="SAP-5",
         author_name="Employee",

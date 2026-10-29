@@ -2918,13 +2918,51 @@ def _comment_write_not_found_detail(
     )
 
 
+def _prefer_assignee_text(current: str, found: str) -> str:
+    current = (current or "").strip()
+    found = (found or "").strip()
+    if not found:
+        return current
+    if not current:
+        return found
+    if found.count(",") > current.count(","):
+        return found
+    return current
+
+
+def _item_assignee_text(item: Dict[str, Any], field_ids: Dict[str, List[str]]) -> str:
+    """Same Assigned To names the ticket list shows, including a second assignee."""
+    if not isinstance(item, dict):
+        return ""
+    names: List[str] = []
+    for layer in _item_field_layers(item):
+        for raw in (
+            _raw_field(layer, *(field_ids.get("assigned_to") or []), "_current_assigned_to", "Assigned_To"),
+            _raw_field(layer, *(field_ids.get("assigned_to_user") or []), "Assigned_To_User"),
+        ):
+            text = _format_person(raw)
+            if text:
+                names.append(text)
+    seen = set()
+    out: List[str] = []
+    for value in names:
+        for part in value.split(","):
+            name = part.strip()
+            key = name.lower()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            out.append(name)
+    return ", ".join(out)
+
+
 async def _fetch_existing_solution_rows_for_put(
     cfg: Dict[str, Any],
     process_id: str,
     instance_id: str,
     activity_id: str = "",
     entity: Optional[str] = None,
-) -> Tuple[List[Dict[str, Any]], bool]:
+) -> Tuple[List[Dict[str, Any]], bool, str]:
     params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
     account = (cfg.get("account_id") or "").strip()
     # Admin GET is the write source of truth. Activity GET often 400s
@@ -2937,6 +2975,7 @@ async def _fetch_existing_solution_rows_for_put(
     field_ids = REPORT_FIELD_IDS.get(_report_entity_key(entity), REPORT_FIELD_IDS["extrovis"])
     best: List[Dict[str, Any]] = []
     saw_instance = False
+    assignee_text = ""
     for path in paths:
         payload = await _kf_get_json(cfg, path, params)
         if payload is None:
@@ -2953,9 +2992,14 @@ async def _fetch_existing_solution_rows_for_put(
         for group in groups:
             if len(group) > len(best):
                 best = group
+        found_assignees = _item_assignee_text(item, field_ids)
+        if isinstance(payload, dict) and payload is not item:
+            found_assignees = _prefer_assignee_text(found_assignees, _item_assignee_text(payload, field_ids))
+        assignee_text = _prefer_assignee_text(assignee_text, found_assignees)
     return (
         [_solution_row_for_put(row) for row in best if isinstance(row, dict) and _solution_row_for_put(row)],
         saw_instance,
+        assignee_text,
     )
 
 
@@ -7485,8 +7529,9 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
         params = {"_application_id": cfg.get("application_id") or REPORT_APPLICATION_ID}
         table_rows = [row]
         saw_instance = False
+        item_assignees = ""
         if use_admin_put:
-            existing_rows, saw_instance = await _fetch_existing_solution_rows_for_put(
+            existing_rows, saw_instance, item_assignees = await _fetch_existing_solution_rows_for_put(
                 cfg,
                 process_id,
                 instance_id,
@@ -7544,6 +7589,7 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                 try:
                     from services.itsm_comment_mail import (
                         comment_mail_entity,
+                        join_assignee_names,
                         schedule_employee_comment_mail,
                     )
 
@@ -7556,7 +7602,11 @@ def register_itsm_routes(api_router: APIRouter, get_current_user, db=None):
                         ticket_type=ticket_type,
                         category=category,
                         subject=subject,
-                        assigned_to=(assigned_to if assigned_to and assigned_to != "—" else live_assignee),
+                        assigned_to=join_assignee_names(
+                            assigned_to if assigned_to and assigned_to != "—" else "",
+                            item_assignees,
+                            live_assignee,
+                        ),
                         entity=comment_mail_entity(ticket_entity, entity),
                         requester_email=ticket_requester_email,
                         commenter_email=str(user.get("email") or "").strip(),
