@@ -177,6 +177,19 @@ def test_from_cc_and_to_follow_entity():
     )
     assert last_first["to"] == ["Tanuja.Villa@bs.nttdata.com"]
     assert "mohamedaasik.m@refex.co.in" not in last_first["cc"]
+    only_tanuja_sd = build_employee_comment_mail_payload(
+        request_id="SAP-4A",
+        author_name="Employee",
+        comment="note",
+        entity="Extrovis",
+        commenter_email="user@extrovis.com",
+        requester_email="user@extrovis.com",
+        assigned_to="Tanuja Villa",
+        sap_module="SD",
+        sap=True,
+    )
+    assert only_tanuja_sd["to"] == ["Tanuja.Villa@bs.nttdata.com", "Anusha.Shyamala@bs.nttdata.com"]
+    assert only_tanuja_sd["replyTo"] == only_tanuja_sd["to"]
     both_sd = build_employee_comment_mail_payload(
         request_id="SAP-4B",
         author_name="Employee",

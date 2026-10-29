@@ -274,10 +274,8 @@ def sap_assignee_emails(assigned_to: Any = "", sap_module: str = "") -> list:
         import re
         module_codes = re.findall(r"[A-Za-z]+", str(sap_module or "").upper())
         if "SD" in module_codes:
-            sd = _SAP_MODULE_EMAILS["SD"]
-            keys = {_mail_address(item) for item in matched}
-            if all(_mail_address(email) in keys for email in sd):
-                return _unique_mails(sd)
+            # SD is Tanuja and Anusha. A single matched name must not drop the other.
+            return _unique_mails(_SAP_MODULE_EMAILS["SD"])
         return matched
     import re
     module_tokens = re.findall(r"[A-Za-z]+", str(sap_module or "").upper())
