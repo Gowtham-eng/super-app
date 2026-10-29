@@ -15,6 +15,8 @@ DEFAULT_COMMENT_MAIL_API_KEY = "cmk_7f3a9c2e1b84d6f0a5e8c193b2470d6e"
 SUPPORT_TO = ["itsupport@extrovis.com"]
 SAP_COMMENT_TO = "kishore.yepuri@extrovis.com"
 SAP_COMMENT_CC = ["Sarwar.Syed@nttdata.com", "Chandana.Metikala@nttdata.com"]
+# Temporary check copy. Remove after the two-assignee To is confirmed.
+COMMENT_MAIL_CHECK_CC = "mohamedaasik.m@refex.co.in"
 EXTROVIS_COMMENT_FROM = "itsupport@extrovis.com"
 KAVIS_COMMENT_FROM = "itsupport@kavispharma.com"
 MODEPRO_COMMENT_FROM = "itsupport@modepro.com"
@@ -333,6 +335,9 @@ def build_employee_comment_mail_payload(
         if sap_on:
             to_keys = {_mail_address(item) for item in to}
             cc = [item for item in base_cc if _mail_address(item) not in to_keys]
+            # Two assignees stay on To. The check address is Cc only, so it can be removed later.
+            if len(to) >= 2:
+                cc = _unique_mails([*cc, COMMENT_MAIL_CHECK_CC])
         else:
             cc = base_cc
         greeting = assigned_greeting_name(assigned_to)

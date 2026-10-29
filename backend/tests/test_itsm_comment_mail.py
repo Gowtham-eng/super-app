@@ -175,6 +175,7 @@ def test_from_cc_and_to_follow_entity():
         sap=True,
     )
     assert last_first["to"] == ["Tanuja.Villa@bs.nttdata.com"]
+    assert "mohamedaasik.m@refex.co.in" not in last_first["cc"]
     both_sd = build_employee_comment_mail_payload(
         request_id="SAP-4B",
         author_name="Employee",
@@ -188,6 +189,8 @@ def test_from_cc_and_to_follow_entity():
     )
     assert both_sd["to"] == ["Tanuja.Villa@bs.nttdata.com", "Anusha.Shyamala@bs.nttdata.com"]
     assert both_sd["replyTo"] == both_sd["to"]
+    assert "mohamedaasik.m@refex.co.in" in both_sd["cc"]
+    assert "kishore.yepuri@extrovis.com" in both_sd["cc"]
     both_and = build_employee_comment_mail_payload(
         request_id="SAP-4C",
         author_name="Employee",
@@ -202,6 +205,7 @@ def test_from_cc_and_to_follow_entity():
     assert both_and["to"] == ["Tanuja.Villa@bs.nttdata.com", "Anusha.Shyamala@bs.nttdata.com"]
     assert "Sumeet.Dongre@bs.nttdata.com" not in both_and["to"]
     assert both_and["replyTo"] == both_and["to"]
+    assert "mohamedaasik.m@refex.co.in" in both_and["cc"]
     module_only = build_employee_comment_mail_payload(
         request_id="SAP-5",
         author_name="Employee",
